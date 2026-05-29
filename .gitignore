@@ -1,0 +1,8 @@
+# Rust / Tauri
+target/
+src-tauri/target/
+src-tauri/gen/
+
+# ОС
+.DS_Store
+Thumbs.db

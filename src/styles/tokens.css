@@ -1,0 +1,35 @@
+/* Дизайн-токены Patina. Вся тема живёт здесь и только здесь. */
+:root {
+  /* Фон: слои от глубокого к светлому */
+  --bg-0: #0a0a0f;
+  --bg-1: #12121a;
+  --bg-2: #1a1a28;
+  --bg-3: #22222f;
+
+  /* Акценты */
+  --accent: #10b981;   /* emerald */
+  --accent-2: #14b8a6; /* teal */
+
+  /* Текст */
+  --text: #e5e7eb;
+  --text-dim: #9ca3af;
+  --text-faint: #6b7280;
+
+  /* Линии и разделители */
+  --border: rgba(255, 255, 255, 0.06);
+  --border-strong: rgba(255, 255, 255, 0.12);
+
+  /* Цвета тегов (под систему urgent/in-progress/done/reference/archive) */
+  --tag-urgent: #ef4444;
+  --tag-progress: #f59e0b;
+  --tag-done: #22c55e;
+  --tag-reference: #06b6d4;
+  --tag-archive: #6b7280;
+
+  /* Геометрия и типографика */
+  --radius: 8px;
+  --radius-sm: 6px;
+  --row-h: 30px;
+  --font-ui: 13px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: 12px/1.4 ui-monospace, "Cascadia Code", "Consolas", monospace;
+}

@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="ru" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Patina</title>
+    <link rel="stylesheet" href="styles/tokens.css" />
+    <link rel="stylesheet" href="styles/base.css" />
+    <link rel="stylesheet" href="styles/layout.css" />
+    <link rel="stylesheet" href="styles/components/file-panel.css" />
+  </head>
+  <body>
+    <div id="app">
+      <header class="topbar">
+        <div class="brand">
+          <span class="brand__mark"></span>
+          <span class="brand__name">Patina</span>
+        </div>
+        <div class="topbar__path" id="current-path"></div>
+      </header>
+
+      <main class="workspace">
+        <section class="panel" id="panel"></section>
+      </main>
+
+      <footer class="statusbar" id="statusbar"></footer>
+    </div>
+
+    <script type="module" src="js/main.js"></script>
+  </body>
+</html>
