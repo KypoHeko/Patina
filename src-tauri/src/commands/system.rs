@@ -1,0 +1,150 @@
+//! Системные команды: запуск файлов, показ в проводнике, места для сайдбара.
+
+use serde::Serialize;
+use tauri::Manager;
+
+use crate::error::Result;
+
+/// Запись для сайдбара: подпись, путь, тип (для иконки на фронте).
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Location {
+    label: String,
+    path: String,
+    kind: String,
+}
+
+/// Открыть путь в приложении по умолчанию (ярлыки .lnk разворачивает ОС).
+#[tauri::command]
+pub fn open_path(path: String) -> Result<()> {
+    open::that(&path)?;
+    Ok(())
+}
+
+/// Показать файл в системном проводнике (с выделением на Windows).
+#[tauri::command]
+pub fn reveal_in_explorer(path: String) -> Result<()> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        use std::process::Command;
+        Command::new("explorer")
+            .raw_arg(format!("/select,\"{}\"", path))
+            .spawn()?;
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        let target = std::path::Path::new(&path)
+            .parent()
+            .map(std::path::Path::to_path_buf)
+            .unwrap_or_else(|| std::path::PathBuf::from(&path));
+        open::that(target)?;
+        Ok(())
+    }
+}
+
+/// Быстрый доступ: домашняя, рабочий стол, документы, загрузки
+/// (только существующие).
+#[tauri::command]
+pub fn quick_access(app: tauri::AppHandle) -> Vec<Location> {
+    let p = app.path();
+    let candidates = [
+        ("Домашняя", "home", p.home_dir()),
+        ("Рабочий стол", "desktop", p.desktop_dir()),
+        ("Документы", "documents", p.document_dir()),
+        ("Загрузки", "downloads", p.download_dir()),
+    ];
+    candidates
+        .into_iter()
+        .filter_map(|(label, kind, res)| {
+            let path = res.ok()?;
+            if !path.exists() {
+                return None;
+            }
+            Some(Location {
+                label: label.into(),
+                path: path.to_string_lossy().into_owned(),
+                kind: kind.into(),
+            })
+        })
+        .collect()
+}
+
+/// Список доступных дисков. На Windows перебираем буквы A..Z и проверяем
+/// существование корня (простой способ без WinAPI; метки тома и тип
+/// SSD/Cloud добавим позже через crate `windows`).
+#[tauri::command]
+pub fn list_drives() -> Vec<Location> {
+    let mut out = Vec::new();
+    #[cfg(windows)]
+    {
+        for letter in b'A'..=b'Z' {
+            let c = letter as char;
+            let root = format!("{}:\\", c);
+            if std::path::Path::new(&root).exists() {
+                out.push(Location {
+                    label: format!("{}:", c),
+                    path: root,
+                    kind: "drive".into(),
+                });
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        out.push(Location {
+            label: "/".into(),
+            path: "/".into(),
+            kind: "drive".into(),
+        });
+    }
+    out
+}
+
+/// Запись о хранилище для сайдбара.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Storage {
+    name: String,
+    path: String,
+    kind: String,
+    total: u64,
+    used: u64,
+}
+
+/// Список томов: точка монтирования, тип (SSD/HDD), занято/всего.
+/// Тип «Cloud» через sysinfo не определяется — будет «Диск».
+#[tauri::command]
+pub fn list_storage() -> Vec<Storage> {
+    use std::collections::HashSet;
+    use sysinfo::{DiskKind, Disks};
+
+    let disks = Disks::new_with_refreshed_list();
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut out = Vec::new();
+    for d in disks.list() {
+        let mp = d.mount_point().to_string_lossy().into_owned();
+        if !seen.insert(mp.clone()) {
+            continue;
+        }
+        let total = d.total_space();
+        let avail = d.available_space();
+        let kind = match d.kind() {
+            DiskKind::SSD => "SSD",
+            DiskKind::HDD => "HDD",
+            _ => "Диск",
+        }
+        .to_string();
+        let trimmed = mp.trim_end_matches(|c| c == '\\' || c == '/');
+        let name = if trimmed.is_empty() { mp.clone() } else { trimmed.to_string() };
+        out.push(Storage {
+            name,
+            path: mp,
+            kind,
+            total,
+            used: total.saturating_sub(avail),
+        });
+    }
+    out
+}

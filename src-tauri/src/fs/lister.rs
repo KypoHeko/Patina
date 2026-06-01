@@ -7,9 +7,32 @@ use std::time::UNIX_EPOCH;
 use crate::error::{Error, Result};
 use crate::models::file::{EntryKind, FileEntry};
 
-/// Возвращает содержимое директории: папки первыми, затем файлы, по алфавиту.
-/// Записи, метаданные которых прочитать не удалось (заблокированы и т.п.),
-/// тихо пропускаются — один битый файл не должен ронять весь листинг.
+/// Построить запись из произвольного пути (для виртуальных списков, напр. по тегу).
+pub fn entry_from_path(path: &str) -> Option<FileEntry> {
+    let p = Path::new(path);
+    let meta = fs::metadata(p).ok()?;
+    let name = p
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.to_string());
+    let kind = if meta.is_dir() {
+        EntryKind::Folder
+    } else {
+        EntryKind::File
+    };
+    let size = if matches!(kind, EntryKind::File) { meta.len() } else { 0 };
+    let modified = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as u64);
+    let extension = match kind {
+        EntryKind::File => p.extension().map(|e| e.to_string_lossy().into_owned()),
+        EntryKind::Folder => None,
+    };
+    Some(FileEntry { name, path: path.to_string(), kind, size, modified, extension })
+}
+
 pub fn list_dir(path: &str) -> Result<Vec<FileEntry>> {
     let dir = Path::new(path);
     if !dir.is_dir() {
@@ -35,23 +58,14 @@ pub fn list_dir(path: &str) -> Result<Vec<FileEntry>> {
         } else {
             EntryKind::File
         };
-
-        let size = if matches!(kind, EntryKind::File) {
-            meta.len()
-        } else {
-            0
-        };
-
+        let size = if matches!(kind, EntryKind::File) { meta.len() } else { 0 };
         let modified = meta
             .modified()
             .ok()
             .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
             .map(|d| d.as_millis() as u64);
-
         let extension = match kind {
-            EntryKind::File => full
-                .extension()
-                .map(|e| e.to_string_lossy().into_owned()),
+            EntryKind::File => full.extension().map(|e| e.to_string_lossy().into_owned()),
             EntryKind::Folder => None,
         };
 
@@ -65,11 +79,8 @@ pub fn list_dir(path: &str) -> Result<Vec<FileEntry>> {
         });
     }
 
-    entries.sort_by(|a, b| match (a.kind, b.kind) {
-        (EntryKind::Folder, EntryKind::File) => std::cmp::Ordering::Less,
-        (EntryKind::File, EntryKind::Folder) => std::cmp::Ordering::Greater,
-        _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
-    });
-
+    // Сортировка не делается здесь: единственный источник правды — фронтенд
+    // (sortedEntries: папки выше файлов + активная колонка). Двойная сортировка
+    // была лишней работой на каждом списании каталога.
     Ok(entries)
 }

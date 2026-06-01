@@ -1,5 +1,4 @@
-//! Единый тип ошибки приложения.
-//! Сериализуется в строку, чтобы фронт получал читаемое сообщение в catch().
+//! Единый тип ошибки приложения. Сериализуется в строку для фронта.
 
 use serde::{Serialize, Serializer};
 
@@ -8,11 +7,17 @@ pub enum Error {
     #[error("ошибка ввода-вывода: {0}")]
     Io(#[from] std::io::Error),
 
+    #[error("ошибка БД: {0}")]
+    Db(#[from] rusqlite::Error),
+
     #[error("путь не является директорией: {0}")]
     NotADirectory(String),
 
     #[error("некорректный путь: {0}")]
     InvalidPath(String),
+
+    #[error("операция не удалась: {0}")]
+    Operation(String),
 }
 
 impl Serialize for Error {
