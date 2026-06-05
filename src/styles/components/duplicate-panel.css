@@ -100,3 +100,25 @@
 .dup__del:hover {
   color: var(--tag-urgent);
 }
+
+/* Индикатор прогресса поиска дубликатов */
+.dup__msg {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+}
+.dup__spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--border-strong);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: dup-spin 0.8s linear infinite;
+  flex: 0 0 auto;
+}
+@keyframes dup-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}

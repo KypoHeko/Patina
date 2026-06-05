@@ -12,6 +12,19 @@ pub fn subtree_bounds(base: &str) -> (char, String, String) {
     (sep, prefix, upper)
 }
 
+/// Перенос пути при переименовании/перемещении `old` -> `new`.
+/// Возвращает новый путь, если `path` равен `old` или лежит в его поддереве;
+/// иначе `None` (путь вне зоны переноса — трогать не нужно). Сепаратор берётся
+/// из `old`, чтобы реконструкция совпадала с `subtree_bounds`.
+pub fn remap(path: &str, old: &str, new: &str) -> Option<String> {
+    if path == old {
+        return Some(new.to_string());
+    }
+    let (sep, prefix, _upper) = subtree_bounds(old);
+    path.strip_prefix(prefix.as_str())
+        .map(|rest| format!("{new}{sep}{rest}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -38,5 +51,20 @@ mod tests {
         assert_eq!(upper, "/home/u/b0"); // 0x2F + 1 = 0x30 = '0'
         assert!(in_range("/home/u/b/x", &prefix, &upper));
         assert!(!in_range("/home/u/bb/y", &prefix, &upper));
+    }
+
+    #[test]
+    fn remap_exact_nested_and_outside() {
+        // точное совпадение -> новый путь
+        assert_eq!(remap("C:\\a\\b", "C:\\a\\b", "C:\\a\\c").as_deref(), Some("C:\\a\\c"));
+        // вложенный -> перенос с сохранением хвоста
+        assert_eq!(
+            remap("C:\\a\\b\\x.txt", "C:\\a\\b", "C:\\a\\c").as_deref(),
+            Some("C:\\a\\c\\x.txt")
+        );
+        // сосед (bb) — вне зоны переноса
+        assert_eq!(remap("C:\\a\\bb\\y.txt", "C:\\a\\b", "C:\\a\\c"), None);
+        // совсем посторонний путь
+        assert_eq!(remap("D:\\other", "C:\\a\\b", "C:\\a\\c"), None);
     }
 }

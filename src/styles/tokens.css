@@ -1,4 +1,6 @@
-/* Дизайн-токены Patina. Вся тема живёт здесь и только здесь. */
+/* Дизайн-токены Patina. Палитры переключаются атрибутом data-theme на <html>.
+   :root — тема по умолчанию (тёмно-изумрудная). Каждая палитра переопределяет
+   только цвета; геометрия и типографика общие (ниже, вне палитр). */
 :root {
   /* Фон: слои от глубокого к светлому */
   --bg-0: #0a0a0f;
@@ -26,10 +28,34 @@
   --tag-reference: #06b6d4;
   --tag-archive: #6b7280;
 
-  /* Геометрия и типографика */
+  /* Геометрия и типографика (общие для всех палитр) */
   --radius: 8px;
   --radius-sm: 6px;
   --row-h: 30px;
   --font-ui: 13px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-mono: 12px/1.4 ui-monospace, "Cascadia Code", "Consolas", monospace;
+}
+
+/* ── Палитра: тёпло-золотая (по мотивам концепта Nexus) ───────────────── */
+:root[data-theme="gold"] {
+  --bg-0: #161210;
+  --bg-1: #1c1810;
+  --bg-2: #211e12;
+  --bg-3: #2e2818;
+
+  --accent: #c9a85c;   /* gold */
+  --accent-2: #7ecfb8; /* teal — сдержанный вторичный акцент */
+
+  --text: #f2e8cc;
+  --text-dim: #c8b882;
+  --text-faint: #8a7a52;
+
+  --border: #433a22;
+  --border-strong: #5a4f30;
+
+  --tag-urgent: #e07060;
+  --tag-progress: #e8b050;
+  --tag-done: #3d9e84;
+  --tag-reference: #7ecfb8;
+  --tag-archive: #5a4e32;
 }

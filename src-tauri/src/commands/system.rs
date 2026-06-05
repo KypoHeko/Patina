@@ -116,7 +116,15 @@ pub struct Storage {
 /// Список томов: точка монтирования, тип (SSD/HDD), занято/всего.
 /// Тип «Cloud» через sysinfo не определяется — будет «Диск».
 #[tauri::command]
-pub fn list_storage() -> Vec<Storage> {
+pub async fn list_storage() -> Vec<Storage> {
+    // sysinfo обходит все тома — это блокирующая работа, уводим её с главного
+    // потока (на старте сайдбар не должен тормозить отрисовку окна).
+    tauri::async_runtime::spawn_blocking(list_storage_sync)
+        .await
+        .unwrap_or_default()
+}
+
+fn list_storage_sync() -> Vec<Storage> {
     use std::collections::HashSet;
     use sysinfo::{DiskKind, Disks};
 

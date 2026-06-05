@@ -57,7 +57,7 @@ pub fn run() {
             commands::versions::restore_version,
             commands::relationships::add_relationship,
             commands::relationships::remove_relationship,
-            commands::relationships::relationships_for,
+            commands::relationships::file_graph,
             commands::watch::set_watch,
             commands::file_index::reindex_tree,
             commands::file_index::search_files,

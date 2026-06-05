@@ -126,6 +126,11 @@
   overflow: hidden;
   transition: grid-template-columns 0.16s ease;
 }
+.main__dock {
+  grid-area: dock;
+  min-width: 0;
+  overflow: hidden;
+}
 .main.has-dup {
   grid-template-columns: minmax(0, 1fr) 340px 0;
 }
@@ -148,11 +153,6 @@
 }
 .statusbar {
   grid-area: status;
-}
-.main__dock {
-  grid-area: dock;
-  min-width: 0;
-  overflow: hidden;
 }
 
 .workspace {

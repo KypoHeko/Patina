@@ -18,10 +18,15 @@ import { RelationshipGraph } from './components/relationship-graph.js';
 import { ConfirmDialog } from './components/confirm-dialog.js';
 import { PreviewPanel } from './components/preview-panel.js';
 import { Divider } from './components/divider.js';
+import { ThemeMenu } from './components/theme-menu.js';
 import { homeDir } from './api/fs.js';
+import { initTheme } from './lib/theme.js';
 
 const store = createStore({ ...initialTabsState(), ...initialUiState() });
 const bus = createEventBus();
+
+// Применяем сохранённую палитру до монтажа компонентов (без мигания темы).
+initTheme();
 
 const workspace = document.querySelector('.workspace');
 
@@ -38,20 +43,20 @@ const graph = new RelationshipGraph({ mount: document.getElementById('graph-root
 const confirmDialog = new ConfirmDialog({ mount: document.getElementById('confirm-root'), store, bus });
 const preview = new PreviewPanel({ mount: document.getElementById('preview-root'), store, bus });
 const divider = new Divider({ mount: document.getElementById('divider'), store, bus, workspace });
+const themeMenu = new ThemeMenu({ mount: document.getElementById('theme-root'), store, bus });
 
-sidebar.init();
-tabBar.init();
-left.init();
-right.init();
-statusBar.init();
-contextMenu.init();
-palette.init();
-duplicates.init();
-versionHistory.init();
-graph.init();
-confirmDialog.init();
-preview.init();
-divider.init();
+// Инициализируем устойчиво: сбой одного компонента не должен срывать
+// подключение обработчиков кнопок ниже по файлу.
+for (const c of [
+  sidebar, tabBar, left, right, statusBar, contextMenu, palette,
+  duplicates, versionHistory, graph, confirmDialog, preview, divider, themeMenu,
+]) {
+  try {
+    c.init();
+  } catch (err) {
+    console.error('[patina] ошибка инициализации компонента:', err);
+  }
+}
 
 document.getElementById('preview-btn').addEventListener('click', () => bus.emit('preview:toggle'));
 
@@ -60,6 +65,7 @@ searchInput.addEventListener('input', () => store.setState({ searchQuery: search
 
 document.getElementById('duplicates-btn').addEventListener('click', () => bus.emit('duplicates:open'));
 document.getElementById('graph-btn').addEventListener('click', () => bus.emit('graph:open'));
+document.getElementById('theme-btn').addEventListener('click', () => bus.emit('theme:open'));
 
 const collapseBtn = document.getElementById('collapse-sidebar-btn');
 collapseBtn.addEventListener('click', () => {

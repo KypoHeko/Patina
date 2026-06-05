@@ -1,7 +1,9 @@
 //! Живой индекс: фоновое построение + рекурсивное слежение за корнем +
 //! инкрементальные точечные апдейты (upsert/delete по конкретным путям из
-//! событий вотчера) вместо полного рескана.
+//! событий вотчера) вместо полного рескана. Здесь же строятся рёбра связей
+//! (зависимости/обратные ссылки) из содержимого файлов.
 
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use notify::{recommended_watcher, Event, RecursiveMode, Watcher};
@@ -9,7 +11,8 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::error::{Error, Result};
 use crate::index::file_index::{self, IndexRow};
-use crate::index::{content_index};
+use crate::index::{content_index, edges_repo};
+use crate::indexer::links;
 use crate::state::AppState;
 
 const TEXT_EXTS: &[&str] = &[
@@ -19,6 +22,7 @@ const TEXT_EXTS: &[&str] = &[
 ];
 const MAX_FILE: u64 = 1_048_576; // 1 МБ
 const SCAN_LIMIT: usize = 50_000;
+const MENTION_SCAN_CAP: usize = 200_000; // верхняя граница тела для скана упоминаний
 
 fn is_text(path: &Path, len: u64) -> bool {
     if len == 0 || len > MAX_FILE {
@@ -28,6 +32,13 @@ fn is_text(path: &Path, len: u64) -> bool {
         Some(ext) => TEXT_EXTS.contains(&ext.as_str()),
         None => false,
     }
+}
+
+fn ext_lower(path: &str) -> String {
+    Path::new(path)
+        .extension()
+        .map(|e| e.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default()
 }
 
 fn build_row(path: &Path) -> Option<IndexRow> {
@@ -54,6 +65,84 @@ fn build_row(path: &Path) -> Option<IndexRow> {
     })
 }
 
+/// Явные исходящие рёбра одного файла по его телу (ссылки/импорты, резолвятся в
+/// существующие пути). Mention-слой здесь НЕ строится — он требует общей карты
+/// имён и пересобирается при полной переиндексации.
+fn explicit_out_edges(src_path: &str, body: &str) -> Vec<(String, String)> {
+    let ext = ext_lower(src_path);
+    let kind = links::kind_for(&ext);
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut out = Vec::new();
+    for raw in links::extract_targets(&ext, body) {
+        if let Some(dst) = links::resolve(src_path, &raw) {
+            if dst != src_path && seen.insert(dst.clone()) {
+                out.push((dst, kind.to_string()));
+            }
+        }
+    }
+    out
+}
+
+/// Полный набор рёбер поддерева: явные ссылки/импорты + слой упоминаний по
+/// уникальному имени файла (дискавери). Строится из уже прочитанных тел.
+fn build_edges(
+    content_rows: &[content_index::ContentRow],
+    rows: &[IndexRow],
+) -> Vec<(String, String, String)> {
+    // basename(lower) -> уникальный путь (None, если имя неуникально).
+    let mut by_name: HashMap<String, Option<String>> = HashMap::new();
+    for r in rows {
+        by_name
+            .entry(r.name.to_lowercase())
+            .and_modify(|v| *v = None)
+            .or_insert_with(|| Some(r.path.clone()));
+    }
+
+    let mut out: Vec<(String, String, String)> = Vec::new();
+    let mut seen: HashSet<(String, String)> = HashSet::new();
+
+    // 1) Явные ссылки/импорты.
+    for cr in content_rows {
+        for (dst, kind) in explicit_out_edges(&cr.path, &cr.body) {
+            if seen.insert((cr.path.clone(), dst.clone())) {
+                out.push((cr.path.clone(), dst, kind));
+            }
+        }
+    }
+
+    // 2) Упоминания по уникальному имени (слой дискавери). Имена < 4 символов
+    // пропускаем, чтобы не шуметь (a.h, io и т.п.).
+    let unique: Vec<(&String, &String)> = by_name
+        .iter()
+        .filter_map(|(name, p)| p.as_ref().map(|path| (name, path)))
+        .filter(|(name, _)| name.len() >= 4)
+        .collect();
+
+    for cr in content_rows {
+        let body = &cr.body;
+        let slice = if body.len() > MENTION_SCAN_CAP {
+            let mut end = MENTION_SCAN_CAP;
+            while end > 0 && !body.is_char_boundary(end) {
+                end -= 1;
+            }
+            &body[..end]
+        } else {
+            &body[..]
+        };
+        let hay = slice.to_lowercase();
+        for (name, dst) in &unique {
+            if dst.as_str() == cr.path {
+                continue;
+            }
+            if hay.contains(name.as_str()) && seen.insert((cr.path.clone(), (*dst).clone())) {
+                out.push((cr.path.clone(), (*dst).clone(), "mention".to_string()));
+            }
+        }
+    }
+
+    out
+}
+
 /// Применить изменение ОДНОГО пути к индексам. Best-effort: ошибки глотаются —
 /// это фоновое сопровождение, рассинхрон выправит следующая полная пересборка.
 fn apply_change(app: &AppHandle, content_active: bool, path: &Path) {
@@ -71,12 +160,17 @@ fn apply_change(app: &AppHandle, content_active: bool, path: &Path) {
                     if let Ok(conn) = state.db() {
                         let _ = content_index::ensure_table(&conn);
                         let _ = content_index::upsert_one(&conn, &pstr, &body);
+                        // Инкрементально обновляем только явные исходящие рёбра
+                        // (mention-слой пересоберётся при полной переиндексации).
+                        let edges = explicit_out_edges(&pstr, &body);
+                        let _ = edges_repo::replace_derived_for_src(&conn, &pstr, &edges);
                     }
                 }
             }
         }
     } else if let Ok(conn) = state.db() {
         let _ = file_index::delete_path(&conn, &pstr);
+        let _ = edges_repo::purge(&conn, &pstr);
         if content_active {
             let _ = content_index::delete_path(&conn, &pstr);
         }
@@ -114,9 +208,12 @@ fn build_all(app: &AppHandle, root: &str, content: bool) -> Result<()> {
         file_index::replace_subtree(&mut conn, root, &rows)?;
     }
     if content {
+        // Содержимое + рёбра связей строятся из одних и тех же прочитанных тел.
+        let edges = build_edges(&content_rows, &rows);
         let mut conn = state.db()?;
         content_index::ensure_table(&conn)?;
         content_index::replace_subtree(&mut conn, root, &content_rows)?;
+        edges_repo::replace_derived_subtree(&mut conn, root, &edges)?;
     }
     Ok(())
 }
@@ -150,7 +247,9 @@ pub async fn start_index(
     if root_changed || force || content {
         let app2 = app.clone();
         let root2 = root.clone();
-        tauri::async_runtime::spawn(async move {
+        // build_all — синхронный блокирующий обход + транзакции: spawn_blocking,
+        // чтобы не занимать воркер async-рантайма на всё время сборки индекса.
+        tauri::async_runtime::spawn_blocking(move || {
             let _ = build_all(&app2, &root2, content);
             let _ = app2.emit("index:ready", &root2);
         });

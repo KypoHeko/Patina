@@ -12,7 +12,6 @@
 .panel__head {
   display: flex;
   align-items: stretch;
-  border-bottom: 1px solid var(--border);
 }
 .panel__crumbs {
   display: flex;

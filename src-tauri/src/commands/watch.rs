@@ -4,7 +4,7 @@ use std::collections::HashSet;
 use std::path::Path;
 
 use notify::{Event, RecursiveMode, Watcher, recommended_watcher};
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::error::{Error, Result};
 use crate::state::AppState;
@@ -12,7 +12,11 @@ use crate::state::AppState;
 /// Следить за указанными папками (нерекурсивно). При изменениях извне
 /// эмитит событие `fs:external-change` со списком затронутых каталогов.
 #[tauri::command]
-pub fn set_watch(app: AppHandle, state: State<AppState>, paths: Vec<String>) -> Result<()> {
+pub async fn set_watch(app: AppHandle, paths: Vec<String>) -> Result<()> {
+    // Создание нативного вотчера — системные вызовы; уводим с главного потока,
+    // т.к. set_watch дёргается при каждой смене папки.
+    tauri::async_runtime::spawn_blocking(move || -> Result<()> {
+    let state = app.state::<AppState>();
     let app2 = app.clone();
     let mut watcher = recommended_watcher(move |res: notify::Result<Event>| {
         if let Ok(ev) = res {
@@ -36,4 +40,7 @@ pub fn set_watch(app: AppHandle, state: State<AppState>, paths: Vec<String>) -> 
     // Замена Option останавливает прежние наблюдения.
     *state.watcher()? = Some(watcher);
     Ok(())
+    })
+    .await
+    .map_err(|e| Error::Operation(format!("вотчер прерван: {e}")))?
 }

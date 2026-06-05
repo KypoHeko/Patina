@@ -6,22 +6,26 @@ use std::path::Path;
 use std::time::UNIX_EPOCH;
 
 use serde::Serialize;
-use tauri::{Manager, State};
+use tauri::{AppHandle, Manager, State};
 
 use crate::error::{Error, Result};
 
 use crate::fs::{lister, operations};
-use crate::index::tags_repo;
+use crate::index::{edges_repo, tags_repo, versions_repo};
 use crate::models::file::FileEntry;
 use crate::state::AppState;
 
 #[tauri::command]
-pub fn list_dir(path: String) -> Result<Vec<FileEntry>> {
-    lister::list_dir(&path)
+pub async fn list_dir(path: String) -> Result<Vec<FileEntry>> {
+    // Листинг каталога — блокирующий I/O. Уводим в spawn_blocking, чтобы не
+    // занимать главный поток вебвью (иначе панели «подвисают» при навигации).
+    tauri::async_runtime::spawn_blocking(move || lister::list_dir(&path))
+        .await
+        .map_err(|e| Error::Operation(format!("листинг прерван: {e}")))?
 }
 
 #[tauri::command]
-pub fn home_dir(app: tauri::AppHandle) -> Result<String> {
+pub fn home_dir(app: AppHandle) -> Result<String> {
     let path = app
         .path()
         .home_dir()
@@ -46,7 +50,12 @@ pub fn move_entries(
     for src in &sources {
         if let Some(name) = Path::new(src).file_name() {
             let new_path = Path::new(&dest_dir).join(name);
-            let _ = tags_repo::relink(&conn, src, &new_path.to_string_lossy());
+            let new_path = new_path.to_string_lossy();
+            // Сопровождаем все привязки по пути, чтобы они не "повисли" на старом
+            // месте: теги, история версий и связи переезжают вместе с файлом/папкой.
+            let _ = tags_repo::relink(&conn, src, &new_path);
+            let _ = versions_repo::relink(&conn, src, &new_path);
+            let _ = edges_repo::relink(&conn, src, &new_path);
         }
     }
     Ok(())
@@ -57,7 +66,11 @@ pub fn delete_entries(state: State<AppState>, paths: Vec<String>) -> Result<()> 
     operations::delete_entries(&paths)?;
     let conn = state.db()?;
     for p in &paths {
+        // Чистим все привязки удалённого пути (и вложенных), иначе строки копятся
+        // в БД навсегда, ссылаясь на несуществующие файлы.
         let _ = tags_repo::purge(&conn, p);
+        let _ = versions_repo::purge(&conn, p);
+        let _ = edges_repo::purge(&conn, p);
     }
     Ok(())
 }
@@ -67,6 +80,8 @@ pub fn rename_entry(state: State<AppState>, path: String, new_name: String) -> R
     let new_path = operations::rename_entry(&path, &new_name)?;
     let conn = state.db()?;
     let _ = tags_repo::relink(&conn, &path, &new_path);
+    let _ = versions_repo::relink(&conn, &path, &new_path);
+    let _ = edges_repo::relink(&conn, &path, &new_path);
     Ok(new_path)
 }
 
@@ -129,13 +144,11 @@ fn image_jpeg(name: String, bytes: &[u8]) -> Preview {
     }
 }
 
-/// Превью: текстовая «голова», SVG как есть, либо миниатюра растрового
-/// изображения. Растровые декодируются и ужимаются до 1024px на стороне Rust,
-/// результат кэшируется на диск (ключ — путь+mtime+размер), повторные открытия
-/// мгновенны и работают для изображений любого размера.
-#[tauri::command]
-pub async fn read_preview(state: State<'_, AppState>, path: String) -> Result<Preview> {
-    let p = Path::new(&path);
+/// Синхронная реализация превью. Вызывается из `read_preview` внутри
+/// `spawn_blocking`, чтобы тяжёлое декодирование изображений не занимало
+/// воркер async-рантайма.
+fn build_preview(thumbs_dir: &Path, path: &str) -> Result<Preview> {
+    let p = Path::new(path);
     let name = p
         .file_name()
         .map(|s| s.to_string_lossy().into_owned())
@@ -144,14 +157,14 @@ pub async fn read_preview(state: State<'_, AppState>, path: String) -> Result<Pr
         .extension()
         .map(|e| e.to_string_lossy().to_ascii_lowercase())
         .unwrap_or_default();
-    let meta = std::fs::metadata(&path)?;
+    let meta = std::fs::metadata(path)?;
     if meta.is_dir() {
         return Ok(none_preview(name));
     }
 
     // SVG — вектор, инлайним как есть (без растеризации).
     if ext == "svg" {
-        let bytes = std::fs::read(&path)?;
+        let bytes = std::fs::read(path)?;
         return Ok(Preview {
             kind: "image".into(),
             name,
@@ -171,12 +184,12 @@ pub async fn read_preview(state: State<'_, AppState>, path: String) -> Result<Pr
         let key = blake3::hash(format!("{path}|{mtime}|{}", meta.len()).as_bytes())
             .to_hex()
             .to_string();
-        let cache = state.thumbs_dir.join(format!("{key}.jpg"));
+        let cache = thumbs_dir.join(format!("{key}.jpg"));
 
         if let Ok(bytes) = std::fs::read(&cache) {
             return Ok(image_jpeg(name, &bytes));
         }
-        if let Ok(img) = image::open(&path) {
+        if let Ok(img) = image::open(path) {
             let thumb = img.thumbnail(1024, 1024);
             let rgb = image::DynamicImage::ImageRgb8(thumb.to_rgb8());
             let mut bytes = Vec::new();
@@ -192,7 +205,7 @@ pub async fn read_preview(state: State<'_, AppState>, path: String) -> Result<Pr
     }
 
     if TXT.contains(&ext.as_str()) {
-        let mut f = File::open(&path)?;
+        let mut f = File::open(path)?;
         let mut buf = vec![0u8; 16 * 1024];
         let n = f.read(&mut buf)?;
         buf.truncate(n);
@@ -204,6 +217,21 @@ pub async fn read_preview(state: State<'_, AppState>, path: String) -> Result<Pr
         });
     }
     Ok(none_preview(name))
+}
+
+/// Превью: текстовая «голова», SVG как есть, либо миниатюра растрового
+/// изображения. Растровые декодируются и ужимаются до 1024px на стороне Rust,
+/// результат кэшируется на диск (ключ — путь+mtime+размер), повторные открытия
+/// мгновенны и работают для изображений любого размера. Тяжёлая работа уходит
+/// в блокирующий пул, не занимая воркеры async-рантайма.
+#[tauri::command]
+pub async fn read_preview(app: AppHandle, path: String) -> Result<Preview> {
+    tauri::async_runtime::spawn_blocking(move || -> Result<Preview> {
+        let state = app.state::<AppState>();
+        build_preview(&state.thumbs_dir, &path)
+    })
+    .await
+    .map_err(|e| Error::Operation(format!("превью прервано: {e}")))?
 }
 
 /// Создать новую папку в `parent`. При занятом имени добавляет " (N)".

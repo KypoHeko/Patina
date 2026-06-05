@@ -2,9 +2,9 @@
 
 use std::collections::HashMap;
 
-use tauri::State;
+use tauri::{AppHandle, Manager, State};
 
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::fs::lister;
 use crate::index::tags_repo;
 use crate::models::file::FileEntry;
@@ -22,13 +22,19 @@ pub fn remove_tag(state: State<AppState>, path: String, tag_id: String) -> Resul
     tags_repo::remove(&conn, &path, &tag_id)
 }
 
+// Горячий путь (вызывается на каждый листинг панели) — уводим с главного потока.
 #[tauri::command]
-pub fn tags_for_paths(
-    state: State<AppState>,
+pub async fn tags_for_paths(
+    app: AppHandle,
     paths: Vec<String>,
 ) -> Result<HashMap<String, Vec<String>>> {
-    let conn = state.db()?;
-    tags_repo::for_paths(&conn, &paths)
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let conn = state.db()?;
+        tags_repo::for_paths(&conn, &paths)
+    })
+    .await
+    .map_err(|e| Error::Operation(format!("теги прерваны: {e}")))?
 }
 
 #[tauri::command]
@@ -39,16 +45,26 @@ pub fn paths_for_tag(state: State<AppState>, tag_id: String) -> Result<Vec<Strin
 
 /// Виртуальный список: все существующие файлы с данным тегом.
 #[tauri::command]
-pub fn list_tag(state: State<AppState>, tag_id: String) -> Result<Vec<FileEntry>> {
-    let paths = {
-        let conn = state.db()?;
-        tags_repo::paths_for(&conn, &tag_id)?
-    };
-    Ok(paths.iter().filter_map(|p| lister::entry_from_path(p)).collect())
+pub async fn list_tag(app: AppHandle, tag_id: String) -> Result<Vec<FileEntry>> {
+    tauri::async_runtime::spawn_blocking(move || -> Result<Vec<FileEntry>> {
+        let state = app.state::<AppState>();
+        let paths = {
+            let conn = state.db()?;
+            tags_repo::paths_for(&conn, &tag_id)?
+        };
+        Ok(paths.iter().filter_map(|p| lister::entry_from_path(p)).collect())
+    })
+    .await
+    .map_err(|e| Error::Operation(format!("список тега прерван: {e}")))?
 }
 
 #[tauri::command]
-pub fn tag_counts(state: State<AppState>) -> Result<HashMap<String, i64>> {
-    let conn = state.db()?;
-    tags_repo::counts(&conn)
+pub async fn tag_counts(app: AppHandle) -> Result<HashMap<String, i64>> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let conn = state.db()?;
+        tags_repo::counts(&conn)
+    })
+    .await
+    .map_err(|e| Error::Operation(format!("счётчики тегов прерваны: {e}")))?
 }

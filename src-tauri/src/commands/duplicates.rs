@@ -1,12 +1,30 @@
-use tauri::State;
+use serde::Serialize;
+use tauri::{AppHandle, Emitter, Manager};
 
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::indexer::dups::{self, DupGroup};
 use crate::state::AppState;
 
-// async: обход и хеширование уходят с основного потока. Блокировку БД держит
-// сам dups::find — короткими сериями, не на время всего скана.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DupProgress {
+    done: usize,
+    total: usize,
+}
+
+// Обход и хеширование — блокирующий I/O, поэтому spawn_blocking (выделенный
+// пул, не воркеры async-рантайма). Блокировку БД dups::find держит сам —
+// короткими сериями. По ходу хеширования шлём 'dups:progress' для индикатора.
 #[tauri::command]
-pub async fn find_duplicates(state: State<'_, AppState>, dir: String) -> Result<Vec<DupGroup>> {
-    dups::find(&state.db, &dir)
+pub async fn find_duplicates(app: AppHandle, dir: String) -> Result<Vec<DupGroup>> {
+    let app2 = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app2.state::<AppState>();
+        let emit = |done, total| {
+            let _ = app2.emit("dups:progress", DupProgress { done, total });
+        };
+        dups::find(&state.db, &dir, emit)
+    })
+    .await
+    .map_err(|e| Error::Operation(format!("поиск дубликатов прерван: {e}")))?
 }

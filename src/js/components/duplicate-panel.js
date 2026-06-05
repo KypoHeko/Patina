@@ -1,6 +1,7 @@
 import { Component } from '../core/component.js';
 import { escapeHtml } from '../core/dom.js';
 import { findDuplicates } from '../api/duplicates.js';
+import { onEvent } from '../api/events.js';
 import { deleteEntries } from '../api/fs.js';
 import { formatSize } from '../lib/format.js';
 import { parentPath, folderName } from '../lib/paths.js';
@@ -14,6 +15,7 @@ export class DuplicatePanel extends Component {
     this._loading = false;
     this._groups = [];
     this._dir = '';
+    this._progress = null;
     this.mainEl = document.querySelector('.main');
 
     this.listen('duplicates:open', () => (this._open ? this.close() : this.open()));
@@ -21,6 +23,10 @@ export class DuplicatePanel extends Component {
       if (this._open && e.key === 'Escape') this.close();
     });
     this.on(this.mount, 'click', (e) => this.onClick(e));
+
+    // Прогресс хеширования из бэкенда — обновляем индикатор, не перерисовывая
+    // всю панель на каждый тик.
+    onEvent('dups:progress', (p) => this.onProgress(p)).then((un) => this._cleanups.push(un));
   }
 
   open() {
@@ -29,6 +35,7 @@ export class DuplicatePanel extends Component {
     this._open = true;
     this._loading = true;
     this._groups = [];
+    this._progress = null;
     if (this.mainEl) this.mainEl.classList.add('has-dup');
     this.render();
     this.scan();
@@ -43,6 +50,20 @@ export class DuplicatePanel extends Component {
     }
     this._loading = false;
     this.render();
+  }
+
+  onProgress(p) {
+    this._progress = p;
+    if (!this._open || !this._loading) return;
+    // Точечно обновляем только строку прогресса (без перерисовки панели).
+    const el = this.mount.querySelector('.dup__progress');
+    if (el) el.textContent = this.progressText();
+    else this.render();
+  }
+
+  progressText() {
+    const p = this._progress;
+    return p && p.total ? `Хеширование ${p.done} / ${p.total}` : 'Сканирование…';
   }
 
   close() {
@@ -89,7 +110,7 @@ export class DuplicatePanel extends Component {
     }
     const total = this._groups.reduce((n, g) => n + g.paths.length - 1, 0);
     const body = this._loading
-      ? '<div class="dup__msg">Сканирование…</div>'
+      ? `<div class="dup__msg"><span class="dup__spinner" aria-hidden="true"></span><span class="dup__progress">${this.progressText()}</span></div>`
       : this._groups.length
         ? this._groups.map((g, i) => this.renderGroup(g, i)).join('')
         : '<div class="dup__msg">Дубликаты не найдены</div>';

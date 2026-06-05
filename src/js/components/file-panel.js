@@ -117,6 +117,9 @@ export class FilePanel extends Component {
     this.listen('location:open', ({ path }) => {
       if (getActiveSide(this.store.getState()) === this.side) this.navigate(path);
     });
+    this.listen('graph:reveal', ({ path }) => {
+      if (getActiveSide(this.store.getState()) === this.side) this.revealPath(path);
+    });
     this.listen('file:delete', ({ side }) => {
       if (side === this.side) this.deleteSelected();
     });
@@ -193,6 +196,18 @@ export class FilePanel extends Component {
       if (record) recordHistory(this.store, this.side, path);
     } catch (err) {
       updatePane(this.store, this.side, { loading: false, error: err.message });
+    }
+  }
+
+  /** Показать файл из графа: перейти в его папку и выделить там. Для корня
+   *  диска (родителя нет) просто открываем его как папку. */
+  async revealPath(path) {
+    const parent = parentPath(path);
+    if (parent) {
+      await this.navigate(parent);
+      selectInPane(this.store, this.side, [path]);
+    } else {
+      await this.navigate(path);
     }
   }
 
