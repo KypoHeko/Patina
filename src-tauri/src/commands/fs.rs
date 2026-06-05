@@ -206,3 +206,20 @@ pub async fn read_preview(state: State<'_, AppState>, path: String) -> Result<Pr
     Ok(none_preview(name))
 }
 
+/// Создать новую папку в `parent`. При занятом имени добавляет " (N)".
+/// Возвращает путь созданной папки.
+#[tauri::command]
+pub fn create_folder(parent: String, name: String) -> Result<String> {
+    let base = Path::new(&parent);
+    if !base.is_dir() {
+        return Err(Error::NotADirectory(parent));
+    }
+    let mut candidate = base.join(&name);
+    let mut n = 2;
+    while candidate.exists() {
+        candidate = base.join(format!("{name} ({n})"));
+        n += 1;
+    }
+    std::fs::create_dir(&candidate)?;
+    Ok(candidate.to_string_lossy().into_owned())
+}

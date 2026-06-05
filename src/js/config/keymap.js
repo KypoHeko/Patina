@@ -7,4 +7,5 @@ export const KEYMAP = [
   { combo: 'ctrl+t', action: 'new-tab', description: 'Новая вкладка' },
   { combo: 'ctrl+w', action: 'close-tab', description: 'Закрыть вкладку' },
   { combo: 'ctrl+shift+t', action: 'reopen-tab', description: 'Открыть закрытую вкладку' },
+  { combo: 'ctrl+shift+n', action: 'new-folder', description: 'Создать папку' },
 ];

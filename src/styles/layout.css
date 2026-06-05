@@ -109,6 +109,7 @@
   border-right: 1px solid var(--border);
   overflow-y: auto;
   padding-bottom: 10px;
+  transition: width 0.16s ease;
 }
 
 /* Основная область: вкладки · рабочая область · статус */
@@ -123,6 +124,7 @@
     "status status status";
   min-width: 0;
   overflow: hidden;
+  transition: grid-template-columns 0.16s ease;
 }
 .main.has-dup {
   grid-template-columns: minmax(0, 1fr) 340px 0;
@@ -135,6 +137,8 @@
 }
 .main__dock--dup {
   grid-area: dup;
+  min-width: 0;
+  overflow: hidden;
 }
 .tab-bar {
   grid-area: tabbar;
@@ -296,4 +300,10 @@ body.is-resizing .pane {
 .topbar-search:focus {
   outline: none;
   border-color: var(--accent);
+}
+@media (prefers-reduced-motion: reduce) {
+  .main,
+  .sidebar {
+    transition: none;
+  }
 }

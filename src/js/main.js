@@ -94,6 +94,7 @@ shortcuts.register('command-palette', () => bus.emit('palette:open'));
 shortcuts.register('duplicates', () => bus.emit('duplicates:open'));
 shortcuts.register('relationship-graph', () => bus.emit('graph:open'));
 shortcuts.register('reopen-tab', () => reopenTab(store));
+shortcuts.register('new-folder', () => bus.emit('folder:create'));
 
 (async function boot() {
   try {

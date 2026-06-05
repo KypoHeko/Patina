@@ -7,6 +7,7 @@ import { TAGS } from '../config/tags.js';
 function buildItems() {
   return [
     { label: 'Открыть', action: 'open' },
+    { label: 'Создать папку', action: 'new-folder' },
     { label: 'Показать в проводнике', action: 'reveal' },
     { label: 'Переименовать…', action: 'rename' },
     { sep: true },
@@ -23,7 +24,11 @@ export class ContextMenu extends Component {
     this._ctx = null;
     this._entryTags = new Set();
 
-    this.on(document, 'contextmenu', (e) => e.preventDefault());
+    this.on(document, 'contextmenu', (e) => {
+      const t = e.target;
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+      e.preventDefault();
+    });
     this.listen('contextmenu:open', (payload) => this.openAt(payload));
 
     this.on(document, 'click', () => this.close());
@@ -133,6 +138,9 @@ export class ContextMenu extends Component {
     switch (item.action) {
       case 'open':
         this.bus.emit('file:activate', { side: ctx.side, entry: ctx.entry });
+        break;
+      case 'new-folder':
+        this.bus.emit('folder:create', { side: ctx.side });
         break;
       case 'reveal':
         revealInExplorer(ctx.entry.path).catch((err) =>

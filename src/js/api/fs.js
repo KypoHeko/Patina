@@ -34,3 +34,8 @@ export function reindexTree(root) {
 export function searchFiles(root, query, limit = 20000) {
   return invoke('search_files', { root, query, limit });
 }
+
+/** Создать папку в parent; возвращает путь созданной папки. */
+export function createFolder(parent, name) {
+  return invoke('create_folder', { parent, name });
+}

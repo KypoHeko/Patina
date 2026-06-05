@@ -1,8 +1,10 @@
 import { Component } from '../core/component.js';
 import { el, escapeHtml } from '../core/dom.js';
 import { tagsForPaths, pathsForTag } from '../api/tags.js';
-import { reindexTree, searchFiles } from '../api/fs.js';
-import { reindexContent, searchContent } from '../api/content.js';
+import { searchFiles } from '../api/fs.js';
+import { searchContent } from '../api/content.js';
+import { startIndex } from '../api/indexing.js';
+import { onEvent } from '../api/events.js';
 import { TAGS } from '../config/tags.js';
 import { fileIcon } from '../lib/icons.js';
 import { getPane } from '../state/panes.js';
@@ -40,9 +42,14 @@ export class CommandPalette extends Component {
     this._treeTimer = null;
     this._contentIndexed = new Set();
     this._contentTimer = null;
+    this._idxTimer = null;
+    this._lastSig = '';
 
     this.listen('palette:open', () => (this._open ? this.close() : this.open()));
-    this.listen('fs:changed', ({ dirs }) => this.invalidateIndexes(dirs));
+    // Свежесть индексов теперь держит бэкенд (рекурсивный вотчер); по событию
+    // лишь переспрашиваем текущий запрос.
+    onEvent('index:ready', () => this.onIndexEvent());
+    onEvent('index:changed', () => this.onIndexEvent());
     this.on(document, 'keydown', (e) => {
       if (this._open) this.onKey(e);
     });
@@ -73,6 +80,7 @@ export class CommandPalette extends Component {
     this._open = false;
     clearTimeout(this._treeTimer);
     clearTimeout(this._contentTimer);
+    clearTimeout(this._idxTimer);
     this.mount.innerHTML = '';
   }
 
@@ -115,12 +123,8 @@ export class CommandPalette extends Component {
 
   ensureIndexed(root) {
     if (this._indexedRoots.has(root)) return Promise.resolve();
-    this._indexing = true;
-    this.renderResults();
-    return reindexTree(root).then(() => {
-      this._indexing = false;
-      this._indexedRoots.add(root);
-    });
+    this._indexedRoots.add(root);
+    return startIndex(root, false).catch(() => {});
   }
 
   showHint(text) {
@@ -128,13 +132,14 @@ export class CommandPalette extends Component {
     this._results = [];
     this._resultsCount = 0;
     this._loading = false;
+    this._lastSig = '';
     if (this._resultsEl)
       this._resultsEl.innerHTML = `<div class="palette__empty">${text}</div>`;
   }
 
   // Обычный режим — серверный подстрочный поиск (мало данных через IPC).
   // Regex — один раз тянем базовый набор корня и фильтруем на фронте.
-  runTreeQuery() {
+  runTreeQuery(silent = false) {
     const root = this._root;
     const q = this._query.trim();
     const seq = ++this._scanSeq;
@@ -144,29 +149,30 @@ export class CommandPalette extends Component {
       return;
     }
 
+    if (!silent) this._lastSig = '';
+
     if (this._regex && this._treeBase) {
-      this._entries = this._treeBase;
-      this._loading = false;
-      this.update();
+      this.commitResults(this._treeBase, seq);
       return;
     }
 
-    this._loading = true;
-    this.renderResults();
+    if (!silent) {
+      this._loading = true;
+      this.renderResults();
+    }
     const fetchQuery = this._regex ? '' : q;
     this.ensureIndexed(root)
       .then(() => searchFiles(root, fetchQuery, TREE_LIMIT))
       .then((list) => {
-        if (seq !== this._scanSeq || !this._open) return;
-        if (this._regex) this._treeBase = list || [];
-        this._entries = list || [];
-        this._loading = false;
-        this.update();
+        const arr = list || [];
+        if (this._regex) this._treeBase = arr;
+        this.commitResults(arr, seq);
       })
       .catch(() => {
-        if (seq !== this._scanSeq || !this._open) return;
+        if (seq !== this._scanSeq || !this._open || silent) return;
         this._loading = false;
         this._entries = [];
+        this._lastSig = this._resultsSig([]);
         this.update();
       });
   }
@@ -174,27 +180,16 @@ export class CommandPalette extends Component {
   forceReindex() {
     const root = this._root;
     if (this._scope === 'content') {
-      this._contentIndexed.delete(root);
+      startIndex(root, true, true).catch(() => {});
+      this._contentIndexed.add(root);
       this.runContentQuery();
       return;
     }
     if (this._scope !== 'tree') return;
-    this._indexedRoots.delete(root);
     this._treeBase = null;
-    this._indexing = true;
-    this._loading = true;
-    this.renderResults();
-    reindexTree(root)
-      .then(() => {
-        this._indexedRoots.add(root);
-        this._indexing = false;
-        this.runTreeQuery();
-      })
-      .catch(() => {
-        this._indexing = false;
-        this._loading = false;
-        this.update();
-      });
+    startIndex(root, false, true).catch(() => {});
+    this._indexedRoots.add(root);
+    this.runTreeQuery();
   }
 
   onContentInput() {
@@ -204,17 +199,32 @@ export class CommandPalette extends Component {
 
   ensureContentIndexed(root) {
     if (this._contentIndexed.has(root)) return Promise.resolve();
-    this._indexing = true;
-    this.renderResults();
-    return reindexContent(root).then(() => {
-      this._indexing = false;
-      this._contentIndexed.add(root);
-    });
+    this._contentIndexed.add(root);
+    return startIndex(root, true).catch(() => {});
+  }
+
+  // Подпись набора результатов: пути + сниппеты. Если не изменилась —
+  // повторную перерисовку пропускаем (убирает мелькание при событиях индекса).
+  _resultsSig(list) {
+    let out = '';
+    for (const e of list) out += `${e.path}\u0000${e.snippet || ''}\u0001`;
+    return out;
+  }
+
+  // Зафиксировать результаты запроса с учётом устаревания и без лишних ререндеров.
+  commitResults(entries, seq) {
+    if (seq !== this._scanSeq || !this._open) return;
+    this._loading = false;
+    const sig = this._resultsSig(entries);
+    this._entries = entries;
+    if (sig === this._lastSig) return; // ничего не поменялось — не перерисовываем
+    this._lastSig = sig;
+    this.update();
   }
 
   // Полнотекстовый поиск по содержимому: сервер уже отобрал совпадения,
   // на фронте только показываем путь и сниппет.
-  runContentQuery() {
+  runContentQuery(silent = false) {
     const root = this._root;
     const q = this._query.trim();
     const seq = ++this._scanSeq;
@@ -222,20 +232,19 @@ export class CommandPalette extends Component {
       this.showHint('Введите запрос для поиска по содержимому');
       return;
     }
-    this._loading = true;
-    this.renderResults();
+    if (!silent) {
+      this._lastSig = '';
+      this._loading = true;
+      this.renderResults();
+    }
     this.ensureContentIndexed(root)
       .then(() => searchContent(root, q, 200))
-      .then((hits) => {
-        if (seq !== this._scanSeq || !this._open) return;
-        this._entries = (hits || []).map((h) => ({ ...h, kind: 'file' }));
-        this._loading = false;
-        this.update();
-      })
+      .then((hits) => this.commitResults((hits || []).map((h) => ({ ...h, kind: 'file' })), seq))
       .catch(() => {
-        if (seq !== this._scanSeq || !this._open) return;
+        if (seq !== this._scanSeq || !this._open || silent) return;
         this._loading = false;
         this._entries = [];
+        this._lastSig = this._resultsSig([]);
         this.update();
       });
   }
@@ -516,27 +525,18 @@ export class CommandPalette extends Component {
   }
 
   // Сброс кэшей индексов имён/содержимого для затронутых внешними изменениями корней.
-  invalidateIndexes(dirs) {
-    const hits = dirs || [];
-    if (!hits.length) return;
-    const stale = (root) => {
-      if (!root) return false;
-      const sep = root.includes('\\') ? '\\' : '/';
-      return hits.some(
-        (d) => d === root || d.startsWith(root + sep) || root.startsWith(d + sep),
-      );
-    };
-    for (const r of [...this._indexedRoots]) if (stale(r)) this._indexedRoots.delete(r);
-    for (const r of [...this._contentIndexed]) if (stale(r)) this._contentIndexed.delete(r);
-    // если палитра открыта на затронутом корне — обновим результаты вживую
-    if (this._open && stale(this._root)) {
+  onIndexEvent() {
+    if (!this._open) return;
+    if (this._scope !== 'tree' && this._scope !== 'content') return;
+    clearTimeout(this._idxTimer);
+    this._idxTimer = setTimeout(() => {
       if (this._scope === 'tree') {
         this._treeBase = null;
-        this.runTreeQuery();
+        this.runTreeQuery(true);
       } else if (this._scope === 'content') {
-        this.runContentQuery();
+        this.runContentQuery(true);
       }
-    }
+    }, 200);
   }
 
   activate(entry) {

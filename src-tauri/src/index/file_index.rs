@@ -116,6 +116,34 @@ pub fn search(conn: &Connection, root: &str, query: &str, limit: usize) -> Resul
     Ok(out)
 }
 
+/// Точечно обновить одну запись индекса (инкрементальное сопровождение).
+pub fn upsert_one(conn: &Connection, row: &IndexRow) -> Result<()> {
+    conn.execute(
+        "INSERT OR REPLACE INTO file_index (path, name, name_lower, is_dir, size, mtime, ext)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        (
+            &row.path,
+            &row.name,
+            row.name.to_lowercase(),
+            row.is_dir as i64,
+            row.size as i64,
+            row.mtime.map(|m| m as i64),
+            &row.ext,
+        ),
+    )?;
+    Ok(())
+}
+
+/// Удалить путь и его поддерево (если это была папка) из индекса.
+pub fn delete_path(conn: &Connection, path: &str) -> Result<()> {
+    let (_, prefix, upper) = subtree_bounds(path);
+    conn.execute(
+        "DELETE FROM file_index WHERE path = ?1 OR (path >= ?2 AND path < ?3)",
+        (path, &prefix, &upper),
+    )?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

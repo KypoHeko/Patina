@@ -4,6 +4,7 @@ pub mod content;
 pub mod duplicates;
 pub mod file_index;
 pub mod fs;
+pub mod indexing;
 pub mod relationships;
 pub mod system;
 pub mod tags;

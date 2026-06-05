@@ -1,7 +1,7 @@
 import { Component } from '../core/component.js';
 import { startDrag, getDrag, clearDrag } from '../state/drag.js';
 import { escapeHtml } from '../core/dom.js';
-import { listDir, copyEntries, moveEntries, deleteEntries, renameEntry, checkConflicts } from '../api/fs.js';
+import { listDir, copyEntries, moveEntries, deleteEntries, renameEntry, checkConflicts, createFolder } from '../api/fs.js';
 import { openPath } from '../api/system.js';
 import { tagsForPaths, listTag } from '../api/tags.js';
 import { TAGS } from '../config/tags.js';
@@ -22,6 +22,19 @@ import { Breadcrumbs } from './breadcrumbs.js';
 const TAG_COLOR = Object.fromEntries(TAGS.map((t) => [t.id, t.color]));
 const TAG_LABEL = Object.fromEntries(TAGS.map((t) => [t.id, t.label]));
 
+// Оверлеи, которые сами обрабатывают клавиатуру (стрелки/Enter) — при их
+// открытии навигация по списку не должна срабатывать.
+const OVERLAY_ROOTS = ['palette-root', 'versions-root', 'graph-root', 'confirm-root'];
+function overlayOpen() {
+  return OVERLAY_ROOTS.some((id) => {
+    const n = document.getElementById(id);
+    return n && n.childElementCount > 0;
+  });
+}
+function isTextInput(e) {
+  const t = e.target;
+  return t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable);
+}
 
 export class FilePanel extends Component {
   constructor(ctx) {
@@ -36,6 +49,7 @@ export class FilePanel extends Component {
     this._view = []; // отображаемый (отсортированный) порядок
     this._filter = ''; // строка поиска (regex / подстрока)
     this._appliedFilter = '';
+    this._cursor = 0;
   }
 
   init() {
@@ -89,6 +103,7 @@ export class FilePanel extends Component {
     this.on(this.listEl, 'dblclick', (e) => this.onDblClick(e));
     this.on(this.listEl, 'contextmenu', (e) => this.onContextMenu(e));
     this.on(this.colheadEl, 'click', (e) => this.onSort(e));
+    this.on(window, 'keydown', (e) => this.onListKey(e));
 
     this.on(this.listEl, 'dragstart', (e) => this.onDragStart(e));
     this.on(this.listEl, 'dragend', () => this.onDragEnd());
@@ -107,6 +122,10 @@ export class FilePanel extends Component {
     });
     this.listen('file:rename', ({ side, entry }) => {
       if (side === this.side) this.startRename(entry);
+    });
+    this.listen('folder:create', (p) => {
+      const side = (p && p.side) || getActiveSide(this.store.getState());
+      if (side === this.side) this.createFolderHere();
     });
     this.listen('fs:changed', ({ dirs }) => {
       if (this._lastPane && dirs.includes(this._lastPane.path)) this.reload();
@@ -211,6 +230,122 @@ export class FilePanel extends Component {
       await openPath(entry.path);
     } catch (err) {
       this.bus.emit('shortcut:hint', `Не удалось открыть: ${err.message}`);
+    }
+  }
+
+  /* ── Клавиатурная навигация ──────────────── */
+
+  onListKey(e) {
+    if (isTextInput(e) || overlayOpen()) return;
+    if (getActiveSide(this.store.getState()) !== this.side) return;
+    const view = this._view;
+    const key = e.key;
+    if (key === 'ArrowDown' || key === 'ArrowUp' || key === 'Home' || key === 'End') {
+      if (!view.length) return;
+      e.preventDefault();
+      this.moveCursor(key, e.shiftKey);
+    } else if (key === 'Enter') {
+      if (!view.length) return;
+      e.preventDefault();
+      const sel = this._lastPane?.selected || [];
+      const path = sel.length === 1 ? sel[0] : view[this.cursorIndex()]?.path;
+      const entry = view.find((en) => en.path === path);
+      if (entry) this.activate(entry);
+    } else if (key === 'Backspace') {
+      e.preventDefault();
+      const cur = this._lastPane?.path || '';
+      const up = parentPath(cur);
+      if (up && up !== cur) this.navigate(up);
+    } else if (key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      if (view.length) this.typeAhead(key);
+    }
+  }
+
+  cursorIndex() {
+    const sel = this._lastPane?.selected || [];
+    if (sel.length) {
+      const i = this._view.findIndex((e) => e.path === sel[sel.length - 1]);
+      if (i >= 0) return i;
+    }
+    return Math.min(Math.max(0, this._cursor | 0), Math.max(0, this._view.length - 1));
+  }
+
+  moveCursor(key, shift) {
+    const view = this._view;
+    const last = view.length - 1;
+    let i = this.cursorIndex();
+    if (key === 'ArrowDown') i = Math.min(last, i + 1);
+    else if (key === 'ArrowUp') i = Math.max(0, i - 1);
+    else if (key === 'Home') i = 0;
+    else if (key === 'End') i = last;
+    this._cursor = i;
+    const path = view[i].path;
+    if (shift && this._anchor) {
+      const a = view.findIndex((e) => e.path === this._anchor);
+      if (a >= 0) {
+        const [lo, hi] = a < i ? [a, i] : [i, a];
+        selectInPane(this.store, this.side, view.slice(lo, hi + 1).map((e) => e.path));
+      } else selectInPane(this.store, this.side, [path]);
+    } else {
+      this._anchor = path;
+      selectInPane(this.store, this.side, [path]);
+    }
+    this.ensureVisible(i);
+  }
+
+  ensureVisible(index) {
+    const rowH = this._rowH;
+    const top = index * rowH;
+    const vh = this.listEl.clientHeight || rowH * 20;
+    if (top < this.listEl.scrollTop) this.listEl.scrollTop = top;
+    else if (top + rowH > this.listEl.scrollTop + vh) this.listEl.scrollTop = top + rowH - vh;
+    this.renderWindow();
+  }
+
+  typeAhead(ch) {
+    const now = Date.now();
+    if (now - (this._taTime || 0) > 700) this._taBuf = '';
+    this._taTime = now;
+    this._taBuf = (this._taBuf || '') + ch.toLowerCase();
+    const view = this._view;
+    const n = view.length;
+    const start = this.cursorIndex();
+    const firstChar = this._taBuf.length === 1;
+    for (let k = 0; k < n; k++) {
+      const idx = (start + (firstChar ? k + 1 : k)) % n;
+      if ((view[idx].name || '').toLowerCase().startsWith(this._taBuf)) {
+        this._cursor = idx;
+        this._anchor = view[idx].path;
+        selectInPane(this.store, this.side, [view[idx].path]);
+        this.ensureVisible(idx);
+        return;
+      }
+    }
+  }
+
+  async createFolderHere() {
+    const pane = this._lastPane;
+    if (!pane || !pane.path || pane.path.startsWith('tag:')) {
+      this.bus.emit('shortcut:hint', 'Здесь нельзя создать папку');
+      return;
+    }
+    const dir = pane.path;
+    try {
+      const newPath = await createFolder(dir, 'Новая папка');
+      const entries = await listDir(dir);
+      updatePane(this.store, this.side, { entries, selected: [newPath] });
+      requestAnimationFrame(() => {
+        const idx = this._view.findIndex((e) => e.path === newPath);
+        if (idx >= 0) {
+          this._cursor = idx;
+          this._anchor = newPath;
+          this.ensureVisible(idx);
+        }
+        const entry = (entries || []).find((e) => e.path === newPath);
+        if (entry) this.startRename(entry);
+      });
+    } catch (err) {
+      this.bus.emit('shortcut:hint', `Не удалось создать папку: ${err.message}`);
     }
   }
 
@@ -578,6 +713,10 @@ export class FilePanel extends Component {
   }
 
   updateSelection() {
-    this.renderWindow();
+    if (!this._lastPane || !this.listEl) return;
+    const selected = new Set(this._lastPane.selected || []);
+    for (const row of this.listEl.querySelectorAll('.row')) {
+      row.classList.toggle('is-selected', selected.has(row.dataset.path));
+    }
   }
 }

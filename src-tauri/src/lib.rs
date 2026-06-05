@@ -37,6 +37,7 @@ pub fn run() {
             commands::fs::move_entries,
             commands::fs::delete_entries,
             commands::fs::rename_entry,
+            commands::fs::create_folder,
             commands::fs::check_conflicts,
             commands::fs::read_preview,
             commands::system::open_path,
@@ -62,6 +63,7 @@ pub fn run() {
             commands::file_index::search_files,
             commands::content::reindex_content,
             commands::content::search_content,
+            commands::indexing::start_index,
         ])
         .run(tauri::generate_context!())
         .expect("ошибка запуска Patina");

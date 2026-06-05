@@ -57,7 +57,7 @@ export class PreviewPanel extends Component {
 
   renderContent(p) {
     let body;
-    if (p.kind === 'image') body = `<div class="pv__imgwrap"><img class="pv__img" src="${p.dataUrl}" alt=""></div>`;
+    if (p.kind === 'image') body = `<div class="pv__imgwrap"><img class="pv__img" src="${escapeHtml(p.dataUrl || '')}" alt=""></div>`;
     else if (p.kind === 'text') body = `<pre class="pv__text">${escapeHtml(p.text || '')}</pre>`;
     else body = '<div class="pv__msg">Нет превью для этого типа</div>';
     this.renderFrame(body, p.name);

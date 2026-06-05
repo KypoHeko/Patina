@@ -101,6 +101,26 @@ fn build_match(q: &str) -> String {
         .join(" ")
 }
 
+/// Точечно обновить содержимое одного файла (delete+insert: у FTS5 нет upsert).
+pub fn upsert_one(conn: &Connection, path: &str, body: &str) -> Result<()> {
+    conn.execute("DELETE FROM content_fts WHERE path = ?1", (path,))?;
+    conn.execute(
+        "INSERT INTO content_fts (path, body) VALUES (?1, ?2)",
+        (path, body),
+    )?;
+    Ok(())
+}
+
+/// Удалить путь и его поддерево из индекса содержимого.
+pub fn delete_path(conn: &Connection, path: &str) -> Result<()> {
+    let (_, prefix, upper) = subtree_bounds(path);
+    conn.execute(
+        "DELETE FROM content_fts WHERE path = ?1 OR (path >= ?2 AND path < ?3)",
+        (path, &prefix, &upper),
+    )?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
