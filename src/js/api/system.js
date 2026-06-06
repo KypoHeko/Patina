@@ -27,3 +27,8 @@ export function listStorage() {
 export function setWatch(paths) {
   return invoke('set_watch', { paths });
 }
+
+/** Сохранить пользовательский список быстрого доступа (полная замена). */
+export function quickAccessSave(items) {
+  return invoke('quick_access_save', { items });
+}

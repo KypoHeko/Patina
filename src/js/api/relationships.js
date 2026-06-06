@@ -16,3 +16,9 @@ export function removeRelationship(a, b) {
 export function fileGraph(seeds, hops = 1) {
   return invoke('file_graph', { seeds, hops });
 }
+
+/** Хеширование файлов графа (BLAKE3). Возвращает [{ path, hash, cached }].
+ *  Кэширует результат в таблице files (инвалидируется по mtime). */
+export function hashGraphFiles(paths) {
+  return invoke('hash_graph_files', { paths });
+}

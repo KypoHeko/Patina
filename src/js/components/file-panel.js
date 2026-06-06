@@ -18,6 +18,7 @@ import {
 } from '../state/panes.js';
 import { getActiveSide, closeSplit, splitTab } from '../state/tabs.js';
 import { Breadcrumbs } from './breadcrumbs.js';
+import { makeMatcher } from '../lib/regex.js';
 
 const TAG_COLOR = Object.fromEntries(TAGS.map((t) => [t.id, t.color]));
 const TAG_LABEL = Object.fromEntries(TAGS.map((t) => [t.id, t.label]));
@@ -445,6 +446,11 @@ export class FilePanel extends Component {
     startDrag(paths, this.side);
     e.dataTransfer.effectAllowed = 'copyMove';
     e.dataTransfer.setData('text/plain', paths.join('\n'));
+    const dragged = paths.map((p) => {
+      const en = (this._lastPane?.entries || []).find((x) => x.path === p);
+      return { path: p, kind: en ? en.kind : '' };
+    });
+    e.dataTransfer.setData('application/x-patina-entries', JSON.stringify(dragged));
   }
 
   onDragOver(e) {
@@ -656,14 +662,8 @@ export class FilePanel extends Component {
   filterList(list) {
     const q = (this._filter || '').trim();
     if (!q) return list;
-    let re = null;
-    try {
-      re = new RegExp(q, 'i'); // регистронезависимо
-    } catch {
-      re = null; // некорректный regex — ищем как подстроку
-    }
-    const lower = q.toLowerCase();
-    return list.filter((e) => (re ? re.test(e.name) : e.name.toLowerCase().includes(lower)));
+    const match = makeMatcher(q, { regex: true });
+    return list.filter((e) => match(e.name));
   }
 
   renderList(pane) {

@@ -14,6 +14,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("schema/0004_relationships.sql"),
     include_str!("schema/0005_file_index.sql"),
     include_str!("schema/0006_file_edges.sql"),
+    include_str!("schema/0007_quick_access.sql"),
 ];
 
 pub fn open(app: &AppHandle) -> Result<Connection> {

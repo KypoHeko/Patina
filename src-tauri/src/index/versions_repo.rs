@@ -5,6 +5,7 @@ use serde::Serialize;
 
 use crate::error::Result;
 use crate::index::path_bounds::{remap, subtree_bounds};
+use crate::index::path_key::normalize;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -17,6 +18,8 @@ pub struct Version {
 }
 
 pub fn latest_hash(conn: &Connection, path: &str) -> Result<Option<String>> {
+    let path = normalize(path);
+    let path = path.as_str();
     let h = conn
         .query_row(
             "SELECT hash FROM versions WHERE path = ?1 ORDER BY ts DESC, id DESC LIMIT 1",
@@ -28,6 +31,8 @@ pub fn latest_hash(conn: &Connection, path: &str) -> Result<Option<String>> {
 }
 
 pub fn insert(conn: &Connection, path: &str, ts: i64, size: i64, hash: &str) -> Result<i64> {
+    let path = normalize(path);
+    let path = path.as_str();
     conn.execute(
         "INSERT INTO versions (path, ts, size, hash) VALUES (?1, ?2, ?3, ?4)",
         (path, ts, size, hash),
@@ -36,6 +41,8 @@ pub fn insert(conn: &Connection, path: &str, ts: i64, size: i64, hash: &str) -> 
 }
 
 pub fn list_for(conn: &Connection, path: &str) -> Result<Vec<Version>> {
+    let path = normalize(path);
+    let path = path.as_str();
     let mut stmt = conn
         .prepare("SELECT id, path, ts, size, hash FROM versions WHERE path = ?1 ORDER BY ts DESC, id DESC")?;
     let rows = stmt
@@ -75,6 +82,10 @@ pub fn get(conn: &Connection, id: i64) -> Result<Option<Version>> {
 /// вложенные пути (для папок). Контент-адресные блобы (versions/<hash>) трогать
 /// не нужно — меняется только колонка `path`.
 pub fn relink(conn: &Connection, old: &str, new: &str) -> Result<()> {
+    let old = normalize(old);
+    let new = normalize(new);
+    let (old, new) = (old.as_str(), new.as_str());
+    
     let (_, prefix, upper) = subtree_bounds(old);
     let affected: Vec<(i64, String)> = {
         let mut stmt = conn
@@ -112,6 +123,8 @@ pub fn relink(conn: &Connection, old: &str, new: &str) -> Result<()> {
 /// Блобы не удаляем: они контент-адресны и могут шириться другими путями;
 /// сбор мусора по блобам — отдельная задача.
 pub fn purge(conn: &Connection, path: &str) -> Result<()> {
+    let path = normalize(path);
+    let path = path.as_str();
     let (_, prefix, upper) = subtree_bounds(path);
     conn.execute(
         "DELETE FROM versions WHERE path = ?1 OR (path >= ?2 AND path < ?3)",

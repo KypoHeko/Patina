@@ -5,6 +5,7 @@ use rusqlite::Connection;
 use crate::error::Result;
 use crate::index::path_bounds::subtree_bounds;
 use crate::models::file::{EntryKind, FileEntry};
+use crate::index::path_key::normalize;
 
 /// Запись индекса (готовится при обходе ВНЕ блокировки БД).
 pub struct IndexRow {
@@ -19,6 +20,8 @@ pub struct IndexRow {
 
 /// Полностью заменить поддерево `root` в индексе (одной транзакцией).
 pub fn replace_subtree(conn: &mut Connection, root: &str, rows: &[IndexRow]) -> Result<()> {
+    let root = normalize(root);
+    let root = root.as_str();
     let (_, prefix, upper) = subtree_bounds(root);
     let tx = conn.transaction()?;
     tx.execute(
@@ -33,7 +36,7 @@ pub fn replace_subtree(conn: &mut Connection, root: &str, rows: &[IndexRow]) -> 
         )?;
         for r in rows {
             stmt.execute((
-                &r.path,
+                &normalize(&r.path),
                 &r.name,
                 r.name.to_lowercase(),
                 r.is_dir as i64,
@@ -45,17 +48,6 @@ pub fn replace_subtree(conn: &mut Connection, root: &str, rows: &[IndexRow]) -> 
     }
     tx.commit()?;
     Ok(())
-}
-
-/// Есть ли в индексе записи под `root`.
-pub fn has_subtree(conn: &Connection, root: &str) -> Result<bool> {
-    let (_, prefix, upper) = subtree_bounds(root);
-    let exists: i64 = conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM file_index WHERE path >= ?1 AND path < ?2)",
-        (&prefix, &upper),
-        |r| r.get(0),
-    )?;
-    Ok(exists != 0)
 }
 
 fn row_to_entry(r: &rusqlite::Row) -> rusqlite::Result<FileEntry> {
@@ -90,6 +82,8 @@ fn escape_like(s: &str) -> String {
 /// (не переливаем всё дерево через IPC). Пустой `query` => базовый набор (для
 /// regex-режима фронта, где фильтрация идёт там). Regex/теги — на фронте.
 pub fn search(conn: &Connection, root: &str, query: &str, limit: usize) -> Result<Vec<FileEntry>> {
+    let root = normalize(root);
+    let root = root.as_str();
     let (_, prefix, upper) = subtree_bounds(root);
     let q = query.trim();
     let mut out = Vec::new();
@@ -122,7 +116,7 @@ pub fn upsert_one(conn: &Connection, row: &IndexRow) -> Result<()> {
         "INSERT OR REPLACE INTO file_index (path, name, name_lower, is_dir, size, mtime, ext)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
         (
-            &row.path,
+            &normalize(&row.path),
             &row.name,
             row.name.to_lowercase(),
             row.is_dir as i64,
@@ -136,6 +130,8 @@ pub fn upsert_one(conn: &Connection, row: &IndexRow) -> Result<()> {
 
 /// Удалить путь и его поддерево (если это была папка) из индекса.
 pub fn delete_path(conn: &Connection, path: &str) -> Result<()> {
+    let path = normalize(path);
+    let path = path.as_str();
     let (_, prefix, upper) = subtree_bounds(path);
     conn.execute(
         "DELETE FROM file_index WHERE path = ?1 OR (path >= ?2 AND path < ?3)",

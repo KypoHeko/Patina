@@ -6,8 +6,11 @@ use rusqlite::Connection;
 
 use crate::error::Result;
 use crate::index::path_bounds::subtree_bounds;
+use crate::index::path_key::normalize;
 
 pub fn assign(conn: &Connection, path: &str, tag_id: &str) -> Result<()> {
+    let path = normalize(path);
+    let path = path.as_str();
     conn.execute(
         "INSERT OR IGNORE INTO file_tags (path, tag_id) VALUES (?1, ?2)",
         (path, tag_id),
@@ -16,6 +19,8 @@ pub fn assign(conn: &Connection, path: &str, tag_id: &str) -> Result<()> {
 }
 
 pub fn remove(conn: &Connection, path: &str, tag_id: &str) -> Result<()> {
+    let path = normalize(path);
+    let path = path.as_str();
     conn.execute(
         "DELETE FROM file_tags WHERE path = ?1 AND tag_id = ?2",
         (path, tag_id),
@@ -26,8 +31,15 @@ pub fn remove(conn: &Connection, path: &str, tag_id: &str) -> Result<()> {
 /// Теги для набора путей одним запросом `IN` (батчами, т.к. SQLite по умолчанию
 /// ограничивает число bound-параметров 999). Возвращаются только помеченные пути.
 pub fn for_paths(conn: &Connection, paths: &[String]) -> Result<HashMap<String, Vec<String>>> {
+    // нормализованный_ключ -> исходная строка вызывающего
+    let mut origin: HashMap<String, String> = HashMap::new();
+    for p in paths {
+        origin.entry(normalize(p)).or_insert_with(|| p.clone());
+    }
+    let keys: Vec<String> = origin.keys().cloned().collect();
+
     let mut map: HashMap<String, Vec<String>> = HashMap::new();
-    for chunk in paths.chunks(900) {
+    for chunk in keys.chunks(900) {
         if chunk.is_empty() {
             continue;
         }
@@ -41,8 +53,10 @@ pub fn for_paths(conn: &Connection, paths: &[String]) -> Result<HashMap<String, 
             Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
         })?;
         for row in rows {
-            let (path, tag_id) = row?;
-            map.entry(path).or_default().push(tag_id);
+            let (norm_path, tag_id) = row?;
+            if let Some(orig) = origin.get(&norm_path) {
+                map.entry(orig.clone()).or_default().push(tag_id);
+            }
         }
     }
     Ok(map)
@@ -60,6 +74,10 @@ pub fn paths_for(conn: &Connection, tag_id: &str) -> Result<Vec<String>> {
 /// Перенести теги при переименовании/перемещении: old -> new, включая
 /// вложенные пути (для папок). Затрагиваются только релевантные строки.
 pub fn relink(conn: &Connection, old: &str, new: &str) -> Result<()> {
+    let old = normalize(old);
+    let new = normalize(new);
+    let (old, new) = (old.as_str(), new.as_str());
+
     let (sep, prefix, upper) = subtree_bounds(old);
 
     let rows: Vec<(String, String)> = {
@@ -105,6 +123,8 @@ pub fn relink(conn: &Connection, old: &str, new: &str) -> Result<()> {
 
 /// Удалить теги пути и всех вложенных (при удалении в Корзину) — одним запросом.
 pub fn purge(conn: &Connection, path: &str) -> Result<()> {
+    let path = normalize(path);
+    let path = path.as_str();
     let (_sep, prefix, upper) = subtree_bounds(path);
     conn.execute(
         "DELETE FROM file_tags WHERE path = ?1 OR (path >= ?2 AND path < ?3)",

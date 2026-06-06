@@ -9,6 +9,7 @@ import { TAGS } from '../config/tags.js';
 import { fileIcon } from '../lib/icons.js';
 import { getPane } from '../state/panes.js';
 import { getActiveSide } from '../state/tabs.js';
+import { safeRegExp } from '../lib/regex.js';
 
 const TAG_COLOR = Object.fromEntries(TAGS.map((t) => [t.id, t.color]));
 const DISPLAY_CAP = 300; // сколько строк показываем разом
@@ -260,12 +261,8 @@ export class CommandPalette extends Component {
     const q = this._query.trim();
     if (q) {
       if (this._regex) {
-        let re;
-        try {
-          re = new RegExp(q, 'i');
-        } catch {
-          return list;
-        }
+        const { ok, re } = safeRegExp(q, 'i');
+        if (!ok) return list;           // небезопасный/битый паттерн — не фильтруем, как и раньше
         list = list.filter((e) => re.test(e.name));
       } else {
         const ql = q.toLowerCase();

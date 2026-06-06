@@ -7,6 +7,7 @@ use serde::Serialize;
 
 use crate::error::Result;
 use crate::index::path_bounds::subtree_bounds;
+use crate::index::path_key::normalize;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -34,6 +35,8 @@ pub fn ensure_table(conn: &Connection) -> Result<()> {
 
 /// Полностью заменить содержимое поддерева в индексе (одной транзакцией).
 pub fn replace_subtree(conn: &mut Connection, root: &str, rows: &[ContentRow]) -> Result<()> {
+    let root = normalize(root);
+    let root = root.as_str();
     let (_, prefix, upper) = subtree_bounds(root);
     let tx = conn.transaction()?;
     tx.execute(
@@ -43,7 +46,7 @@ pub fn replace_subtree(conn: &mut Connection, root: &str, rows: &[ContentRow]) -
     {
         let mut stmt = tx.prepare("INSERT INTO content_fts (path, body) VALUES (?1, ?2)")?;
         for r in rows {
-            stmt.execute((&r.path, &r.body))?;
+            stmt.execute((&normalize(&r.path), &r.body))?;
         }
     }
     tx.commit()?;
@@ -52,6 +55,8 @@ pub fn replace_subtree(conn: &mut Connection, root: &str, rows: &[ContentRow]) -
 
 /// Поиск по содержимому в поддереве. Возвращает путь, имя и сниппет с подсветкой.
 pub fn search(conn: &Connection, root: &str, query: &str, limit: usize) -> Result<Vec<ContentHit>> {
+    let root = normalize(root);
+    let root = root.as_str();
     let match_q = build_match(query);
     if match_q.is_empty() {
         return Ok(Vec::new());
@@ -103,6 +108,8 @@ fn build_match(q: &str) -> String {
 
 /// Точечно обновить содержимое одного файла (delete+insert: у FTS5 нет upsert).
 pub fn upsert_one(conn: &Connection, path: &str, body: &str) -> Result<()> {
+    let path = normalize(path);
+    let path = path.as_str();
     conn.execute("DELETE FROM content_fts WHERE path = ?1", (path,))?;
     conn.execute(
         "INSERT INTO content_fts (path, body) VALUES (?1, ?2)",
@@ -113,6 +120,8 @@ pub fn upsert_one(conn: &Connection, path: &str, body: &str) -> Result<()> {
 
 /// Удалить путь и его поддерево из индекса содержимого.
 pub fn delete_path(conn: &Connection, path: &str) -> Result<()> {
+    let path = normalize(path);
+    let path = path.as_str();
     let (_, prefix, upper) = subtree_bounds(path);
     conn.execute(
         "DELETE FROM content_fts WHERE path = ?1 OR (path >= ?2 AND path < ?3)",

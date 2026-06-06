@@ -15,13 +15,27 @@ const LOC_ICON = {
   drive: '💽',
 };
 
+// Подпись для добавленной папки — последний сегмент пути.
+function baseLabel(path) {
+  const trimmed = path.replace(/[\\/]+$/, '');
+  const parts = trimmed.split(/[\\/]/);
+  return parts[parts.length - 1] || trimmed || path;
+}
+
 // Боковая панель: сворачиваемые секции «Быстрый доступ», «Хранилище», «Теги».
 export class Sidebar extends Component {
   init() {
     this._collapsed = { quick: false, storage: false, tags: false };
     this._counts = {};
+    this._quick = [];
     this.renderFrame();
     this.on(this.mount, 'click', (e) => this.onClick(e));
+    // Drag-and-drop быстрого доступа.
+    this.on(this.mount, 'dragstart', (e) => this.onQuickDragStart(e));
+    this.on(this.mount, 'dragover', (e) => this.onQuickDragOver(e));
+    this.on(this.mount, 'dragleave', (e) => this.onQuickDragLeave(e));
+    this.on(this.mount, 'drop', (e) => this.onQuickDrop(e));
+    this.on(this.mount, 'dragend', () => this.onQuickDragEnd());
     this.subscribe(() => this.updateCurrent());
     this.listen('tags:changed', () => this.refreshCounts());
     this.load();
@@ -46,7 +60,7 @@ export class Sidebar extends Component {
       'button',
       { class: 'sidebar__head', dataset: { toggle: key } },
       el('span', { class: 'sidebar__chevron' }, '▾'),
-      el('span', { class: 'sidebar__title' }, title),
+      el('span', { class: 'sidebar__title' }, title), el('span', { class: 'sidebar__compact-arrow' }, '▸'),
     );
     const body = el('div', { class: 'sidebar__body', dataset: { section: key } });
     sec.append(head, body);
@@ -54,37 +68,221 @@ export class Sidebar extends Component {
   }
 
   async load() {
+    // Сначала загружаем быстрые данные (quickAccess + tagCounts).
+    // listStorage() через sysinfo может занимать 10–30 с на Linux —
+    // откладываем его, чтобы не блокировать первый показ контента.
     try {
-      const [quick, storage, counts] = await Promise.all([
-        quickAccess(),
-        listStorage(),
-        tagCounts(),
-      ]);
+      const [quick, counts] = await Promise.all([quickAccess(), tagCounts()]);
       this._counts = counts || {};
       this.fillQuick(quick || []);
-      this.fillStorage(storage || []);
       this.renderTags();
       this.updateCurrent();
     } catch (err) {
       console.error('[patina] sidebar:', err);
     }
+    // Хранилище — фоновой загрузкой, после того как панель уже отрисована.
+    requestIdleCallback(() => this.loadStorage());
   }
 
+  async loadStorage() {
+    try {
+      const storage = await listStorage();
+      this.fillStorage(storage || []);
+      this.updateCurrent();
+    } catch (err) {
+      console.error('[patina] sidebar storage:', err);
+    }
+  }
+
+  /* ── Быстрый доступ ─────────────────────────── */
+
   fillQuick(locations) {
-    const body = this.mount.querySelector('[data-section="quick"]');
+    this._quick = Array.isArray(locations) ? locations.slice() : [];
+    this.renderQuick();
+  }
+
+  renderQuick() {
+    const body = this._quickBody();
     if (!body) return;
     body.innerHTML = '';
-    for (const loc of locations) {
+    for (const loc of this._quick) {
       body.append(
         el(
           'button',
-          { class: 'sidebar__item', dataset: { path: loc.path } },
+          {
+            class: 'sidebar__item',
+            draggable: 'true',
+            dataset: { path: loc.path },
+            title: loc.path,
+          },
           el('span', { class: 'sidebar__ico' }, LOC_ICON[loc.kind] || '📁'),
           el('span', { class: 'sidebar__label' }, loc.label),
         ),
       );
     }
+    this.updateCurrent();
   }
+
+  _quickBody() {
+    return this.mount.querySelector('[data-section="quick"]');
+  }
+
+  _isQuickItem(node) {
+    const body = this._quickBody();
+    return !!body && body.contains(node);
+  }
+
+  /** Индекс вставки по позиции курсора (перед элементом, над которым он находится). */
+  _insertIndexAt(clientY) {
+    const body = this._quickBody();
+    if (!body) return 0;
+    const items = [...body.querySelectorAll('.sidebar__item')];
+    for (let i = 0; i < items.length; i++) {
+      const r = items[i].getBoundingClientRect();
+      if (clientY < r.top + r.height / 2) return i;
+    }
+    return items.length;
+  }
+
+  _showDropMarker(index) {
+    this._clearDropMarker();
+    const body = this._quickBody();
+    if (!body) return;
+    const items = [...body.querySelectorAll('.sidebar__item')];
+    if (index >= items.length) body.classList.add('is-drop-end');
+    else items[index].classList.add('is-drop-before');
+  }
+
+  _clearDropMarker() {
+    const body = this._quickBody();
+    if (!body) return;
+    body.classList.remove('is-drop-end');
+    body.querySelectorAll('.is-drop-before').forEach((n) => n.classList.remove('is-drop-before'));
+  }
+
+  onQuickDragStart(e) {
+    const item = e.target.closest('.sidebar__item');
+    if (!item || !this._isQuickItem(item)) return;
+    this._dragPath = item.dataset.path;
+    this._droppedInside = false;
+    this._dragCancelled = false;
+    item.classList.add('is-dragging');
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('application/x-patina-quick', this._dragPath);
+    // Esc отличаем от «бросили наружу», чтобы отмена перетаскивания не удаляла пункт.
+    this._escGuard = (ev) => {
+      if (ev.key === 'Escape') this._dragCancelled = true;
+    };
+    window.addEventListener('keydown', this._escGuard, true);
+  }
+
+  onQuickDragOver(e) {
+    const body = this._quickBody();
+    if (!body || !body.contains(e.target)) {
+      this._clearDropMarker();
+      return;
+    }
+    const types = e.dataTransfer.types;
+    const isQuick = types.includes('application/x-patina-quick');
+    const isEntries = types.includes('application/x-patina-entries');
+    if (!isQuick && !isEntries) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = isQuick ? 'move' : 'copy';
+    this._showDropMarker(this._insertIndexAt(e.clientY));
+  }
+
+  onQuickDragLeave(e) {
+    const body = this._quickBody();
+    if (body && !body.contains(e.relatedTarget)) this._clearDropMarker();
+  }
+
+  onQuickDrop(e) {
+    const body = this._quickBody();
+    if (!body || !body.contains(e.target)) return;
+    const types = e.dataTransfer.types;
+    const at = this._insertIndexAt(e.clientY);
+    if (types.includes('application/x-patina-quick')) {
+      e.preventDefault();
+      this._droppedInside = true;
+      this._reorderQuick(e.dataTransfer.getData('application/x-patina-quick'), at);
+    } else if (types.includes('application/x-patina-entries')) {
+      e.preventDefault();
+      let entries = [];
+      try {
+        entries = JSON.parse(e.dataTransfer.getData('application/x-patina-entries') || '[]');
+      } catch {
+        entries = [];
+      }
+      this._addFolders(entries.filter((x) => x.kind === 'folder'), at);
+    }
+    this._clearDropMarker();
+  }
+
+  onQuickDragEnd() {
+    if (this._escGuard) {
+      window.removeEventListener('keydown', this._escGuard, true);
+      this._escGuard = null;
+    }
+    const dragged = this._dragPath;
+    this._dragPath = null;
+    this.mount
+      .querySelectorAll('.sidebar__item.is-dragging')
+      .forEach((n) => n.classList.remove('is-dragging'));
+    this._clearDropMarker();
+    // Брошен вне блока (и это не отмена по Esc) → убираем из быстрого доступа.
+    if (dragged && !this._droppedInside && !this._dragCancelled) this._removeQuick(dragged);
+  }
+
+  _reorderQuick(fromPath, toIndex) {
+    const from = this._quick.findIndex((q) => q.path === fromPath);
+    if (from < 0) return;
+    const [moved] = this._quick.splice(from, 1);
+    let to = toIndex;
+    if (from < to) to -= 1; // компенсация после удаления исходного
+    to = Math.max(0, Math.min(this._quick.length, to));
+    this._quick.splice(to, 0, moved);
+    this.renderQuick();
+    this._saveQuick();
+  }
+
+  _addFolders(folders, atIndex) {
+    if (!folders || !folders.length) return;
+    let at = Math.max(0, Math.min(this._quick.length, atIndex));
+    let added = 0;
+    for (const f of folders) {
+      if (!f.path) continue;
+      const dup = this._quick.some((q) => q.path.toLowerCase() === f.path.toLowerCase());
+      if (dup) continue;
+      this._quick.splice(at, 0, { path: f.path, label: baseLabel(f.path), kind: 'folder' });
+      at += 1;
+      added += 1;
+    }
+    if (added) {
+      this.renderQuick();
+      this._saveQuick();
+    } else {
+      this.bus.emit('shortcut:hint', 'Уже в быстром доступе');
+    }
+  }
+
+  _removeQuick(path) {
+    const before = this._quick.length;
+    this._quick = this._quick.filter((q) => q.path !== path);
+    if (this._quick.length !== before) {
+      this.renderQuick();
+      this._saveQuick();
+    }
+  }
+
+  async _saveQuick() {
+    try {
+      await quickAccessSave(this._quick);
+    } catch (err) {
+      console.error('[patina] quick save:', err);
+    }
+  }
+
+  /* ── Хранилище и теги ───────────────────────── */
 
   fillStorage(disks) {
     const body = this.mount.querySelector('[data-section="storage"]');

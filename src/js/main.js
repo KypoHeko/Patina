@@ -28,6 +28,11 @@ const bus = createEventBus();
 // Применяем сохранённую палитру до монтажа компонентов (без мигания темы).
 initTheme();
 
+// Стартуем homeDir() IPC ДО инициализации сайдбара — чтобы быстрый вызов
+// встал в очередь первым, до медленного listStorage() / sysinfo.
+const _homePromise = homeDir();
+const _cachedHome = localStorage.getItem('patina:home');
+
 const workspace = document.querySelector('.workspace');
 
 const sidebar = new Sidebar({ mount: document.getElementById('sidebar'), store, bus });
@@ -102,11 +107,25 @@ shortcuts.register('relationship-graph', () => bus.emit('graph:open'));
 shortcuts.register('reopen-tab', () => reopenTab(store));
 shortcuts.register('new-folder', () => bus.emit('folder:create'));
 
+// --- Запуск: показываем контент максимально быстро ---
+// _homePromise и _cachedHome уже объявлены выше (до init сайдбара).
+if (_cachedHome) {
+  // Оптимистичный запуск: показываем контент сразу, не дожидаясь IPC.
+  left.navigate(_cachedHome);
+}
+
 (async function boot() {
   try {
     const home = await homeDir();
     store.setState({ homePath: home });
     left.navigate(home);
+    if (!_cachedHome) {
+      // Первый запуск — навигируем только сейчас.
+      left.navigate(home);
+    } else if (_cachedHome !== home) {
+      // Путь изменился (маловероятно, но безопасно).
+      left.navigate(home);
+    }
   } catch (err) {
     console.error('[patina] не удалось определить домашнюю папку:', err);
   }

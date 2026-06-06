@@ -8,6 +8,7 @@ use serde::Serialize;
 
 use crate::error::Result;
 use crate::index::path_bounds::{remap, subtree_bounds};
+use crate::index::path_key::normalize;
 
 #[derive(Serialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -23,6 +24,9 @@ fn norm<'a>(a: &'a str, b: &'a str) -> (&'a str, &'a str) {
 
 /// Ручная (неориентированная) связь: храним нормализованной парой с kind='manual'.
 pub fn add_manual(conn: &Connection, a: &str, b: &str) -> Result<()> {
+    let a = normalize(a);
+    let b = normalize(b);
+    let (a, b) = (a.as_str(), b.as_str());
     if a == b {
         return Ok(());
     }
@@ -35,6 +39,9 @@ pub fn add_manual(conn: &Connection, a: &str, b: &str) -> Result<()> {
 }
 
 pub fn remove_manual(conn: &Connection, a: &str, b: &str) -> Result<()> {
+    let a = normalize(a);
+    let b = normalize(b);
+    let (a, b) = (a.as_str(), b.as_str());
     let (x, y) = norm(a, b);
     conn.execute(
         "DELETE FROM file_edges WHERE src = ?1 AND dst = ?2 AND kind = 'manual'",
@@ -45,7 +52,13 @@ pub fn remove_manual(conn: &Connection, a: &str, b: &str) -> Result<()> {
 
 /// Заменить производные (не-manual) исходящие рёбра одного источника —
 /// для инкрементального сопровождения при изменении файла. Ручные не трогаем.
-pub fn replace_derived_for_src(conn: &Connection, src: &str, edges: &[(String, String)]) -> Result<()> {
+pub fn replace_derived_for_src(
+    conn: &Connection,
+    src: &str,
+    edges: &[(String, String)],
+) -> Result<()> {
+    let src = normalize(src);
+    let src = src.as_str();
     conn.execute(
         "DELETE FROM file_edges WHERE src = ?1 AND kind <> 'manual'",
         (src,),
@@ -53,7 +66,7 @@ pub fn replace_derived_for_src(conn: &Connection, src: &str, edges: &[(String, S
     let mut stmt =
         conn.prepare("INSERT OR IGNORE INTO file_edges (src, dst, kind) VALUES (?1, ?2, ?3)")?;
     for (dst, kind) in edges {
-        stmt.execute((src, dst, kind))?;
+        stmt.execute((src, &normalize(dst), kind))?;
     }
     Ok(())
 }
@@ -66,6 +79,8 @@ pub fn replace_derived_subtree(
     root: &str,
     edges: &[(String, String, String)],
 ) -> Result<()> {
+    let root = normalize(root);
+    let root = root.as_str();
     let (_, prefix, upper) = subtree_bounds(root);
     let tx = conn.transaction()?;
     tx.execute(
@@ -76,7 +91,7 @@ pub fn replace_derived_subtree(
         let mut stmt =
             tx.prepare("INSERT OR IGNORE INTO file_edges (src, dst, kind) VALUES (?1, ?2, ?3)")?;
         for (s, d, k) in edges {
-            stmt.execute((s, d, k))?;
+            stmt.execute((&normalize(s), &normalize(d), k))?;
         }
     }
     tx.commit()?;
@@ -86,8 +101,8 @@ pub fn replace_derived_subtree(
 /// Окрестность графа: рёбра в пределах `hops` прыжков от seed-путей, в обе
 /// стороны (исходящие = зависимости, входящие = обратные ссылки).
 pub fn neighborhood(conn: &Connection, seeds: &[String], hops: usize) -> Result<Vec<Edge>> {
-    let mut seen: HashSet<String> = seeds.iter().cloned().collect();
-    let mut frontier: Vec<String> = seeds.to_vec();
+    let mut seen: HashSet<String> = seeds.iter().map(|s| normalize(s)).collect();
+    let mut frontier: Vec<String> = seen.iter().cloned().collect();
     let mut edges: HashSet<(String, String, String)> = HashSet::new();
 
     let mut out_stmt = conn.prepare("SELECT dst, kind FROM file_edges WHERE src = ?1")?;
@@ -131,6 +146,10 @@ pub fn neighborhood(conn: &Connection, seeds: &[String], hops: usize) -> Result<
 /// включая поддерево). Затронутые строки удаляются и переинсертятся с новыми
 /// концами; ручные пары ренормализуются (a<=b).
 pub fn relink(conn: &Connection, old: &str, new: &str) -> Result<()> {
+    let old = normalize(old);
+    let new = normalize(new);
+    let (old, new) = (old.as_str(), new.as_str());
+
     let (_, prefix, upper) = subtree_bounds(old);
     let affected: Vec<(String, String, String)> = {
         let mut stmt = conn.prepare(
@@ -187,6 +206,8 @@ pub fn relink(conn: &Connection, old: &str, new: &str) -> Result<()> {
 
 /// Удалить все рёбра пути и поддерева (с любого конца) — при удалении в Корзину.
 pub fn purge(conn: &Connection, path: &str) -> Result<()> {
+    let path = normalize(path);
+    let path = path.as_str();
     let (_, prefix, upper) = subtree_bounds(path);
     conn.execute(
         "DELETE FROM file_edges
@@ -264,7 +285,9 @@ mod tests {
         ins(&c, "keep1", "keep2", "link");
         purge(&c, "dir").unwrap();
         let mut all: Vec<(String, String)> = {
-            let mut s = c.prepare("SELECT src, dst FROM file_edges ORDER BY src").unwrap();
+            let mut s = c
+                .prepare("SELECT src, dst FROM file_edges ORDER BY src")
+                .unwrap();
             s.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
                 .unwrap()
                 .map(|r| r.unwrap())

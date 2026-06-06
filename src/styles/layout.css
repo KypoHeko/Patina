@@ -80,28 +80,6 @@
 }
 
 /* Боковая панель */
-#app.sidebar-compact .sidebar {
-  width: 52px;
-}
-#app.sidebar-compact .sidebar__title,
-#app.sidebar-compact .sidebar__label,
-#app.sidebar-compact .sidebar__count,
-#app.sidebar-compact .sidebar__chevron,
-#app.sidebar-compact .sidebar__store-name,
-#app.sidebar-compact .sidebar__store-kind,
-#app.sidebar-compact .sidebar__store-size,
-#app.sidebar-compact .sidebar__bar {
-  display: none;
-}
-#app.sidebar-compact .sidebar__head {
-  justify-content: center;
-}
-#app.sidebar-compact .sidebar__item,
-#app.sidebar-compact .sidebar__store,
-#app.sidebar-compact .sidebar__tagrow {
-  justify-content: center;
-  padding: 6px;
-}
 .sidebar {
   grid-area: sidebar;
   width: 220px;
@@ -110,6 +88,56 @@
   overflow-y: auto;
   padding-bottom: 10px;
   transition: width 0.16s ease;
+}
+#app.sidebar-compact .sidebar {
+  width: 52px;
+}
+
+/* ── Компактный режим: текст плавно скрывается через clip ── */
+
+/* Текстовые элементы плавно исчезают через max-width → 0,
+   а не через display:none, поэтому при разворачивании текст
+   аккуратно «выезжает» из-за границы обрезки. */
+#app.sidebar-compact .sidebar__title,
+#app.sidebar-compact .sidebar__label,
+#app.sidebar-compact .sidebar__count,
+#app.sidebar-compact .sidebar__store-name,
+#app.sidebar-compact .sidebar__store-kind,
+#app.sidebar-compact .sidebar__store-size {
+  max-width: 0;
+  padding: 0;
+  margin: 0;
+  border-width: 0;
+}
+
+#app.sidebar-compact .sidebar__chevron {
+  max-width: 0;
+}
+
+/* Прогресс-бар хранилища плавно схлопывается */
+#app.sidebar-compact .sidebar__bar {
+  max-width: 0;
+  margin: 0;
+}
+
+#app.sidebar-compact .sidebar__compact-arrow {
+  display: inline-block; /* показываем стрелку-разделитель групп */
+}
+
+#app.sidebar-compact .sidebar__head {
+  justify-content: center;
+}
+
+#app.sidebar-compact .sidebar__item,
+#app.sidebar-compact .sidebar__store,
+#app.sidebar-compact .sidebar__tagrow {
+  justify-content: center;
+  padding: 6px;
+}
+
+/* Увеличиваем расстояние между индикаторами в свёрнутом состоянии */
+#app.sidebar-compact .sidebar__body {
+  gap: 2px;
 }
 
 /* Основная область: вкладки · рабочая область · статус */

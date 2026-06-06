@@ -16,7 +16,7 @@ pub struct ScanFile {
 pub fn walk(dir: &str, cap: usize) -> Vec<ScanFile> {
     WalkDir::new(dir)
         .min_depth(1)
-        .max_depth(1) // только текущая папка
+        // .max_depth(1) // только текущая папка
         .into_iter()
         .filter_map(|e| e.ok())
         .filter(|e| e.file_type().is_file())

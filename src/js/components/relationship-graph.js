@@ -1,34 +1,96 @@
 import { Component } from '../core/component.js';
 import { escapeHtml } from '../core/dom.js';
-import { fileGraph, addRelationship, removeRelationship } from '../api/relationships.js';
+import { fileGraph, addRelationship, removeRelationship, hashGraphFiles } from '../api/relationships.js';
 import { startIndex } from '../api/indexing.js';
 import { onEvent } from '../api/events.js';
 import { getPane } from '../state/panes.js';
 import { getActiveSide } from '../state/tabs.js';
 
-const NODE_R = 8;
+const NODE_H = 28; // высота панели узла
+const NODE_PAD_X = 12; // горизонтальный паддинг внутри панели
+const NODE_PAD_Y = 6; // вертикальный паддинг
+const NODE_MIN_W = 64; // минимальная ширина панели
+const NODE_MAX_W = 180; // максимальная ширина панели
+const NODE_RADIUS = 6; // скругление углов панели
+const NODE_FONT = '11px system-ui, -apple-system, "Segoe UI", sans-serif';
 const OVERVIEW_CAP = 80; // не строим полотно из тысяч узлов
 const DEFAULT_W = 900; // ориентир до первой раскладки полотна
 const DEFAULT_H = 600;
 
-// Физика (подобрана под десятки узлов)
-const REPULSION = 5400; // кулоновское отталкивание
-const SPRING_LEN = 96; // длина покоя ребра
-const SPRING_K = 0.016; // жёсткость пружины
-const GRAVITY = 0.014; // притяжение к центру (держит отвязанные узлы)
+// Физика (подобрана под десятки узлов, увеличена под панели)
+const REPULSION = 9000; // кулоновское отталкивание (больше — узлы-панели шире)
+const SPRING_LEN = 140; // длина покоя ребра (больше — длиннее связи)
+const SPRING_K = 0.012; // жёсткость пружины
+const GRAVITY = 0.012; // притяжение к центру (держит отвязанные узлы)
 const DAMPING = 0.86;
 const ALPHA_MIN = 0.02;
 const ZOOM_MIN = 0.2;
 const ZOOM_MAX = 3;
 
-const C_DEP = '#10b981'; // зависимости (исходящие от фокуса) — emerald
-const C_BACK = '#f59e0b'; // обратные ссылки (входящие в фокус) — amber
+// Прогрессивная сборка: количество узлов, появляющихся за один тик
+const APPEAR_BATCH = 4;
+const APPEAR_INTERVAL = 60; // мс между батчами
+
+// Цвета стрелок (легенда)
+const C_DEP = '#10b981'; // зависимости (зелёный — emerald)
+const C_BACK = '#f59e0b'; // обратные ссылки (жёлтый — amber)
 const C_MANUAL = 'rgba(150,158,176,0.75)';
 const C_CTX = 'rgba(120,130,150,0.5)';
 const C_MENTION = 'rgba(120,130,150,0.3)';
 
+// Цвета расширений (из icons.js — та же палитра, что в файловой панели)
+const EXT_COLOR = {
+  ts: '#3b82f6', tsx: '#3b82f6',
+  js: '#f7df1e', mjs: '#f7df1e',
+  jsx: '#38bdf8', css: '#38bdf8',
+  html: '#e34c26', htm: '#e34c26',
+  xml: '#f59e0b', rs: '#f74c00',
+  py: '#3776ab', go: '#00add8',
+  java: '#ea2d2e',
+  c: '#5c6bc0', h: '#5c6bc0', cpp: '#5c6bc0',
+  rb: '#cc342d', php: '#777bb4',
+  sh: '#4eaa25', sql: '#0ea5e9',
+  yaml: '#94a3b8', yml: '#94a3b8', toml: '#94a3b8', ini: '#94a3b8',
+  json: '#f59e0b',
+  md: '#64748b', markdown: '#64748b',
+  pdf: '#ef4444', doc: '#2563eb', docx: '#2563eb', odt: '#2563eb',
+  txt: '#94a3b8', log: '#94a3b8', rtf: '#94a3b8',
+  svg: '#f97316',
+  png: '#a855f7', jpg: '#a855f7', jpeg: '#a855f7', gif: '#a855f7',
+  webp: '#a855f7', bmp: '#a855f7', ico: '#a855f7', avif: '#a855f7',
+  psd: '#0ea5e9', ai: '#f97316', fig: '#a259ff', sketch: '#fdb300',
+  xlsx: '#22c55e', xls: '#22c55e', ods: '#22c55e', csv: '#22c55e', tsv: '#22c55e',
+  ttf: '#8b5cf6', otf: '#8b5cf6', woff: '#8b5cf6', woff2: '#8b5cf6',
+  zip: '#eab308', rar: '#eab308', '7z': '#eab308', tar: '#eab308',
+  gz: '#eab308', bz2: '#eab308', xz: '#eab308', zst: '#eab308',
+  mp3: '#ec4899', wav: '#ec4899', flac: '#ec4899', ogg: '#ec4899',
+  m4a: '#ec4899', aac: '#ec4899',
+  mp4: '#f43f5e', mkv: '#f43f5e', mov: '#f43f5e', avi: '#f43f5e',
+  webm: '#f43f5e', wmv: '#f43f5e',
+  exe: '#64748b', msi: '#64748b', dll: '#64748b', iso: '#64748b',
+};
+const FOLDER_COLOR = '#eab308';
+const DEFAULT_NODE_COLOR = '#94a3b8';
+
+/** Получить цвет узла по расширению файла. */
+function nodeColor(name, isDir) {
+  if (isDir) return FOLDER_COLOR;
+  const dot = name.lastIndexOf('.');
+  if (dot < 0) return DEFAULT_NODE_COLOR;
+  const ext = name.slice(dot + 1).toLowerCase();
+  return EXT_COLOR[ext] || DEFAULT_NODE_COLOR;
+}
+
 function shortLabel(name) {
-  return name.length > 18 ? name.slice(0, 17) + '…' : name;
+  return name.length > 22 ? name.slice(0, 21) + '…' : name;
+}
+
+/** Измерить ширину текста метки узла на полотне. */
+function measureLabelWidth(ctx, name) {
+  ctx.font = NODE_FONT;
+  const text = shortLabel(name);
+  const w = ctx.measureText(text).width;
+  return Math.min(NODE_MAX_W, Math.max(NODE_MIN_W, Math.ceil(w) + NODE_PAD_X * 2));
 }
 
 // Граф связей (Ctrl+G) — плавающее окно: его можно перетаскивать за заголовок и
@@ -55,6 +117,18 @@ export class RelationshipGraph extends Component {
     this._alpha = 0;
     this._fetchSeq = 0;
 
+    // Прогрессивная сборка
+    this._appeared = new Set(); // пути уже появившихся узлов
+    this._appearQueue = []; // узлы, ожидающие появления
+    this._appearTimer = null;
+
+    // Фаза хеширования
+    this._hashing = false;
+    this._hashSeq = 0; // серийный номер — чтобы отличить устаревшие вызовы
+    this._hashProgress = 0;
+    this._hashTotal = 0;
+    this._hashes = new Map(); // path → hash
+
     // Размер полотна (обновляется ResizeObserver), вид (пан/зум), перетаскивания.
     this._w = DEFAULT_W;
     this._h = DEFAULT_H;
@@ -72,8 +146,8 @@ export class RelationshipGraph extends Component {
       if (!this._open) return;
       this.draw();
       const dots = this.mount.querySelectorAll('.graph__dot');
-      if (dots[0]) dots[0].style.background = this._colors.dep;
-      if (dots[1]) dots[1].style.background = this._colors.back;
+      if (dots[0]) dots[0].style.background = C_DEP;
+      if (dots[1]) dots[1].style.background = C_BACK;
     });
 
     this.listen('graph:open', () => (this._open ? this.close() : this.open()));
@@ -116,6 +190,14 @@ export class RelationshipGraph extends Component {
     this._ox = 0;
     this._oy = 0;
     this._zoom = 1;
+    // При открытии — чистый старт
+    this._nodes.clear();
+    this._edges = [];
+    this._appeared.clear();
+    this._appearQueue = [];
+    this._hashes.clear();
+    this._hashing = false;
+    this._hashSeq++;
     this.render();
 
     if (this._root) startIndex(this._root, true, false).catch(() => {});
@@ -126,12 +208,22 @@ export class RelationshipGraph extends Component {
     if (!this._open) return;
     this._open = false;
     this.stopSim();
+    if (this._appearTimer) {
+      clearInterval(this._appearTimer);
+      this._appearTimer = null;
+    }
     if (this._ro) {
       this._ro.disconnect();
       this._ro = null;
     }
     this._pan = null;
     this._winDrag = null;
+    this._loading = false;
+    this._hashing = false;
+    this._hashSeq++;
+    this._hashes.clear();
+    this._appeared.clear();
+    this._appearQueue = [];
     this.mount.innerHTML = '';
   }
 
@@ -151,17 +243,24 @@ export class RelationshipGraph extends Component {
     this._curSeeds = seeds;
     this._curHops = hops;
     const seq = ++this._fetchSeq;
+    this._loading = true;
+    this.updateLoadingState();
     let data;
     try {
       data = await fileGraph(seeds, hops);
     } catch (err) {
+      this._loading = false;
+      this.updateLoadingState();
       if (seq === this._fetchSeq) this.bus.emit('shortcut:hint', `Граф: ${err.message}`);
       return;
     }
     if (seq !== this._fetchSeq || !this._open) return;
     this.ingest(data, seeds);
     this.renderAside();
-    this.startSim();
+    this._loading = false;
+    this.updateLoadingState();
+    // Прогрессивная сборка: добавляем только новые узлы
+    this.startProgressiveAppear();
   }
 
   ingest(data, seeds) {
@@ -169,15 +268,19 @@ export class RelationshipGraph extends Component {
     const edges = (data && data.edges) || [];
     const cx = this._w / 2;
     const cy = this._h / 2;
-    const next = new Map();
+
+    // Инкрементальное слияние: старые узлы остаются, новые добавляются.
+    // Позиции существующих узлов сохраняются — нет «прыжков» при refetch.
     nodes.forEach((n, i) => {
-      const prev = this._nodes.get(n.path);
-      if (prev) {
-        next.set(n.path, { ...prev, name: n.name, isDir: n.isDir });
+      if (this._nodes.has(n.path)) {
+        // Обновляем мета-данные, но сохраняем позицию и скорость
+        const prev = this._nodes.get(n.path);
+        prev.name = n.name;
+        prev.isDir = n.isDir;
       } else {
         const ang = (i / Math.max(nodes.length, 1)) * Math.PI * 2;
-        const r = 60 + (i % 5) * 26;
-        next.set(n.path, {
+        const r = 80 + (i % 5) * 32;
+        this._nodes.set(n.path, {
           path: n.path,
           name: n.name,
           isDir: n.isDir,
@@ -185,12 +288,20 @@ export class RelationshipGraph extends Component {
           y: cy + r * Math.sin(ang),
           vx: 0,
           vy: 0,
+          w: NODE_MIN_W,
         });
       }
     });
+    // Удаляем узлы, которых больше нет в данных (кроме seeds)
+    const validPaths = new Set(nodes.map((n) => n.path));
+    for (const s of seeds) validPaths.add(s);
+    for (const path of [...this._nodes.keys()]) {
+      if (!validPaths.has(path)) this._nodes.delete(path);
+    }
+    // Добавляем seed-пути, если их не оказалось в данных
     for (const s of seeds) {
-      if (!next.has(s)) {
-        next.set(s, {
+      if (!this._nodes.has(s)) {
+        this._nodes.set(s, {
           path: s,
           name: s.split(/[\\/]/).pop() || s,
           isDir: false,
@@ -198,14 +309,85 @@ export class RelationshipGraph extends Component {
           y: cy + (Math.random() - 0.5) * 40,
           vx: 0,
           vy: 0,
+          w: NODE_MIN_W,
         });
       }
     }
-    this._nodes = next;
     this._edges = edges;
     if (this._mode === 'focus' && !this._nodes.has(this._focus)) {
       this._focus = seeds[0] || null;
     }
+  }
+
+  /* ── Прогрессивная сборка ─────────────────── */
+
+  /** Запускает постепенное появление узлов на полотне.
+   *  Уже появившиеся узлы остаются видимыми — не перезапускаем анимацию. */
+  startProgressiveAppear() {
+    // Только новые узлы (ещё не появившиеся) добавляем в очередь
+    this._appearQueue = [...this._nodes.keys()].filter((p) => !this._appeared.has(p));
+    if (this._appearTimer) clearInterval(this._appearTimer);
+    if (this._appearQueue.length === 0) {
+      // Все узлы уже видны — сразу запускаем физику
+      this.onProgressiveDone();
+      return;
+    }
+    this._appearTimer = setInterval(() => {
+      for (let i = 0; i < APPEAR_BATCH && this._appearQueue.length > 0; i++) {
+        this._appeared.add(this._appearQueue.shift());
+      }
+      this.draw();
+      if (this._appearQueue.length === 0) {
+        clearInterval(this._appearTimer);
+        this._appearTimer = null;
+        this.onProgressiveDone();
+      }
+    }, APPEAR_INTERVAL);
+  }
+
+  /** Все узлы появились — запускаем физику и хеширование. */
+  onProgressiveDone() {
+    this.startSim();
+    this.startHashing();
+  }
+
+  /* ── Хеширование файлов графа ────────────── */
+
+  async startHashing() {
+    // Не перезапускаем если уже идёт
+    if (this._hashing) return;
+
+    const paths = [...this._nodes.keys()].filter((p) => {
+      const n = this._nodes.get(p);
+      return n && !n.isDir;
+    });
+    // Хешируем только те файлы, которые ещё не прохешированы
+    const unhashed = paths.filter((p) => !this._hashes.has(p));
+    if (unhashed.length === 0) return;
+
+    this._hashing = true;
+    this._hashSeq++;
+    const mySeq = this._hashSeq;
+    this._hashProgress = 0;
+    this._hashTotal = unhashed.length;
+    this.updateLoadingState();
+    try {
+      const result = await hashGraphFiles(unhashed);
+      // Проверяем что это не устаревший вызов и окно всё ещё открыто
+      if (mySeq !== this._hashSeq || !this._open) {
+        this._hashing = false;
+        this.updateLoadingState();
+        return;
+      }
+      for (const h of result) {
+        if (h.hash) this._hashes.set(h.path, h.hash);
+      }
+    } catch (err) {
+      // хеширование не критично — молча глотаем
+    }
+    this._hashing = false;
+    this.updateLoadingState();
+    this.draw();
   }
 
   /* ── Физика ──────────────────────────────── */
@@ -318,6 +500,8 @@ export class RelationshipGraph extends Component {
       const p = this._nodes.get(e.src);
       const q = this._nodes.get(e.dst);
       if (!p || !q) continue;
+      // Рисуем ребро только если оба узла уже появились
+      if (!this._appeared.has(p.path) || !this._appeared.has(q.path)) continue;
       this.drawEdge(c, p, q, e);
     }
     for (const n of this._nodes.values()) this.drawNode(c, n);
@@ -335,13 +519,23 @@ export class RelationshipGraph extends Component {
     };
   }
 
+  /** Определяет цвет и стиль стрелки по типу ребра.
+   *  Зелёный — зависимость (src→dst), жёлтый — обратная ссылка (dst→seed).
+   *  В режиме фокуса: исходящие от фокуса = зелёный, входящие в фокус = жёлтый.
+   *  В режиме обзора: по kind ребра. */
   edgeStyle(e) {
-    const col = this._colors;
+    // Ручные связи — пунктир, нейтральный цвет
     if (e.kind === 'manual') return { color: C_MANUAL, dash: [5, 4], arrow: false, strong: false };
-    if (this._focus && e.src === this._focus) return { color: col.dep, dash: [], arrow: true, strong: true };
-    if (this._focus && e.dst === this._focus) return { color: col.back, dash: [], arrow: true, strong: true };
+    // В режиме фокуса — исходящие зелёные, входящие жёлтые
+    if (this._focus) {
+      if (e.src === this._focus) return { color: C_DEP, dash: [], arrow: true, strong: true };
+      if (e.dst === this._focus) return { color: C_BACK, dash: [], arrow: true, strong: true };
+    }
+    // В режиме обзора или для транзитных рёбер:
+    // зависимости (import/include) — зелёный, упоминания — тусклый
     if (e.kind === 'mention') return { color: C_MENTION, dash: [2, 4], arrow: true, strong: false };
-    return { color: C_CTX, dash: [], arrow: true, strong: false };
+    // Остальные рёбра (контекстные) — зелёный по умолчанию (зависимость)
+    return { color: C_DEP, dash: [], arrow: true, strong: false };
   }
 
   drawEdge(c, p, q, e) {
@@ -351,41 +545,135 @@ export class RelationshipGraph extends Component {
     c.lineWidth = st.strong ? 2 : 1.2;
     c.setLineDash(st.dash);
     c.beginPath();
-    c.moveTo(p.x, p.y);
-    c.lineTo(q.x, q.y);
+    // Стрелка от края панели p к краю панели q
+    const dx = q.x - p.x;
+    const dy = q.y - p.y;
+    const ang = Math.atan2(dy, dx);
+    // Точка на границе панели p
+    const pEdge = this.edgePoint(p, ang, p.w || NODE_MIN_W, NODE_H);
+    // Точка на границе панели q
+    const qEdge = this.edgePoint(q, ang + Math.PI, q.w || NODE_MIN_W, NODE_H);
+    c.moveTo(pEdge.x, pEdge.y);
+    c.lineTo(qEdge.x, qEdge.y);
     c.stroke();
     c.setLineDash([]);
     if (st.arrow) {
-      const ang = Math.atan2(q.y - p.y, q.x - p.x);
-      const tx = q.x - Math.cos(ang) * (NODE_R + 2);
-      const ty = q.y - Math.sin(ang) * (NODE_R + 2);
       const a1 = ang + Math.PI - 0.4;
       const a2 = ang + Math.PI + 0.4;
       c.beginPath();
-      c.moveTo(tx, ty);
-      c.lineTo(tx + Math.cos(a1) * 8, ty + Math.sin(a1) * 8);
-      c.lineTo(tx + Math.cos(a2) * 8, ty + Math.sin(a2) * 8);
+      c.moveTo(qEdge.x, qEdge.y);
+      c.lineTo(qEdge.x + Math.cos(a1) * 8, qEdge.y + Math.sin(a1) * 8);
+      c.lineTo(qEdge.x + Math.cos(a2) * 8, qEdge.y + Math.sin(a2) * 8);
       c.closePath();
       c.fill();
     }
   }
 
+  /** Точка на границе прямоугольной панели узла по углу от центра. */
+  edgePoint(n, angle, w, h) {
+    const hw = w / 2;
+    const hh = h / 2;
+    const cos = Math.cos(angle);
+    const sin = Math.sin(angle);
+    // Пересечение луча с прямоугольником
+    let t;
+    if (Math.abs(cos) * hh > Math.abs(sin) * hw) {
+      t = hw / Math.abs(cos);
+    } else {
+      t = hh / Math.abs(sin);
+    }
+    return { x: n.x + cos * t, y: n.y + sin * t };
+  }
+
   drawNode(c, n) {
+    if (!this._appeared.has(n.path)) return; // ещё не появился
+
     const isFocus = n.path === this._focus;
     const isLinkSel = this._linkSel === n.path;
+    const hasHash = this._hashes.has(n.path);
+
+    // Вычисляем ширину панели по тексту
+    c.font = NODE_FONT;
+    const text = shortLabel(n.name);
+    const textW = c.measureText(text).width;
+    const nw = Math.min(NODE_MAX_W, Math.max(NODE_MIN_W, Math.ceil(textW) + NODE_PAD_X * 2));
+    n.w = nw;
+    const nh = NODE_H;
+    const x = n.x - nw / 2;
+    const y = n.y - nh / 2;
+
+    // Цвет узла по расширению (как в файловой панели)
+    const extCol = nodeColor(n.name, n.isDir);
+
+    // Фон панели — тонированный цветом расширения
     c.beginPath();
-    c.arc(n.x, n.y, isFocus ? NODE_R + 2 : NODE_R, 0, Math.PI * 2);
-    c.fillStyle = n.isDir ? this._colors.folder : this._colors.file;
+    this.roundRect(c, x, y, nw, nh, NODE_RADIUS);
+    const bgColor = extCol + (isFocus ? '30' : '18');
+    c.fillStyle = bgColor;
     c.fill();
-    if (isFocus || isLinkSel) {
-      c.lineWidth = 2.5;
-      c.strokeStyle = isLinkSel ? this._colors.dep : '#e6e8ee';
+
+    // Рамка — цвет расширения
+    c.lineWidth = isFocus ? 2.5 : isLinkSel ? 2.5 : 1.2;
+    c.strokeStyle = isFocus
+      ? extCol
+      : isLinkSel
+        ? extCol
+        : extCol + '88';
+    c.stroke();
+
+    // Текст внутри панели
+    c.fillStyle = isFocus ? '#ffffff' : 'rgba(220,225,235,0.9)';
+    c.font = isFocus ? 'bold ' + NODE_FONT : NODE_FONT;
+    c.textAlign = 'center';
+    c.textBaseline = 'middle';
+    c.fillText(text, n.x, n.y);
+    c.textBaseline = 'alphabetic';
+
+    // Иконка хеширования (маленький кружок-спиннер в правом верхнем углу)
+    if (this._hashing) {
+      const ix = x + nw - 6;
+      const iy = y + 6;
+      c.beginPath();
+      c.arc(ix, iy, 3.5, 0, Math.PI * 2);
+      c.fillStyle = extCol + '66';
+      c.fill();
+      // Вращающаяся дуга
+      const angle = (Date.now() / 200) % (Math.PI * 2);
+      c.beginPath();
+      c.arc(ix, iy, 3.5, angle, angle + Math.PI * 0.8);
+      c.strokeStyle = extCol;
+      c.lineWidth = 1.5;
+      c.stroke();
+    } else if (hasHash) {
+      // Галочка — файл прохеширован
+      const ix = x + nw - 8;
+      const iy = y + 6;
+      c.beginPath();
+      c.arc(ix, iy, 4, 0, Math.PI * 2);
+      c.fillStyle = extCol + '44';
+      c.fill();
+      c.beginPath();
+      c.moveTo(ix - 2, iy);
+      c.lineTo(ix - 0.5, iy + 2);
+      c.lineTo(ix + 2.5, iy - 2);
+      c.strokeStyle = extCol;
+      c.lineWidth = 1.2;
       c.stroke();
     }
-    c.fillStyle = 'rgba(220,225,235,0.88)';
-    c.font = isFocus ? 'bold 11px sans-serif' : '11px sans-serif';
-    c.textAlign = 'center';
-    c.fillText(shortLabel(n.name), n.x, n.y + NODE_R + 13);
+  }
+
+  /** Скруглённый прямоугольник (canvas path). */
+  roundRect(c, x, y, w, h, r) {
+    c.moveTo(x + r, y);
+    c.lineTo(x + w - r, y);
+    c.quadraticCurveTo(x + w, y, x + w, y + r);
+    c.lineTo(x + w, y + h - r);
+    c.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+    c.lineTo(x + r, y + h);
+    c.quadraticCurveTo(x, y + h, x, y + h - r);
+    c.lineTo(x, y + r);
+    c.quadraticCurveTo(x, y, x + r, y);
+    c.closePath();
   }
 
   /* ── Боковые списки ──────────────────────── */
@@ -445,8 +733,8 @@ export class RelationshipGraph extends Component {
         <div class="graph__head" data-drag>
           <div class="graph__title">Граф связей</div>
           <div class="graph__legend">
-            <span class="graph__dot" style="background:${this._colors.dep}"></span>зависимости
-            <span class="graph__dot" style="background:${this._colors.back}"></span>обратные ссылки
+            <span class="graph__dot" style="background:${C_DEP}"></span>зависимости
+            <span class="graph__dot" style="background:${C_BACK}"></span>обратные ссылки
           </div>
           <button class="graph__link-toggle" data-link title="Режим ручного связывания">🔗 связать</button>
           <button class="graph__close" data-close title="Закрыть">×</button>
@@ -454,6 +742,14 @@ export class RelationshipGraph extends Component {
         <div class="graph__body">
           <div class="graph__canvas-wrap">
             <canvas class="graph__canvas"></canvas>
+            <div class="graph__loading" hidden>
+              <div class="graph__spinner"></div>
+              <span class="graph__loading-text">Загрузка…</span>
+            </div>
+            <div class="graph__hashing" hidden>
+              <div class="graph__spinner graph__spinner--small"></div>
+              <span class="graph__loading-text">Хеширование…</span>
+            </div>
           </div>
           <aside class="graph__aside"></aside>
         </div>
@@ -462,6 +758,8 @@ export class RelationshipGraph extends Component {
     this.canvas = this.mount.querySelector('.graph__canvas');
     this.ctx = this.canvas.getContext('2d');
     this.aside = this.mount.querySelector('.graph__aside');
+    this._loadingEl = this.mount.querySelector('.graph__loading');
+    this._hashingEl = this.mount.querySelector('.graph__hashing');
 
     this.mount
       .querySelectorAll('[data-close]')
@@ -506,6 +804,12 @@ export class RelationshipGraph extends Component {
       this._h = h;
     }
     this.draw();
+  }
+
+  /** Обновить видимость индикаторов загрузки и хеширования. */
+  updateLoadingState() {
+    if (this._loadingEl) this._loadingEl.hidden = !this._loading;
+    if (this._hashingEl) this._hashingEl.hidden = !this._hashing;
   }
 
   toggleLinkMode() {
@@ -578,16 +882,19 @@ export class RelationshipGraph extends Component {
     const [sx, sy] = this.canvasPoint(e);
     const wx = (sx - this._ox) / this._zoom; // экран -> мир
     const wy = (sy - this._oy) / this._zoom;
-    const tol = NODE_R + 7;
     let best = null;
-    let bd = tol * tol;
+    let bestDist = Infinity;
     for (const n of this._nodes.values()) {
-      const dx = n.x - wx;
-      const dy = n.y - wy;
-      const d2 = dx * dx + dy * dy;
-      if (d2 <= bd) {
-        bd = d2;
-        best = n;
+      if (!this._appeared.has(n.path)) continue;
+      const nw = n.w || NODE_MIN_W;
+      const nh = NODE_H;
+      // Попадание в прямоугольник
+      if (wx >= n.x - nw / 2 && wx <= n.x + nw / 2 && wy >= n.y - nh / 2 && wy <= n.y + nh / 2) {
+        const d = Math.hypot(n.x - wx, n.y - wy);
+        if (d < bestDist) {
+          bestDist = d;
+          best = n;
+        }
       }
     }
     return best;

@@ -2,7 +2,10 @@
 
 use serde::Serialize;
 use tauri::Manager;
+use tauri::State;
 
+use crate::index::quick_access_repo::{self, QuickItem};
+use crate::state::AppState;
 use crate::error::Result;
 
 /// Запись для сайдбара: подпись, путь, тип (для иконки на фронте).
@@ -46,9 +49,9 @@ pub fn reveal_in_explorer(path: String) -> Result<()> {
 
 /// Быстрый доступ: домашняя, рабочий стол, документы, загрузки
 /// (только существующие).
-#[tauri::command]
-pub fn quick_access(app: tauri::AppHandle) -> Vec<Location> {
+pub fn quick_access_defaults(app: &tauri::AppHandle) -> Vec<Location> {
     let p = app.path();
+
     let candidates = [
         ("Домашняя", "home", p.home_dir()),
         ("Рабочий стол", "desktop", p.desktop_dir()),
@@ -69,6 +72,30 @@ pub fn quick_access(app: tauri::AppHandle) -> Vec<Location> {
             })
         })
         .collect()
+}
+
+#[tauri::command]
+pub fn quick_access(app: tauri::AppHandle, state: State<AppState>) -> Result<Vec<Location>> {
+    let conn = state.db()?;
+    if quick_access_repo::is_empty(&conn)? {
+        let seed: Vec<QuickItem> = quick_access_defaults(&app)
+            .into_iter()
+            .map(|l| QuickItem { path: l.path, label: l.label, kind: l.kind })
+            .collect();
+        quick_access_repo::replace_all(&conn, &seed)?;
+    }
+    let items = quick_access_repo::list(&conn)?;
+    Ok(items
+        .into_iter()
+        .map(|i| Location { label: i.label, path: i.path, kind: i.kind })
+        .collect())
+}
+
+/// Сохранить пользовательский список (полная замена).
+#[tauri::command]
+pub fn quick_access_save(state: State<AppState>, items: Vec<QuickItem>) -> Result<()> {
+    let conn = state.db()?;
+    quick_access_repo::replace_all(&conn, &items)
 }
 
 /// Список доступных дисков. На Windows перебираем буквы A..Z и проверяем
@@ -115,6 +142,7 @@ pub struct Storage {
 
 /// Список томов: точка монтирования, тип (SSD/HDD), занято/всего.
 /// Тип «Cloud» через sysinfo не определяется — будет «Диск».
+/// Ограничен таймаутом 5 с — sysinfo может зависать на сетевых томах.
 #[tauri::command]
 pub async fn list_storage() -> Vec<Storage> {
     // sysinfo обходит все тома — это блокирующая работа, уводим её с главного
