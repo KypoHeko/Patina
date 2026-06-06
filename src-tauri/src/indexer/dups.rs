@@ -1,6 +1,4 @@
 //! Поиск дубликатов: группировка по размеру -> хеш кандидатов -> группы.
-//! Скан ограничен текущей папкой (см. scanner). Хеширование устойчиво к
-//! ошибкам: нечитаемый/занятый файл пропускается, а не валит весь поиск.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -12,7 +10,6 @@ use crate::error::{Error, Result};
 use crate::index::files_repo;
 use crate::indexer::{hasher, scanner};
 
-/// Верхняя граница числа файлов в скане одной папки.
 pub const SCAN_CAP: usize = 20_000;
 
 #[derive(Serialize)]
@@ -23,15 +20,10 @@ pub struct DupGroup {
     pub paths: Vec<String>,
 }
 
-/// Поиск дубликатов. Тяжёлое хеширование выполняется ВНЕ блокировки БД:
-/// мьютекс соединения захватывается лишь короткими сериями (чтение кэша
-/// хешей и запись новых). `on_progress(done, total)` вызывается по ходу
-/// хеширования (для индикатора в UI).
 pub fn find<F>(db: &Mutex<Connection>, dir: &str, on_progress: F) -> Result<Vec<DupGroup>>
 where
     F: Fn(usize, usize),
 {
-    // 1. Обход текущей папки и группировка по размеру — без блокировки.
     let mut by_size: HashMap<u64, Vec<scanner::ScanFile>> = HashMap::new();
     for f in scanner::walk(dir, SCAN_CAP) {
         if f.size > 0 {
@@ -39,7 +31,6 @@ where
         }
     }
 
-    // Кандидаты — файлы, у которых есть «сосед» того же размера.
     let candidates: Vec<scanner::ScanFile> = by_size
         .into_iter()
         .filter(|(_, g)| g.len() >= 2)
@@ -50,22 +41,16 @@ where
         return Ok(Vec::new());
     }
 
-    // 2a. Короткая блокировка: читаем кэш хешей кандидатов (быстрые точечные SELECT).
     let mut hashes: HashMap<String, String> = HashMap::new();
     {
-        let conn = db
-            .lock()
-            .map_err(|_| Error::Operation("БД заблокирована (poisoned)".into()))?;
+        let conn = db.lock().map_err(|_| Error::Operation("БД заблокирована (poisoned)".into()))?;
         for f in &candidates {
             if let Some(h) = files_repo::cached_hash(&conn, &f.path, f.mtime)? {
                 hashes.insert(f.path.clone(), h);
             }
         }
-    } // лок отпущен — дальше тяжёлая часть идёт без него
+    }
 
-    // 2b. БЕЗ блокировки: хешируем промахи (чтение файлов — самая долгая часть).
-    // Нечитаемые/занятые файлы ПРОПУСКАЕМ, чтобы один сбойный файл не валил
-    // весь поиск (типичная причина «детектор сломался»).
     let to_hash: Vec<&scanner::ScanFile> = candidates
         .iter()
         .filter(|f| !hashes.contains_key(&f.path))
@@ -81,7 +66,7 @@ where
                 fresh.push((f.path.clone(), f.size, f.mtime, h.clone()));
                 hashes.insert(f.path.clone(), h);
             }
-            Err(_) => { /* пропускаем: нет доступа / файл занят / исчез */ }
+            Err(_) => {}
         }
         done += 1;
         if done % 8 == 0 || done == total {
@@ -89,25 +74,17 @@ where
         }
     }
 
-    // 2c. Короткая блокировка: пишем новые хеши в кэш.
     if !fresh.is_empty() {
-        let conn = db
-            .lock()
-            .map_err(|_| Error::Operation("БД заблокирована (poisoned)".into()))?;
+        let conn = db.lock().map_err(|_| Error::Operation("БД заблокирована (poisoned)".into()))?;
         for (path, size, mtime, h) in &fresh {
             files_repo::store_hash(&conn, path, *size, *mtime, h)?;
         }
     }
 
-    // 3. Группировка по хешу: только настоящие дубликаты, сортировка по размеру.
     let mut by_hash: HashMap<String, (u64, Vec<String>)> = HashMap::new();
     for f in candidates {
         if let Some(h) = hashes.get(&f.path) {
-            by_hash
-                .entry(h.clone())
-                .or_insert((f.size, Vec::new()))
-                .1
-                .push(f.path);
+            by_hash.entry(h.clone()).or_insert((f.size, Vec::new())).1.push(f.path);
         }
     }
     let mut groups: Vec<DupGroup> = by_hash

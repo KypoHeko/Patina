@@ -76,6 +76,8 @@ pub fn quick_access_defaults(app: &tauri::AppHandle) -> Vec<Location> {
 
 #[tauri::command]
 pub fn quick_access(app: tauri::AppHandle, state: State<AppState>) -> Result<Vec<Location>> {
+    // Проверяем наличие данных (чтение), при пустоте — сеем (запись).
+    // Это редкая одноразовая операция, поэтому сразу берём write-lock.
     let conn = state.db()?;
     if quick_access_repo::is_empty(&conn)? {
         let seed: Vec<QuickItem> = quick_access_defaults(&app)
@@ -152,6 +154,28 @@ pub async fn list_storage() -> Vec<Storage> {
         .unwrap_or_default()
 }
 
+/// На Windows — нативное перечисление томов через WinAPI: реальные метки тома
+/// и тип носителя (SSD/HDD). sysinfo на Windows часто отдаёт пустые метки.
+#[cfg(windows)]
+fn list_storage_sync() -> Vec<Storage> {
+    crate::platform::list_drives_native()
+        .into_iter()
+        .map(|d| Storage {
+            name: if d.label.is_empty() {
+                d.path.trim_end_matches('\\').to_string()
+            } else {
+                d.label
+            },
+            path: d.path,
+            kind: d.kind,
+            total: d.total,
+            used: d.total.saturating_sub(d.available),
+        })
+        .collect()
+}
+
+/// На Linux/macOS — через кроссплатформенный sysinfo.
+#[cfg(not(windows))]
 fn list_storage_sync() -> Vec<Storage> {
     use std::collections::HashSet;
     use sysinfo::{DiskKind, Disks};

@@ -22,7 +22,6 @@ pub fn remove_tag(state: State<AppState>, path: String, tag_id: String) -> Resul
     tags_repo::remove(&conn, &path, &tag_id)
 }
 
-// Горячий путь (вызывается на каждый листинг панели) — уводим с главного потока.
 #[tauri::command]
 pub async fn tags_for_paths(
     app: AppHandle,
@@ -30,7 +29,7 @@ pub async fn tags_for_paths(
 ) -> Result<HashMap<String, Vec<String>>> {
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<AppState>();
-        let conn = state.db()?;
+        let conn = state.db_read()?;
         tags_repo::for_paths(&conn, &paths)
     })
     .await
@@ -39,17 +38,16 @@ pub async fn tags_for_paths(
 
 #[tauri::command]
 pub fn paths_for_tag(state: State<AppState>, tag_id: String) -> Result<Vec<String>> {
-    let conn = state.db()?;
+    let conn = state.db_read()?;
     tags_repo::paths_for(&conn, &tag_id)
 }
 
-/// Виртуальный список: все существующие файлы с данным тегом.
 #[tauri::command]
 pub async fn list_tag(app: AppHandle, tag_id: String) -> Result<Vec<FileEntry>> {
     tauri::async_runtime::spawn_blocking(move || -> Result<Vec<FileEntry>> {
         let state = app.state::<AppState>();
         let paths = {
-            let conn = state.db()?;
+            let conn = state.db_read()?;
             tags_repo::paths_for(&conn, &tag_id)?
         };
         Ok(paths.iter().filter_map(|p| lister::entry_from_path(p)).collect())
@@ -62,7 +60,7 @@ pub async fn list_tag(app: AppHandle, tag_id: String) -> Result<Vec<FileEntry>> 
 pub async fn tag_counts(app: AppHandle) -> Result<HashMap<String, i64>> {
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<AppState>();
-        let conn = state.db()?;
+        let conn = state.db_read()?;
         tags_repo::counts(&conn)
     })
     .await

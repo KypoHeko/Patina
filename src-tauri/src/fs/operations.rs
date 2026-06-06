@@ -24,8 +24,9 @@ pub fn move_entries(sources: &[String], dest_dir: &str, overwrite: bool) -> Resu
 }
 
 pub fn delete_entries(paths: &[String]) -> Result<()> {
-    trash::delete_all(paths).map_err(|e| Error::Operation(e.to_string()))?;
-    Ok(())
+    // Windows — нативный IFileOperation (UAC, длинные и UNC-пути);
+    // прочие ОС — crate `trash` (fallback внутри platform).
+    crate::platform::delete_to_recycle_bin(paths)
 }
 
 pub fn rename_entry(path: &str, new_name: &str) -> Result<String> {

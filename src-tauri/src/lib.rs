@@ -7,6 +7,7 @@ mod index;
 mod indexer;
 mod models;
 mod state;
+mod platform;
 
 use tauri::Manager;
 

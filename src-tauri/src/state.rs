@@ -1,4 +1,12 @@
 //! Глобальное состояние приложения (Tauri .manage()).
+//!
+//! БД оборачивается в Mutex<Connection>, а не RwLock<Connection>:
+//! - rusqlite::Connection содержит RefCell внутри и не реализует Sync
+//! - RwLock<T>: Sync требует T: Send + Sync, а Connection: !Sync
+//! - Mutex<T>: Sync требует только T: Send, а Connection: Send
+//! - Практической разницы нет: на одном соединении SQLite всё равно
+//!   сериализует запросы, поэтому «множество читателей» RwLock
+//!   не даёт реального параллелизма
 
 use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard};
@@ -16,6 +24,10 @@ pub struct IndexState {
 }
 
 pub struct AppState {
+    /// Mutex<Connection> — единственный способ сделать AppState: Sync,
+    /// т.к. rusqlite::Connection: !Sync (внутренний RefCell).
+    /// На практике это не хуже RwLock: одно соединение SQLite сериализует
+    /// все запросы, поэтому «параллельные читатели» RwLock были иллюзией.
     pub db: Mutex<Connection>,
     pub versions_dir: PathBuf,
     pub thumbs_dir: PathBuf,
@@ -37,9 +49,19 @@ impl AppState {
         }
     }
 
-    /// Захват соединения БД без паники: отравленный мьютекс превращается в
-    /// обычную ошибку (её увидит фронт), а не в крах всего процесса.
+    /// Захват соединения БД (эксклюзивная блокировка).
+    /// Отравленный лок превращается в ошибку (её увидит фронт),
+    /// а не в крах всего процесса.
     pub fn db(&self) -> Result<MutexGuard<'_, Connection>> {
+        self.db
+            .lock()
+            .map_err(|_| Error::Operation("БД заблокирована (poisoned)".into()))
+    }
+
+    /// Захват соединения БД для чтения.
+    /// С Mutex нет разделения read/write, но на одном соединении SQLite
+    /// это не даёт реальной потери производительности.
+    pub fn db_read(&self) -> Result<MutexGuard<'_, Connection>> {
         self.db
             .lock()
             .map_err(|_| Error::Operation("БД заблокирована (poisoned)".into()))

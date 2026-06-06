@@ -1,5 +1,4 @@
-//! Команды связей между файлами: ручные связи + построение графа
-//! (зависимости/обратные ссылки) вокруг выбранных файлов.
+//! Команды связей между файлами: ручные связи + построение графа.
 
 use std::collections::BTreeSet;
 use std::time::UNIX_EPOCH;
@@ -41,7 +40,6 @@ pub struct GraphData {
     edges: Vec<Edge>,
 }
 
-/// Имя и тип узла: из file_index, иначе из basename (тип — «файл»).
 fn node_meta(conn: &Connection, path: &str) -> (String, bool) {
     let row = conn
         .query_row(
@@ -65,11 +63,9 @@ fn node_meta(conn: &Connection, path: &str) -> (String, bool) {
     }
 }
 
-/// Граф вокруг seed-путей: рёбра в пределах `hops` прыжков (исходящие —
-/// зависимости, входящие — обратные ссылки) + узлы (seed и все концы рёбер).
 #[tauri::command]
 pub fn file_graph(state: State<AppState>, seeds: Vec<String>, hops: usize) -> Result<GraphData> {
-    let conn = state.db()?;
+    let conn = state.db_read()?;
     let edges = edges_repo::neighborhood(&conn, &seeds, hops)?;
 
     let mut paths: BTreeSet<String> = seeds.into_iter().collect();
@@ -88,7 +84,6 @@ pub fn file_graph(state: State<AppState>, seeds: Vec<String>, hops: usize) -> Re
     Ok(GraphData { nodes, edges })
 }
 
-/// Результат хеширования одного файла графа.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FileHash {
@@ -97,16 +92,11 @@ pub struct FileHash {
     pub cached: bool,
 }
 
-/// Хеширование файлов, входящих в граф (BLAKE3). Сначала проверяет кэш в таблице
-/// files (по mtime), затем хеширует промахи и обновляет кэш. Нечитаемые файлы
-/// пропускаются (hash = ""), не валит общий результат. БД захватывается короткими
-/// сериями — тяжёлое хеширование файлов идёт без блокировки.
 #[tauri::command]
 pub fn hash_graph_files(state: State<AppState>, paths: Vec<String>) -> Result<Vec<FileHash>> {
-    // Фаза 1: короткая блокировка — читаем кэш хешей.
     let mut cached: Vec<(String, i64, u64, Option<String>)> = Vec::with_capacity(paths.len());
     {
-        let conn = state.db()?;
+        let conn = state.db_read()?;
         for path in &paths {
             let meta = std::fs::metadata(path);
             let mtime = meta
@@ -123,40 +113,26 @@ pub fn hash_graph_files(state: State<AppState>, paths: Vec<String>) -> Result<Ve
             };
             cached.push((path.clone(), mtime.unwrap_or(0), size, hash));
         }
-    } // лок отпущен
+    }
 
-    // Фаза 2: БЕЗ блокировки — хешируем промахи кэша.
     let mut fresh: Vec<(String, i64, u64, String)> = Vec::new();
     let mut results: Vec<FileHash> = Vec::with_capacity(cached.len());
     for (path, mtime, size, hash) in &cached {
         if let Some(h) = hash {
-            results.push(FileHash {
-                path: path.clone(),
-                hash: h.clone(),
-                cached: true,
-            });
+            results.push(FileHash { path: path.clone(), hash: h.clone(), cached: true });
         } else {
             match hasher::hash_file(path) {
                 Ok(h) => {
                     fresh.push((path.clone(), *mtime, *size, h.clone()));
-                    results.push(FileHash {
-                        path: path.clone(),
-                        hash: h,
-                        cached: false,
-                    });
+                    results.push(FileHash { path: path.clone(), hash: h, cached: false });
                 }
                 Err(_) => {
-                    results.push(FileHash {
-                        path: path.clone(),
-                        hash: String::new(),
-                        cached: false,
-                    });
+                    results.push(FileHash { path: path.clone(), hash: String::new(), cached: false });
                 }
             }
         }
     }
 
-    // Фаза 3: короткая блокировка — пишем новые хеши в кэш.
     if !fresh.is_empty() {
         let conn = state.db()?;
         for (path, mtime, size, hash) in &fresh {

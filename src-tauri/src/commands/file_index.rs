@@ -10,7 +10,6 @@ use crate::state::AppState;
 
 const SCAN_LIMIT: usize = 50_000;
 
-/// Переиндексировать поддерево: обход — ВНЕ блокировки, запись — короткой транзакцией.
 #[tauri::command]
 pub async fn reindex_tree(state: State<'_, AppState>, root: String) -> Result<usize> {
     let mut rows: Vec<IndexRow> = Vec::new();
@@ -37,19 +36,9 @@ pub async fn reindex_tree(state: State<'_, AppState>, root: String) -> Result<us
         let ext = if is_dir {
             None
         } else {
-            entry
-                .path()
-                .extension()
-                .map(|e| e.to_string_lossy().into_owned())
+            entry.path().extension().map(|e| e.to_string_lossy().into_owned())
         };
-        rows.push(IndexRow {
-            path,
-            name,
-            is_dir,
-            size: if is_dir { 0 } else { meta.len() },
-            mtime,
-            ext,
-        });
+        rows.push(IndexRow { path, name, is_dir, size: if is_dir { 0 } else { meta.len() }, mtime, ext });
     }
     let n = rows.len();
     {
@@ -59,7 +48,6 @@ pub async fn reindex_tree(state: State<'_, AppState>, root: String) -> Result<us
     Ok(n)
 }
 
-/// Поиск по индексу: до `limit` записей поддерева (фильтрация — на фронте).
 #[tauri::command]
 pub async fn search_files(
     state: State<'_, AppState>,
@@ -68,6 +56,6 @@ pub async fn search_files(
     limit: usize,
 ) -> Result<Vec<FileEntry>> {
     let cap = if limit == 0 { 20_000 } else { limit };
-    let conn = state.db()?;
+    let conn = state.db_read()?;
     file_index::search(&conn, &root, &query, cap)
 }

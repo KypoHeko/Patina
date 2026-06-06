@@ -15,6 +15,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("schema/0005_file_index.sql"),
     include_str!("schema/0006_file_edges.sql"),
     include_str!("schema/0007_quick_access.sql"),
+    include_str!("schema/0008_usn_position.sql"),
 ];
 
 pub fn open(app: &AppHandle) -> Result<Connection> {
@@ -25,7 +26,13 @@ pub fn open(app: &AppHandle) -> Result<Connection> {
     fs::create_dir_all(&dir)?;
 
     let conn = Connection::open(dir.join("patina.db"))?;
-    conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;")?;
+    conn.execute_batch(
+        "PRAGMA journal_mode = WAL;
+         PRAGMA foreign_keys = ON;
+         PRAGMA busy_timeout = 5000;
+         PRAGMA synchronous = NORMAL;
+         PRAGMA cache_size = -64000;",
+    )?;
     run_migrations(&conn)?;
     Ok(conn)
 }
@@ -33,8 +40,6 @@ pub fn open(app: &AppHandle) -> Result<Connection> {
 fn run_migrations(conn: &Connection) -> Result<()> {
     let mut version: usize =
         conn.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))? as usize;
-    // Каждая миграция — в своей транзакции, версия бампается сразу после успеха.
-    // Так частичный сбой не оставит БД в промежуточном состоянии (см. ревью).
     while version < MIGRATIONS.len() {
         conn.execute_batch("BEGIN")?;
         let step: Result<()> = conn.execute_batch(MIGRATIONS[version]).map_err(Error::from);

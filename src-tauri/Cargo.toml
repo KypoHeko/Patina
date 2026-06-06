@@ -15,13 +15,32 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = [] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-thiserror = "2"
-open = "5"
-trash = "5"
-fs_extra = "1"
-rusqlite = { version = "0.37", features = ["bundled"] }
-walkdir = "2"
-blake3 = "1"
-sysinfo = "0.33"
-image = "0.25"
-notify = "6"
+thiserror = "2.0.17" #"2"
+open = "5.3.3" #"5"
+trash = "5.2.5" #"5"
+fs_extra = "1.3.0" #"1"
+rusqlite = { version = "0.39", features = ["bundled"] }
+walkdir = "2.5.0" #"2"
+blake3 = "1.8.5" #"1"
+sysinfo = "0.38.4" #"0.33"
+image = "0.25.9" #"0.25"
+notify = "8.2.0" #"6"
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
+opt-level = 3
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", features = [
+  "Win32_UI_Shell",                   # SHGetFileInfo, IFileOperation, SHGetKnownFolderPath
+  "Win32_Storage_FileSystem",         # USN Journal, GetVolumeInformation, GetDriveType, GetDiskFreeSpaceEx
+  "Win32_Foundation",                 # HANDLE, BOOL, CloseHandle
+  "Win32_Security",                   # GetNamedSecurityInfoW, ACL, SECURITY_DESCRIPTOR
+  "Win32_System_Com",                 # CoInitializeEx, CoCreateInstance, CoTaskMemFree
+  "Win32_System_IO",                  # DeviceIoControl
+  "Win32_Graphics_Gdi",               # CreateCompatibleDC, GetDIBits, SelectObject, BITMAPINFO
+  "Win32_UI_WindowsAndMessaging",     # DestroyIcon, GetIconInfo
+] }

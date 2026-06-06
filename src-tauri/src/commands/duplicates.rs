@@ -12,9 +12,6 @@ struct DupProgress {
     total: usize,
 }
 
-// Обход и хеширование — блокирующий I/O, поэтому spawn_blocking (выделенный
-// пул, не воркеры async-рантайма). Блокировку БД dups::find держит сам —
-// короткими сериями. По ходу хеширования шлём 'dups:progress' для индикатора.
 #[tauri::command]
 pub async fn find_duplicates(app: AppHandle, dir: String) -> Result<Vec<DupGroup>> {
     let app2 = app.clone();

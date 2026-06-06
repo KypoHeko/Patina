@@ -12,13 +12,11 @@ const TEXT_EXTS: &[&str] = &[
     "ini", "cfg", "conf", "log", "csv", "tsv", "html", "htm", "css", "xml", "sh", "bat", "py", "go",
     "java", "c", "h", "cpp", "hpp", "sql", "kt", "swift", "rb", "php", "lua", "vue", "svelte",
 ];
-const MAX_FILE: u64 = 1_048_576; // 1 МБ на файл
+const MAX_FILE: u64 = 1_048_576;
 const MAX_FILES: usize = 5_000;
 
-/// Переиндексировать содержимое текстовых файлов поддерева. Чтение файлов идёт
-/// ВНЕ блокировки БД; запись — короткой транзакцией.
 #[tauri::command]
-pub async fn reindex_content(state: State<'_, AppState>, root: String) -> Result<usize> {
+pub async fn reindex_content(state: State<'_, AppState>, root: String) -> Result<usize> { 
     let mut rows: Vec<ContentRow> = Vec::new();
     for entry in WalkDir::new(&root)
         .min_depth(1)
@@ -61,7 +59,6 @@ pub async fn reindex_content(state: State<'_, AppState>, root: String) -> Result
     Ok(n)
 }
 
-/// Поиск по содержимому в поддереве (до `limit` совпадений).
 #[tauri::command]
 pub async fn search_content(
     state: State<'_, AppState>,
@@ -70,7 +67,16 @@ pub async fn search_content(
     limit: usize,
 ) -> Result<Vec<ContentHit>> {
     let cap = if limit == 0 { 200 } else { limit };
-    let conn = state.db()?;
-    content_index::ensure_table(&conn)?;
-    content_index::search(&conn, &root, &query, cap)
+    let result = {
+        let conn = state.db_read()?;
+        content_index::search(&conn, &root, &query, cap)
+    };
+    match result {
+        Ok(hits) => Ok(hits),
+        Err(_) => {
+            let conn = state.db()?;
+            content_index::ensure_table(&conn)?;
+            content_index::search(&conn, &root, &query, cap)
+        }
+    }
 }

@@ -1,6 +1,6 @@
 import { Component } from '../core/component.js';
 import { escapeHtml } from '../core/dom.js';
-import { fileGraph, addRelationship, removeRelationship, hashGraphFiles } from '../api/relationships.js';
+import { fileGraph, hashGraphFiles } from '../api/relationships.js';
 import { startIndex } from '../api/indexing.js';
 import { onEvent } from '../api/events.js';
 import { getPane } from '../state/panes.js';
@@ -18,10 +18,10 @@ const DEFAULT_W = 900; // ориентир до первой раскладки 
 const DEFAULT_H = 600;
 
 // Физика (подобрана под десятки узлов, увеличена под панели)
-const REPULSION = 9000; // кулоновское отталкивание (больше — узлы-панели шире)
-const SPRING_LEN = 140; // длина покоя ребра (больше — длиннее связи)
-const SPRING_K = 0.012; // жёсткость пружины
-const GRAVITY = 0.012; // притяжение к центру (держит отвязанные узлы)
+const REPULSION = 18000; // кулоновское отталкивание (больше — узлы-панели шире)
+const SPRING_LEN = 240; // длина покоя ребра (больше — длиннее связи)
+const SPRING_K = 0.010; // жёсткость пружины
+const GRAVITY = 0.008; // притяжение к центру (держит отвязанные узлы)
 const DAMPING = 0.86;
 const ALPHA_MIN = 0.02;
 const ZOOM_MIN = 0.2;
@@ -69,26 +69,35 @@ const EXT_COLOR = {
   webm: '#f43f5e', wmv: '#f43f5e',
   exe: '#64748b', msi: '#64748b', dll: '#64748b', iso: '#64748b',
 };
-const FOLDER_COLOR = '#eab308';
 const DEFAULT_NODE_COLOR = '#94a3b8';
 
 /** Получить цвет узла по расширению файла. */
-function nodeColor(name, isDir) {
-  if (isDir) return FOLDER_COLOR;
+function nodeColor(name) {
   const dot = name.lastIndexOf('.');
   if (dot < 0) return DEFAULT_NODE_COLOR;
   const ext = name.slice(dot + 1).toLowerCase();
   return EXT_COLOR[ext] || DEFAULT_NODE_COLOR;
 }
 
-function shortLabel(name) {
-  return name.length > 22 ? name.slice(0, 21) + '…' : name;
+/** Относительный путь: показываем последние 2 компонента (папка/файл).
+ *  Папки в графе не отображаются как узлы, поэтому показываем
+ *  родительскую папку как контекст. */
+function shortLabel(name, fullPath) {
+  const sep = fullPath.includes('\\') ? '\\' : '/';
+  const parts = fullPath.split(/[/\\]/);
+  let label;
+  if (parts.length >= 2) {
+    label = parts.slice(-2).join(sep);
+  } else {
+    label = name;
+  }
+  return label.length > 28 ? label.slice(0, 27) + '…' : label;
 }
 
 /** Измерить ширину текста метки узла на полотне. */
-function measureLabelWidth(ctx, name) {
+function measureLabelWidth(ctx, name, fullPath) {
   ctx.font = NODE_FONT;
-  const text = shortLabel(name);
+  const text = shortLabel(name, fullPath || name);
   const w = ctx.measureText(text).width;
   return Math.min(NODE_MAX_W, Math.max(NODE_MIN_W, Math.ceil(w) + NODE_PAD_X * 2));
 }
@@ -105,9 +114,6 @@ export class RelationshipGraph extends Component {
     this._root = '';
     this._mode = 'overview'; // 'focus' | 'overview'
     this._focus = null;
-    this._linkMode = false;
-    this._linkSel = null;
-
     this._nodes = new Map();
     this._edges = [];
     this._curSeeds = [];
@@ -152,7 +158,12 @@ export class RelationshipGraph extends Component {
 
     this.listen('graph:open', () => (this._open ? this.close() : this.open()));
     this.on(document, 'keydown', (e) => {
-      if (this._open && e.key === 'Escape') this.close();
+      if (!this._open) return;
+      if (e.key === 'Escape') this.close();
+      if (e.key === 'Backspace' && this._mode === 'focus') {
+        e.preventDefault();
+        this.backToOverview();
+      }
     });
     // Перетаскивания обрабатываем на уровне документа (постоянно, с защитой),
     // чтобы курсор можно было увести за пределы окна и не терять захват.
@@ -185,8 +196,6 @@ export class RelationshipGraph extends Component {
       seeds = entries.slice(0, OVERVIEW_CAP).map((e) => e.path);
     }
 
-    this._linkMode = false;
-    this._linkSel = null;
     this._ox = 0;
     this._oy = 0;
     this._zoom = 1;
@@ -200,7 +209,7 @@ export class RelationshipGraph extends Component {
     this._hashSeq++;
     this.render();
 
-    if (this._root) startIndex(this._root, true, false).catch(() => {});
+    if (this._root) startIndex(this._root, true, false).catch(() => { });
     this.fetch(seeds, 1);
   }
 
@@ -264,26 +273,39 @@ export class RelationshipGraph extends Component {
   }
 
   ingest(data, seeds) {
-    const nodes = (data && data.nodes) || [];
-    const edges = (data && data.edges) || [];
+    const rawNodes = (data && data.nodes) || [];
+    const rawEdges = (data && data.edges) || [];
     const cx = this._w / 2;
     const cy = this._h / 2;
 
+    // Фильтруем папки: они не отображаются как узлы графа
+    const folderPaths = new Set();
+    const fileNodes = rawNodes.filter((n) => {
+      if (n.isDir) {
+        folderPaths.add(n.path);
+        return false;
+      }
+      return true;
+    });
+
+    // Убираем рёбра, ссылающиеся на папки (они не будут отображаться)
+    const edges = rawEdges.filter((e) => !folderPaths.has(e.src) && !folderPaths.has(e.dst));
+
     // Инкрементальное слияние: старые узлы остаются, новые добавляются.
     // Позиции существующих узлов сохраняются — нет «прыжков» при refetch.
-    nodes.forEach((n, i) => {
+    fileNodes.forEach((n, i) => {
       if (this._nodes.has(n.path)) {
         // Обновляем мета-данные, но сохраняем позицию и скорость
         const prev = this._nodes.get(n.path);
         prev.name = n.name;
-        prev.isDir = n.isDir;
+        prev.isDir = false;
       } else {
-        const ang = (i / Math.max(nodes.length, 1)) * Math.PI * 2;
+        const ang = (i / Math.max(fileNodes.length, 1)) * Math.PI * 2;
         const r = 80 + (i % 5) * 32;
         this._nodes.set(n.path, {
           path: n.path,
           name: n.name,
-          isDir: n.isDir,
+          isDir: false,
           x: cx + r * Math.cos(ang),
           y: cy + r * Math.sin(ang),
           vx: 0,
@@ -293,13 +315,16 @@ export class RelationshipGraph extends Component {
       }
     });
     // Удаляем узлы, которых больше нет в данных (кроме seeds)
-    const validPaths = new Set(nodes.map((n) => n.path));
-    for (const s of seeds) validPaths.add(s);
+    const validPaths = new Set(fileNodes.map((n) => n.path));
+    for (const s of seeds) {
+      if (!folderPaths.has(s)) validPaths.add(s);
+    }
     for (const path of [...this._nodes.keys()]) {
       if (!validPaths.has(path)) this._nodes.delete(path);
     }
-    // Добавляем seed-пути, если их не оказалось в данных
+    // Добавляем seed-пути, если их не оказалось в данных (только файлы, не папки)
     for (const s of seeds) {
+      if (folderPaths.has(s)) continue;
       if (!this._nodes.has(s)) {
         this._nodes.set(s, {
           path: s,
@@ -345,10 +370,11 @@ export class RelationshipGraph extends Component {
     }, APPEAR_INTERVAL);
   }
 
-  /** Все узлы появились — запускаем физику и хеширование. */
+  /** Все узлы появились — запускаем физику. Хеширование запускается кнопкой. */
   onProgressiveDone() {
     this.startSim();
-    this.startHashing();
+    // Показываем кнопку хеширования
+    this.updateHashButton();
   }
 
   /* ── Хеширование файлов графа ────────────── */
@@ -357,26 +383,26 @@ export class RelationshipGraph extends Component {
     // Не перезапускаем если уже идёт
     if (this._hashing) return;
 
-    const paths = [...this._nodes.keys()].filter((p) => {
-      const n = this._nodes.get(p);
-      return n && !n.isDir;
-    });
+    const paths = [...this._nodes.keys()];
     // Хешируем только те файлы, которые ещё не прохешированы
     const unhashed = paths.filter((p) => !this._hashes.has(p));
-    if (unhashed.length === 0) return;
+    if (unhashed.length === 0) {
+      this.updateHashButton();
+      return;
+    }
 
     this._hashing = true;
     this._hashSeq++;
     const mySeq = this._hashSeq;
     this._hashProgress = 0;
     this._hashTotal = unhashed.length;
-    this.updateLoadingState();
+    this.updateHashButton();
     try {
       const result = await hashGraphFiles(unhashed);
       // Проверяем что это не устаревший вызов и окно всё ещё открыто
       if (mySeq !== this._hashSeq || !this._open) {
         this._hashing = false;
-        this.updateLoadingState();
+        this.updateHashButton();
         return;
       }
       for (const h of result) {
@@ -386,7 +412,7 @@ export class RelationshipGraph extends Component {
       // хеширование не критично — молча глотаем
     }
     this._hashing = false;
-    this.updateLoadingState();
+    this.updateHashButton();
     this.draw();
   }
 
@@ -589,12 +615,11 @@ export class RelationshipGraph extends Component {
     if (!this._appeared.has(n.path)) return; // ещё не появился
 
     const isFocus = n.path === this._focus;
-    const isLinkSel = this._linkSel === n.path;
     const hasHash = this._hashes.has(n.path);
 
     // Вычисляем ширину панели по тексту
     c.font = NODE_FONT;
-    const text = shortLabel(n.name);
+    const text = shortLabel(n.name, n.path);
     const textW = c.measureText(text).width;
     const nw = Math.min(NODE_MAX_W, Math.max(NODE_MIN_W, Math.ceil(textW) + NODE_PAD_X * 2));
     n.w = nw;
@@ -603,7 +628,7 @@ export class RelationshipGraph extends Component {
     const y = n.y - nh / 2;
 
     // Цвет узла по расширению (как в файловой панели)
-    const extCol = nodeColor(n.name, n.isDir);
+    const extCol = nodeColor(n.name);
 
     // Фон панели — тонированный цветом расширения
     c.beginPath();
@@ -613,20 +638,19 @@ export class RelationshipGraph extends Component {
     c.fill();
 
     // Рамка — цвет расширения
-    c.lineWidth = isFocus ? 2.5 : isLinkSel ? 2.5 : 1.2;
+    c.lineWidth = isFocus ? 2.5 : 1.2;
     c.strokeStyle = isFocus
       ? extCol
-      : isLinkSel
-        ? extCol
-        : extCol + '88';
+      : extCol + '88';
     c.stroke();
 
-    // Текст внутри панели
+    // Текст внутри панели — показываем путь (папка/файл) вместо просто имени
+    const labelText = shortLabel(n.name, n.path);
     c.fillStyle = isFocus ? '#ffffff' : 'rgba(220,225,235,0.9)';
     c.font = isFocus ? 'bold ' + NODE_FONT : NODE_FONT;
     c.textAlign = 'center';
     c.textBaseline = 'middle';
-    c.fillText(text, n.x, n.y);
+    c.fillText(labelText, n.x, n.y);
     c.textBaseline = 'alphabetic';
 
     // Иконка хеширования (маленький кружок-спиннер в правом верхнем углу)
@@ -698,7 +722,7 @@ export class RelationshipGraph extends Component {
       if (e.src === focus) deps.push(e.dst);
       else if (e.dst === focus) backs.push(e.src);
     }
-    const title = fnode ? fnode.name : focus.split(/[\\/]/).pop();
+    const title = fnode ? shortLabel(fnode.name, fnode.path) : focus.split(/[\\/]/).pop();
     this.aside.innerHTML = `
       <div class="graph__focus" title="${escapeHtml(focus)}">${escapeHtml(title)}</div>
       ${this.listBlock('Зависимости', deps, 'dep')}
@@ -714,12 +738,12 @@ export class RelationshipGraph extends Component {
     const uniq = [...new Set(paths)];
     const items = uniq.length
       ? uniq
-          .map((p) => {
-            const node = this._nodes.get(p);
-            const name = node ? node.name : p.split(/[\\/]/).pop() || p;
-            return `<li class="graph__item graph__item--${cls}" data-reveal="${escapeHtml(p)}" title="${escapeHtml(p)}">${escapeHtml(name)}</li>`;
-          })
-          .join('')
+        .map((p) => {
+          const node = this._nodes.get(p);
+          const name = node ? shortLabel(node.name, node.path) : p.split(/[\\/]/).pop() || p;
+          return `<li class="graph__item graph__item--${cls}" data-reveal="${escapeHtml(p)}" title="${escapeHtml(p)}">${escapeHtml(name)}</li>`;
+        })
+        .join('')
       : `<li class="graph__item graph__item--empty">—</li>`;
     return `<div class="graph__group"><div class="graph__group-title">${escapeHtml(title)} <span class="graph__count">${uniq.length}</span></div><ul class="graph__list">${items}</ul></div>`;
   }
@@ -736,7 +760,6 @@ export class RelationshipGraph extends Component {
             <span class="graph__dot" style="background:${C_DEP}"></span>зависимости
             <span class="graph__dot" style="background:${C_BACK}"></span>обратные ссылки
           </div>
-          <button class="graph__link-toggle" data-link title="Режим ручного связывания">🔗 связать</button>
           <button class="graph__close" data-close title="Закрыть">×</button>
         </div>
         <div class="graph__body">
@@ -746,10 +769,10 @@ export class RelationshipGraph extends Component {
               <div class="graph__spinner"></div>
               <span class="graph__loading-text">Загрузка…</span>
             </div>
-            <div class="graph__hashing" hidden>
-              <div class="graph__spinner graph__spinner--small"></div>
-              <span class="graph__loading-text">Хеширование…</span>
-            </div>
+            <button class="graph__hash-btn" hidden data-hash-btn>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5l3 3"/></svg>
+              <span class="graph__hash-btn-text">Хешировать</span>
+            </button>
           </div>
           <aside class="graph__aside"></aside>
         </div>
@@ -759,13 +782,14 @@ export class RelationshipGraph extends Component {
     this.ctx = this.canvas.getContext('2d');
     this.aside = this.mount.querySelector('.graph__aside');
     this._loadingEl = this.mount.querySelector('.graph__loading');
-    this._hashingEl = this.mount.querySelector('.graph__hashing');
+    this._hashBtn = this.mount.querySelector('[data-hash-btn]');
 
     this.mount
       .querySelectorAll('[data-close]')
       .forEach((el) => el.addEventListener('click', () => this.close()));
-    this.linkBtn = this.mount.querySelector('[data-link]');
-    this.linkBtn.addEventListener('click', () => this.toggleLinkMode());
+    if (this._hashBtn) {
+      this._hashBtn.addEventListener('click', () => this.startHashing());
+    }
 
     const head = this.mount.querySelector('[data-drag]');
     head.addEventListener('mousedown', (e) => this.onHeadDown(e));
@@ -806,17 +830,44 @@ export class RelationshipGraph extends Component {
     this.draw();
   }
 
-  /** Обновить видимость индикаторов загрузки и хеширования. */
+  /** Обновить видимость индикатора загрузки. */
   updateLoadingState() {
     if (this._loadingEl) this._loadingEl.hidden = !this._loading;
-    if (this._hashingEl) this._hashingEl.hidden = !this._hashing;
   }
 
-  toggleLinkMode() {
-    this._linkMode = !this._linkMode;
-    this._linkSel = null;
-    this.linkBtn.classList.toggle('is-active', this._linkMode);
-    this.draw();
+  /** Обновить состояние кнопки хеширования. */
+  updateHashButton() {
+    if (!this._hashBtn) return;
+    if (this._hashing) {
+      this._hashBtn.hidden = false;
+      this._hashBtn.classList.add('is-hashing');
+      this._hashBtn.querySelector('.graph__hash-btn-text').textContent = 'Хеширование…';
+      this._hashBtn.disabled = true;
+    } else {
+      const paths = [...this._nodes.keys()];
+      const unhashed = paths.filter((p) => !this._hashes.has(p));
+      if (unhashed.length === 0) {
+        this._hashBtn.hidden = true;
+      } else {
+        this._hashBtn.hidden = false;
+        this._hashBtn.classList.remove('is-hashing');
+        this._hashBtn.querySelector('.graph__hash-btn-text').textContent = `Хешировать (${unhashed.length})`;
+        this._hashBtn.disabled = false;
+      }
+    }
+  }
+
+  /** Вернуться из фокусного режима к обзору графа. */
+  backToOverview() {
+    if (this._mode !== 'focus') return;
+    this._mode = 'overview';
+    this._focus = null;
+    // Заново загружаем обзор для текущего корня
+    const state = this.store.getState();
+    const pane = getPane(state, this._side);
+    const entries = pane.entries || [];
+    const seeds = entries.slice(0, OVERVIEW_CAP).map((e) => e.path);
+    this.fetch(seeds, 1);
   }
 
   /* ── Перетаскивание окна / панорамирование / зум ── */
@@ -828,7 +879,6 @@ export class RelationshipGraph extends Component {
   }
 
   onCanvasDown(e) {
-    if (this._linkMode) return; // в режиме связывания клик выбирает узлы
     this._pan = { x: e.clientX, y: e.clientY, ox: this._ox, oy: this._oy };
     this._moved = false;
   }
@@ -907,10 +957,6 @@ export class RelationshipGraph extends Component {
     }
     const node = this.nodeAt(e);
     if (!node) return;
-    if (this._linkMode) {
-      await this.handleLink(node.path);
-      return;
-    }
     this._mode = 'focus';
     this._focus = node.path;
     this.fetch([node.path], 1);
@@ -928,31 +974,5 @@ export class RelationshipGraph extends Component {
       this._zoom = 1;
       this.draw();
     }
-  }
-
-  async handleLink(path) {
-    if (!this._linkSel) {
-      this._linkSel = path;
-      this.draw();
-      return;
-    }
-    if (this._linkSel === path) {
-      this._linkSel = null;
-      this.draw();
-      return;
-    }
-    const a = this._linkSel;
-    const b = path;
-    const exists = this._edges.some(
-      (e) => e.kind === 'manual' && ((e.src === a && e.dst === b) || (e.src === b && e.dst === a)),
-    );
-    try {
-      if (exists) await removeRelationship(a, b);
-      else await addRelationship(a, b);
-    } catch (err) {
-      this.bus.emit('shortcut:hint', err.message);
-    }
-    this._linkSel = null;
-    this.refetch();
   }
 }

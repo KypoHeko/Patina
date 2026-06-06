@@ -12,7 +12,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use crate::error::{Error, Result};
 use crate::index::file_index::{self, IndexRow};
 use crate::index::{content_index, edges_repo};
-use crate::indexer::links;
+use crate::indexer::{build_row, links};
 use crate::state::AppState;
 
 const TEXT_EXTS: &[&str] = &[
@@ -39,30 +39,6 @@ fn ext_lower(path: &str) -> String {
         .extension()
         .map(|e| e.to_string_lossy().to_ascii_lowercase())
         .unwrap_or_default()
-}
-
-fn build_row(path: &Path) -> Option<IndexRow> {
-    let meta = std::fs::metadata(path).ok()?;
-    let is_dir = meta.is_dir();
-    let name = path.file_name()?.to_string_lossy().into_owned();
-    let mtime = meta
-        .modified()
-        .ok()
-        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| d.as_millis() as u64);
-    let ext = if is_dir {
-        None
-    } else {
-        path.extension().map(|e| e.to_string_lossy().into_owned())
-    };
-    Some(IndexRow {
-        path: path.to_string_lossy().into_owned(),
-        name,
-        is_dir,
-        size: if is_dir { 0 } else { meta.len() },
-        mtime,
-        ext,
-    })
 }
 
 /// Явные исходящие рёбра одного файла по его телу (ссылки/импорты, резолвятся в
