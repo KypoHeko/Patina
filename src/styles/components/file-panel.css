@@ -243,3 +243,35 @@
 .workspace:not(.is-split) .panel__close {
   display: none;
 }
+
+/* Кнопка пересчёта размеров папок (в шапке колонки «Размер») */
+.col-dirsize {
+  border: none;
+  background: transparent;
+  color: var(--text-faint);
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+  padding: 0 2px;
+  margin-left: 2px;
+}
+.col-dirsize:hover {
+  color: var(--accent);
+}
+
+/* Спиннер в ячейке размера папки, пока идёт подсчёт */
+.dirsize-spin {
+  display: inline-block;
+  width: 11px;
+  height: 11px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: dirsize-rot 0.7s linear infinite;
+  vertical-align: middle;
+}
+@keyframes dirsize-rot {
+  to {
+    transform: rotate(360deg);
+  }
+}

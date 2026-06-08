@@ -4,6 +4,7 @@ import { escapeHtml } from '../core/dom.js';
 import { listDir, copyEntries, moveEntries, deleteEntries, renameEntry, checkConflicts, createFolder } from '../api/fs.js';
 import { openPath } from '../api/system.js';
 import { tagsForPaths, listTag } from '../api/tags.js';
+import { computeDirSizes, dirSizes } from '../api/dir_size.js';
 import { TAGS } from '../config/tags.js';
 import { formatSize, formatDate } from '../lib/format.js';
 import { fileIcon } from '../lib/icons.js';
@@ -72,7 +73,7 @@ export class FilePanel extends Component {
           <span class="col-sort" data-sort="name">Имя<i class="sort-arrow"></i></span>
           <span class="col-sort" data-sort="type">Тип<i class="sort-arrow"></i></span>
           <span>Метка</span>
-          <span class="col-sort col-r" data-sort="size">Размер<i class="sort-arrow"></i></span>
+          <span class="col-sort col-r" data-sort="size">Размер<i class="sort-arrow"></i><button class="col-dirsize" data-dirsize title="Посчитать размеры папок в этой директории">∑</button></span>
           <span class="col-sort" data-sort="modified">Изменено<i class="sort-arrow"></i></span>
         </div>
         <div class="panel__list"></div>
@@ -81,6 +82,11 @@ export class FilePanel extends Component {
     this.crumbsEl = this.mount.querySelector('.panel__crumbs');
     this.listEl = this.mount.querySelector('.panel__list');
     this.colheadEl = this.mount.querySelector('.panel__colhead');
+
+    // Размеры папок (Фаза 1): кэш «путь → размер» для показа + флаг идущего
+    // пересчёта (рисуем спиннеры у папок). Запуск — только по кнопке.
+    this._dirSizes = new Map();
+    this._dirComputing = false;
 
     this.breadcrumbs = this.addChild(
       new Breadcrumbs({
@@ -183,7 +189,13 @@ export class FilePanel extends Component {
     this.panelEl.classList.toggle('is-active', active);
     if (structureChanged || filterChanged) {
       this.renderList(pane);
-      if (structureChanged) this.loadTags(pane.entries);
+      if (structureChanged) {
+        this.loadTags(pane.entries);
+        // Новая папка: спиннеры прошлого пересчёта сбрасываем, размеры —
+        // подтягиваем из индекса, если уже посчитаны (иначе у папок пусто).
+        this._dirComputing = false;
+        this.loadDirSizes(pane.entries);
+      }
     } else this.updateSelection(pane);
   }
 
@@ -221,6 +233,41 @@ export class FilePanel extends Component {
     } catch {
       /* теги — не критично, молча игнорируем */
     }
+  }
+
+  /** Пересчитать размеры всех папок текущей директории (по кнопке ∑). Пока идёт
+   *  обход — у папок крутится спиннер; по завершении подставляются числа. */
+  async recalcDirSizes() {
+    const root = this._lastPane && this._lastPane.path;
+    if (!root || root.startsWith('tag:')) return; // тег-папки не лежат на диске
+    if (this._dirComputing) return;
+    this._dirComputing = true;
+    this._dirSizes = new Map(); // пересчёт — сбрасываем показанные значения
+    this.renderWindow(); // показать спиннеры у папок
+    try {
+      await computeDirSizes(root);
+    } catch {
+      /* размеры — не критично, молча игнорируем */
+    }
+    this._dirComputing = false;
+    await this.loadDirSizes(this._lastPane ? this._lastPane.entries : []);
+  }
+
+  /** Подтянуть уже посчитанные размеры папок для текущего списка и показать. */
+  async loadDirSizes(entries) {
+    const folders = (entries || []).filter((e) => e.kind === 'folder').map((e) => e.path);
+    if (!folders.length) {
+      this._dirSizes = new Map();
+      this.renderWindow();
+      return;
+    }
+    try {
+      const map = await dirSizes(folders);
+      this._dirSizes = new Map(Object.entries(map || {}));
+    } catch {
+      this._dirSizes = new Map();
+    }
+    this.renderWindow();
   }
 
   reload() {
@@ -640,6 +687,10 @@ export class FilePanel extends Component {
   }
 
   onSort(e) {
+    if (e.target.closest('[data-dirsize]')) {
+      this.recalcDirSizes();
+      return;
+    }
     const h = e.target.closest('[data-sort]');
     if (!h) return;
     const key = h.dataset.sort;
@@ -702,7 +753,14 @@ export class FilePanel extends Component {
 
   rowHtml(e, index, selected) {
     const sel = selected.has(e.path) ? ' is-selected' : '';
-    const size = e.kind === 'folder' ? '' : formatSize(e.size);
+    let size;
+    if (e.kind === 'folder') {
+      if (this._dirSizes.has(e.path)) size = formatSize(this._dirSizes.get(e.path));
+      else if (this._dirComputing) size = '<span class="dirsize-spin" title="Подсчёт…"></span>';
+      else size = '';
+    } else {
+      size = formatSize(e.size);
+    }
     const type = e.kind === 'folder' ? '' : (e.extension || '').toUpperCase();
     const top = index * this._rowH;
     return `<div class="row${sel}" draggable="true" data-path="${escapeHtml(e.path)}" data-kind="${e.kind}" style="top:${top}px">

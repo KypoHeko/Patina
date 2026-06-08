@@ -60,7 +60,7 @@ pub fn sync_from_journal(
     // Точечное обновление файлового индекса по изменённым путям
     for path in &changes.modified {
         if let Some(row) = crate::indexer::build_row_from_path(path) {
-            if crate::index::file_index::upsert_one(conn, &row).is_ok() {
+            if crate::index::file_index_repo::upsert_one(conn, &row).is_ok() {
                 upserted += 1;
             }
         }
@@ -68,7 +68,7 @@ pub fn sync_from_journal(
 
     // Удаление записей для удалённых файлов
     for path in &changes.deleted {
-        if crate::index::file_index::delete_path(conn, path).is_ok() {
+        if crate::index::file_index_repo::delete_path(conn, path).is_ok() {
             deleted += 1;
         }
     }

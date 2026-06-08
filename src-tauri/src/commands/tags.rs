@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Manager};
 
 use crate::error::{Error, Result};
 use crate::fs::lister;
@@ -11,15 +11,25 @@ use crate::models::file::FileEntry;
 use crate::state::AppState;
 
 #[tauri::command]
-pub fn assign_tag(state: State<AppState>, path: String, tag_id: String) -> Result<()> {
-    let conn = state.db()?;
-    tags_repo::assign(&conn, &path, &tag_id)
+pub async fn assign_tag(app: AppHandle, path: String, tag_id: String) -> Result<()> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let conn = state.db()?;
+        tags_repo::assign(&conn, &path, &tag_id)
+    })
+    .await
+    .map_err(|e| Error::Operation(format!("assign_tag прерван: {e}")))?
 }
 
 #[tauri::command]
-pub fn remove_tag(state: State<AppState>, path: String, tag_id: String) -> Result<()> {
-    let conn = state.db()?;
-    tags_repo::remove(&conn, &path, &tag_id)
+pub async fn remove_tag(app: AppHandle, path: String, tag_id: String) -> Result<()> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let conn = state.db()?;
+        tags_repo::remove(&conn, &path, &tag_id)
+    })
+    .await
+    .map_err(|e| Error::Operation(format!("remove_tag прерван: {e}")))?
 }
 
 #[tauri::command]
@@ -37,9 +47,14 @@ pub async fn tags_for_paths(
 }
 
 #[tauri::command]
-pub fn paths_for_tag(state: State<AppState>, tag_id: String) -> Result<Vec<String>> {
-    let conn = state.db_read()?;
-    tags_repo::paths_for(&conn, &tag_id)
+pub async fn paths_for_tag(app: AppHandle, tag_id: String) -> Result<Vec<String>> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let conn = state.db_read()?;
+        tags_repo::paths_for(&conn, &tag_id)
+    })
+    .await
+    .map_err(|e| Error::Operation(format!("paths_for_tag прерван: {e}")))?
 }
 
 #[tauri::command]

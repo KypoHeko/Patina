@@ -6,7 +6,7 @@ use rusqlite::Connection;
 use crate::error::Result;
 use crate::index::path_key::normalize;
 
-/// Прочитать сохранённую USN-позицию для тома.
+// Прочитать сохранённую USN-позицию для тома.
 pub fn get(conn: &Connection, volume_root: &str) -> Result<Option<i64>> {
     let root = normalize(volume_root);
     let mut stmt = conn.prepare("SELECT last_usn FROM usn_position WHERE volume_root = ?1")?;
@@ -18,7 +18,7 @@ pub fn get(conn: &Connection, volume_root: &str) -> Result<Option<i64>> {
     }
 }
 
-/// Сохранить/обновить USN-позицию для тома.
+// Сохранить/обновить USN-позицию для тома.
 pub fn set(conn: &Connection, volume_root: &str, last_usn: i64) -> Result<()> {
     let root = normalize(volume_root);
     conn.execute(
@@ -28,7 +28,7 @@ pub fn set(conn: &Connection, volume_root: &str, last_usn: i64) -> Result<()> {
     Ok(())
 }
 
-/// Удалить позицию для тома.
+// Удалить позицию для тома.
 pub fn remove(conn: &Connection, volume_root: &str) -> Result<()> {
     let root = normalize(volume_root);
     conn.execute("DELETE FROM usn_position WHERE volume_root = ?1", [&root])?;

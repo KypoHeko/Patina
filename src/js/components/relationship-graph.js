@@ -5,6 +5,7 @@ import { startIndex } from '../api/indexing.js';
 import { onEvent } from '../api/events.js';
 import { getPane } from '../state/panes.js';
 import { getActiveSide } from '../state/tabs.js';
+import { pathToColor } from '../lib/path-color.js';
 
 const NODE_H = 28; // высота панели узла
 const NODE_PAD_X = 12; // горизонтальный паддинг внутри панели
@@ -72,6 +73,12 @@ const EXT_COLOR = {
 const DEFAULT_NODE_COLOR = '#94a3b8';
 
 /** Получить цвет узла по расширению файла. */
+/** Родительская папка пути (для цвета рамки = цвета вкладки этой папки). */
+function parentDir(p) {
+  const i = Math.max(p.lastIndexOf('\\'), p.lastIndexOf('/'));
+  return i > 0 ? p.slice(0, i) : p;
+}
+
 function nodeColor(name) {
   const dot = name.lastIndexOf('.');
   if (dot < 0) return DEFAULT_NODE_COLOR;
@@ -79,18 +86,10 @@ function nodeColor(name) {
   return EXT_COLOR[ext] || DEFAULT_NODE_COLOR;
 }
 
-/** Относительный путь: показываем последние 2 компонента (папка/файл).
- *  Папки в графе не отображаются как узлы, поэтому показываем
- *  родительскую папку как контекст. */
+/** Подпись узла: только собственное имя файла/папки (без родительской папки —
+ *  иначе у всех узлов из одной папки в подписи дублируется её название). */
 function shortLabel(name, fullPath) {
-  const sep = fullPath.includes('\\') ? '\\' : '/';
-  const parts = fullPath.split(/[/\\]/);
-  let label;
-  if (parts.length >= 2) {
-    label = parts.slice(-2).join(sep);
-  } else {
-    label = name;
-  }
+  const label = name || fullPath.split(/[/\\]/).pop() || fullPath;
   return label.length > 28 ? label.slice(0, 27) + '…' : label;
 }
 
@@ -114,6 +113,7 @@ export class RelationshipGraph extends Component {
     this._root = '';
     this._mode = 'overview'; // 'focus' | 'overview'
     this._focus = null;
+    this._connectedPaths = null; // Set<path> — узлы со связями к фокусу
     this._nodes = new Map();
     this._edges = [];
     this._curSeeds = [];
@@ -122,6 +122,14 @@ export class RelationshipGraph extends Component {
     this._raf = null;
     this._alpha = 0;
     this._fetchSeq = 0;
+
+    // Состояние фонового построения индекса (для живого статуса вместо «висящей»
+    // плашки): прогресс приходит событиями index:progress, конец — index:ready.
+    this._loading = false;
+    this._indexing = false;
+    this._indexCount = 0;
+    this._indexTotal = 0;
+    this._indexPhase = '';
 
     // Прогрессивная сборка
     this._appeared = new Set(); // пути уже появившихся узлов
@@ -171,7 +179,25 @@ export class RelationshipGraph extends Component {
     this.on(document, 'mouseup', () => this.onDocUp());
 
     onEvent('index:ready', (root) => {
-      if (this._open && (!root || root === this._root)) this.refetch();
+      if (!this._open) return;
+      if (root && this._root && root !== this._root) return;
+      this._indexing = false;
+      this.updateLoadingState();
+      this.updateRebuildButton();
+      this.refetch();
+    }).then((un) => this._cleanups.push(un));
+
+    // Живой прогресс фонового построения индекса — чтобы было видно, что идёт
+    // работа, а не «висит». Узлы появятся по index:ready (refetch выше).
+    onEvent('index:progress', (p) => {
+      if (!this._open) return;
+      if (p && p.root && this._root && p.root !== this._root) return;
+      this._indexing = true;
+      this._indexCount = (p && p.count) || 0;
+      this._indexTotal = (p && p.total) || 0;
+      this._indexPhase = (p && p.phase) || 'scan';
+      this.updateLoadingState();
+      this.updateRebuildButton();
     }).then((un) => this._cleanups.push(un));
   }
 
@@ -207,9 +233,13 @@ export class RelationshipGraph extends Component {
     this._hashes.clear();
     this._hashing = false;
     this._hashSeq++;
+    this._indexing = false;
+    this._indexCount = 0;
     this.render();
 
-    if (this._root) startIndex(this._root, true, false).catch(() => { });
+    // Авто-сборку при открытии НЕ запускаем — только читаем уже готовый индекс
+    // (если он есть, граф покажется мгновенно). Полная (пере)сборка — по кнопке
+    // «Обновить» (rebuild()).
     this.fetch(seeds, 1);
   }
 
@@ -228,6 +258,7 @@ export class RelationshipGraph extends Component {
     this._pan = null;
     this._winDrag = null;
     this._loading = false;
+    this._indexing = false;
     this._hashing = false;
     this._hashSeq++;
     this._hashes.clear();
@@ -248,6 +279,35 @@ export class RelationshipGraph extends Component {
     this.fetch(this._curSeeds, this._curHops);
   }
 
+  /** Принудительная (пере)сборка индекса связей — ТОЛЬКО по кнопке «Обновить».
+   *  Авто-запуска при открытии графа нет. Узлы обновятся по событию index:ready. */
+  rebuild() {
+    if (this._indexing) return;
+    if (!this._root) {
+      this.bus.emit('shortcut:hint', 'Граф: сначала откройте папку');
+      return;
+    }
+    this._indexing = true;
+    this._indexCount = 0;
+    this._indexTotal = 0;
+    this._indexPhase = 'scan';
+    this.updateLoadingState();
+    this.updateRebuildButton();
+    // content=true, force=true → полная пересборка в фоне с прогрессом.
+    startIndex(this._root, true, true).catch(() => {
+      this._indexing = false;
+      this.updateLoadingState();
+      this.updateRebuildButton();
+    });
+  }
+
+  /** Кнопка «Обновить»: заблокирована и подписана «Строю…» во время сборки. */
+  updateRebuildButton() {
+    if (!this._rebuildBtn) return;
+    this._rebuildBtn.disabled = this._indexing;
+    this._rebuildBtn.textContent = this._indexing ? 'Строю…' : 'Обновить';
+  }
+
   async fetch(seeds, hops) {
     this._curSeeds = seeds;
     this._curHops = hops;
@@ -265,7 +325,13 @@ export class RelationshipGraph extends Component {
     }
     if (seq !== this._fetchSeq || !this._open) return;
     this.ingest(data, seeds);
+    if (this._mode === 'focus' && this._focus) {
+      this._connectedPaths = this.computeConnectedPaths(this._focus);
+    }
     this.renderAside();
+    // Кнопка хеширования доступна сразу, как только появились узлы (запуск —
+    // только по клику, автоматически хеширование не стартует).
+    this.updateHashButton();
     this._loading = false;
     this.updateLoadingState();
     // Прогрессивная сборка: добавляем только новые узлы
@@ -566,6 +632,10 @@ export class RelationshipGraph extends Component {
 
   drawEdge(c, p, q, e) {
     const st = this.edgeStyle(e);
+    // В режиме фокуса: рёбра без прямой связи с фокусом — полупрозрачные
+    const isRelated = !this._focus || !this._connectedPaths ||
+      (this._connectedPaths.has(e.src) && this._connectedPaths.has(e.dst));
+    if (!isRelated) c.globalAlpha = 0.35;
     c.strokeStyle = st.color;
     c.fillStyle = st.color;
     c.lineWidth = st.strong ? 2 : 1.2;
@@ -593,6 +663,8 @@ export class RelationshipGraph extends Component {
       c.closePath();
       c.fill();
     }
+    // Восстанавливаем прозрачность после несвязанного ребра
+    if (!isRelated) c.globalAlpha = 1;
   }
 
   /** Точка на границе прямоугольной панели узла по углу от центра. */
@@ -613,6 +685,10 @@ export class RelationshipGraph extends Component {
 
   drawNode(c, n) {
     if (!this._appeared.has(n.path)) return; // ещё не появился
+
+    // В режиме фокуса: не связанные с фокусом узлы — полупрозрачные
+    const isRelated = !this._focus || !this._connectedPaths || this._connectedPaths.has(n.path);
+    if (!isRelated) c.globalAlpha = 0.35;
 
     const isFocus = n.path === this._focus;
     const hasHash = this._hashes.has(n.path);
@@ -637,11 +713,11 @@ export class RelationshipGraph extends Component {
     c.fillStyle = bgColor;
     c.fill();
 
-    // Рамка — цвет расширения
-    c.lineWidth = isFocus ? 2.5 : 1.2;
-    c.strokeStyle = isFocus
-      ? extCol
-      : extCol + '88';
+    // Рамка — цвет ПАПКИ узла (тот же, что у вкладки этой папки): файлы одной
+    // папки визуально группируются. Заливка остаётся по расширению файла.
+    const folderCol = pathToColor(parentDir(n.path));
+    c.lineWidth = isFocus ? 2.5 : 1.5;
+    c.strokeStyle = isFocus ? folderCol : folderCol + 'cc';
     c.stroke();
 
     // Текст внутри панели — показываем путь (папка/файл) вместо просто имени
@@ -684,6 +760,9 @@ export class RelationshipGraph extends Component {
       c.lineWidth = 1.2;
       c.stroke();
     }
+
+    // Восстанавливаем прозрачность после несвязанного узла
+    if (!isRelated) c.globalAlpha = 1;
   }
 
   /** Скруглённый прямоугольник (canvas path). */
@@ -760,6 +839,7 @@ export class RelationshipGraph extends Component {
             <span class="graph__dot" style="background:${C_DEP}"></span>зависимости
             <span class="graph__dot" style="background:${C_BACK}"></span>обратные ссылки
           </div>
+          <button class="graph__rebuild" data-rebuild title="Построить / обновить граф связей">Обновить</button>
           <button class="graph__close" data-close title="Закрыть">×</button>
         </div>
         <div class="graph__body">
@@ -783,12 +863,16 @@ export class RelationshipGraph extends Component {
     this.aside = this.mount.querySelector('.graph__aside');
     this._loadingEl = this.mount.querySelector('.graph__loading');
     this._hashBtn = this.mount.querySelector('[data-hash-btn]');
+    this._rebuildBtn = this.mount.querySelector('[data-rebuild]');
 
     this.mount
       .querySelectorAll('[data-close]')
       .forEach((el) => el.addEventListener('click', () => this.close()));
     if (this._hashBtn) {
       this._hashBtn.addEventListener('click', () => this.startHashing());
+    }
+    if (this._rebuildBtn) {
+      this._rebuildBtn.addEventListener('click', () => this.rebuild());
     }
 
     const head = this.mount.querySelector('[data-drag]');
@@ -830,9 +914,25 @@ export class RelationshipGraph extends Component {
     this.draw();
   }
 
-  /** Обновить видимость индикатора загрузки. */
+  /** Обновить индикатор: показываем при загрузке графа или фоновой индексации,
+   *  с понятным текстом (живой счётчик файлов), а не просто «Загрузка…». */
   updateLoadingState() {
-    if (this._loadingEl) this._loadingEl.hidden = !this._loading;
+    const active = this._loading || this._indexing;
+    if (this._loadingEl) this._loadingEl.hidden = !active;
+    const txt = this.mount && this.mount.querySelector('.graph__loading-text');
+    if (txt) {
+      if (this._indexing) {
+        if (this._indexPhase === 'relations') {
+          txt.textContent = this._indexTotal
+            ? `Строю связи… ${this._indexCount}/${this._indexTotal}`
+            : 'Строю связи…';
+        } else {
+          txt.textContent = `Индексирую… ${this._indexCount} файлов`;
+        }
+      } else {
+        txt.textContent = 'Загрузка…';
+      }
+    }
   }
 
   /** Обновить состояние кнопки хеширования. */
@@ -956,10 +1056,34 @@ export class RelationshipGraph extends Component {
       return;
     }
     const node = this.nodeAt(e);
-    if (!node) return;
+    if (!node) {
+      // Клик по пустому месту — снимаем выделение, все узлы снова видны
+      if (this._focus) {
+        this._focus = null;
+        this._connectedPaths = null;
+        this._mode = 'overview';
+        this.renderAside();
+        this.draw();
+      }
+      return;
+    }
+    // Переключаем фокус без подгрузки новых данных:
+    // все узлы остаются, несвязанные — полупрозрачными
     this._mode = 'focus';
     this._focus = node.path;
-    this.fetch([node.path], 1);
+    this._connectedPaths = this.computeConnectedPaths(node.path);
+    this.renderAside();
+    this.draw();
+  }
+
+  /** Собрать множество путей узлов, связанных с фокусом (прямые связи обоих направлений). */
+  computeConnectedPaths(focusPath) {
+    const connected = new Set([focusPath]);
+    for (const e of this._edges) {
+      if (e.src === focusPath) connected.add(e.dst);
+      if (e.dst === focusPath) connected.add(e.src);
+    }
+    return connected;
   }
 
   onDblClick(e) {

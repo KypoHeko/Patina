@@ -1,12 +1,11 @@
 //! Системные команды: запуск файлов, показ в проводнике, места для сайдбара.
 
 use serde::Serialize;
-use tauri::Manager;
-use tauri::State;
+use tauri::{AppHandle, Manager};
 
 use crate::index::quick_access_repo::{self, QuickItem};
 use crate::state::AppState;
-use crate::error::Result;
+use crate::error::{Error, Result};
 
 /// Запись для сайдбара: подпись, путь, тип (для иконки на фронте).
 #[derive(Serialize)]
@@ -75,36 +74,51 @@ pub fn quick_access_defaults(app: &tauri::AppHandle) -> Vec<Location> {
 }
 
 #[tauri::command]
-pub fn quick_access(app: tauri::AppHandle, state: State<AppState>) -> Result<Vec<Location>> {
-    // Проверяем наличие данных (чтение), при пустоте — сеем (запись).
-    // Это редкая одноразовая операция, поэтому сразу берём write-lock.
-    let conn = state.db()?;
-    if quick_access_repo::is_empty(&conn)? {
-        let seed: Vec<QuickItem> = quick_access_defaults(&app)
+pub async fn quick_access(app: AppHandle) -> Result<Vec<Location>> {
+    tauri::async_runtime::spawn_blocking(move || -> Result<Vec<Location>> {
+        let state = app.state::<AppState>();
+        // Проверяем наличие данных (чтение), при пустоте — сеем (запись).
+        let conn = state.db()?;
+        if quick_access_repo::is_empty(&conn)? {
+            let seed: Vec<QuickItem> = quick_access_defaults(&app)
+                .into_iter()
+                .map(|l| QuickItem { path: l.path, label: l.label, kind: l.kind })
+                .collect();
+            quick_access_repo::replace_all(&conn, &seed)?;
+        }
+        let items = quick_access_repo::list(&conn)?;
+        Ok(items
             .into_iter()
-            .map(|l| QuickItem { path: l.path, label: l.label, kind: l.kind })
-            .collect();
-        quick_access_repo::replace_all(&conn, &seed)?;
-    }
-    let items = quick_access_repo::list(&conn)?;
-    Ok(items
-        .into_iter()
-        .map(|i| Location { label: i.label, path: i.path, kind: i.kind })
-        .collect())
+            .map(|i| Location { label: i.label, path: i.path, kind: i.kind })
+            .collect())
+    })
+    .await
+    .map_err(|e| Error::Operation(format!("quick_access прерван: {e}")))?
 }
 
 /// Сохранить пользовательский список (полная замена).
 #[tauri::command]
-pub fn quick_access_save(state: State<AppState>, items: Vec<QuickItem>) -> Result<()> {
-    let conn = state.db()?;
-    quick_access_repo::replace_all(&conn, &items)
+pub async fn quick_access_save(app: AppHandle, items: Vec<QuickItem>) -> Result<()> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let conn = state.db()?;
+        quick_access_repo::replace_all(&conn, &items)
+    })
+    .await
+    .map_err(|e| Error::Operation(format!("quick_access_save прерван: {e}")))?
 }
 
-/// Список доступных дисков. На Windows перебираем буквы A..Z и проверяем
-/// существование корня (простой способ без WinAPI; метки тома и тип
-/// SSD/Cloud добавим позже через crate `windows`).
+/// Список доступных дисков. Перечисление обходит ФС (проверка существования
+/// корней), поэтому уводим его на блокирующий пул — единая политика с остальными
+/// командами, трогающими диск.
 #[tauri::command]
-pub fn list_drives() -> Vec<Location> {
+pub async fn list_drives() -> Vec<Location> {
+    tauri::async_runtime::spawn_blocking(list_drives_sync)
+        .await
+        .unwrap_or_default()
+}
+
+fn list_drives_sync() -> Vec<Location> {
     let mut out = Vec::new();
     #[cfg(windows)]
     {

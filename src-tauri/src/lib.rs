@@ -67,6 +67,8 @@ pub fn run() {
             commands::content::reindex_content,
             commands::content::search_content,
             commands::indexing::start_index,
+            commands::dir_size::compute_dir_sizes,
+            commands::dir_size::dir_sizes,
         ])
         .run(tauri::generate_context!())
         .expect("ошибка запуска Patina");

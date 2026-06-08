@@ -10,6 +10,13 @@ use crate::error::{Error, Result};
 
 use super::{DriveInfo, NativeIcon, UsnChanges};
 
+/// UTF-16 c завершающим нулём — формат строк для WinAPI-функций (`*W`).
+fn to_wide(s: &str) -> Vec<u16> {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+    OsStr::new(s).encode_wide().chain(std::iter::once(0)).collect()
+}
+
 // ─── Удаление в Корзину через IFileOperation ──────────────────────
 
 // Удаление файлов/папок в Корзину через IFileOperation.
@@ -19,8 +26,6 @@ use super::{DriveInfo, NativeIcon, UsnChanges};
 // Единый прогресс-диалог проводника (если нужен)
 // Поддержка UNC-путей и символических ссылок
 pub fn delete_to_recycle_bin(paths: &[String]) -> Result<()> {
-    use std::ffi::OsStr;
-    use std::os::windows::ffi::OsStrExt;
     use windows::Win32::System::Com::{
         CoInitializeEx, CoUninitialize, CLSCTX_ALL,
     };
@@ -49,7 +54,7 @@ pub fn delete_to_recycle_bin(paths: &[String]) -> Result<()> {
             .map_err(|e| Error::Operation(format!("SetOperationFlags: {e}")))?;
 
             for path_str in paths {
-                let wide: Vec<u16> = OsStr::new(path_str).encode_wide().chain(std::iter::once(0)).collect();
+                let wide = to_wide(path_str);
                 let item: windows::Win32::UI::Shell::IShellItem = SHCreateItemFromParsingName(
                     windows::core::PCWSTR(wide.as_ptr()),
                     None,
@@ -112,11 +117,9 @@ pub fn list_drives_native() -> Vec<DriveInfo> {
 
 /// Получить метку тома через GetVolumeInformationW.
 fn get_volume_label(root: &str) -> String {
-    use std::ffi::OsStr;
-    use std::os::windows::ffi::OsStrExt;
     use windows::Win32::Storage::FileSystem::GetVolumeInformationW;
 
-    let wide: Vec<u16> = OsStr::new(root).encode_wide().chain(std::iter::once(0)).collect();
+    let wide = to_wide(root);
     let mut label_buf = [0u16; 256];
 
     unsafe {
@@ -146,11 +149,9 @@ fn get_volume_label(root: &str) -> String {
 ///    (SSD не имеет seek penalty → это SSD)
 /// 3. Fallback → "HDD"
 fn get_drive_kind(root: &str) -> String {
-    use std::ffi::OsStr;
-    use std::os::windows::ffi::OsStrExt;
     use windows::Win32::Storage::FileSystem::GetDriveTypeW;
 
-    let wide: Vec<u16> = OsStr::new(root).encode_wide().chain(std::iter::once(0)).collect();
+    let wide = to_wide(root);
     let drive_type = unsafe { GetDriveTypeW(windows::core::PCWSTR(wide.as_ptr())) };
 
     // Числовые значения GetDriveType (winbase.h) стабильны и не зависят от
@@ -176,13 +177,11 @@ fn get_drive_kind(root: &str) -> String {
 ///
 /// SSD не имеет seek penalty (DeviceSeekPenalty = FALSE).
 fn is_ssd(root: &str) -> bool {
-    use std::ffi::OsStr;
-    use std::os::windows::ffi::OsStrExt;
 
     // Открываем устройство \\.\C: для корня C:\
     let drive_letter = root.chars().next().unwrap_or('C');
     let device_path = format!("\\\\.\\{}:", drive_letter);
-    let wide: Vec<u16> = OsStr::new(&device_path).encode_wide().chain(std::iter::once(0)).collect();
+    let wide = to_wide(&device_path);
 
     unsafe {
         use windows::Win32::Foundation::HANDLE;
@@ -216,10 +215,16 @@ fn is_ssd(root: &str) -> bool {
             query_type: u32, // PropertyStandardQuery = 0
         }
 
+        // DEVICE_SEEK_PENALTY_DESCRIPTOR: сначала Version (u32) и Size (u32),
+        // и только потом IncursSeekPenalty (BOOLEAN = 1 байт). Без первых двух
+        // полей мы читали бы Version (он ненулевой) и всегда получали «HDD».
         #[repr(C)]
         #[derive(Default)]
-        struct DeviceSeekPenalty {
-            incurs_seek_penalty: u32, // BOOL
+        struct DeviceSeekPenaltyDescriptor {
+            version: u32,
+            size: u32,
+            incurs_seek_penalty: u8, // BOOLEAN: 0 (FALSE) = нет seek penalty = SSD
+            _reserved: [u8; 3],
         }
 
         let query = StorageQuery {
@@ -227,7 +232,7 @@ fn is_ssd(root: &str) -> bool {
             query_type: 0, // PropertyStandardQuery
         };
 
-        let mut result = DeviceSeekPenalty::default();
+        let mut result = DeviceSeekPenaltyDescriptor::default();
         let mut bytes_returned = 0u32;
 
         let ok = DeviceIoControl(
@@ -236,7 +241,7 @@ fn is_ssd(root: &str) -> bool {
             Some(&query as *const _ as *const _),
             std::mem::size_of::<StorageQuery>() as u32,
             Some(&mut result as *mut _ as *mut _),
-            std::mem::size_of::<DeviceSeekPenalty>() as u32,
+            std::mem::size_of::<DeviceSeekPenaltyDescriptor>() as u32,
             Some(&mut bytes_returned),
             None,
         );
@@ -244,19 +249,19 @@ fn is_ssd(root: &str) -> bool {
         let _ = windows::Win32::Foundation::CloseHandle(handle);
 
         match ok {
-            Ok(_) => result.incurs_seek_penalty == 0, // 0 = нет seek penalty = SSD
-            Err(_) => false, // Не удалось определить — считаем HDD
+            // Достоверно, только если устройство реально вернуло поле penalty
+            // (дескриптор с заголовком занимает ≥ 9 байт). Иначе — не SSD.
+            Ok(_) if bytes_returned >= 9 => result.incurs_seek_penalty == 0,
+            _ => false,
         }
     }
 }
 
 /// Свободное и полное пространство диска через GetDiskFreeSpaceExW.
 fn get_disk_space(root: &str) -> (u64, u64) {
-    use std::ffi::OsStr;
-    use std::os::windows::ffi::OsStrExt;
     use windows::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
 
-    let wide: Vec<u16> = OsStr::new(root).encode_wide().chain(std::iter::once(0)).collect();
+    let wide = to_wide(root);
 
     unsafe {
         let mut free_available: u64 = 0;
@@ -288,15 +293,13 @@ fn get_disk_space(root: &str) -> (u64, u64) {
 /// затем конвертирует HICON → PNG через вспомогательную функцию.
 #[allow(dead_code)] // TODO: подключить нативные иконки к list_dir/превью
 pub fn get_native_icon(path: &str, size: u32) -> Option<NativeIcon> {
-    use std::ffi::OsStr;
-    use std::os::windows::ffi::OsStrExt;
     use windows::Win32::Storage::FileSystem::FILE_FLAGS_AND_ATTRIBUTES;
     use windows::Win32::UI::Shell::{
         SHGetFileInfoW, SHFILEINFOW, SHGFI_ICON, SHGFI_SMALLICON, SHGFI_LARGEICON,
     };
     use windows::Win32::UI::WindowsAndMessaging::DestroyIcon;
 
-    let wide: Vec<u16> = OsStr::new(path).encode_wide().chain(std::iter::once(0)).collect();
+    let wide = to_wide(path);
 
     let flags = if size <= 16 {
         SHGFI_ICON | SHGFI_SMALLICON
@@ -425,8 +428,6 @@ unsafe fn icon_to_png(
 /// После обработки нужно сохранить новый USN для следующего вызова.
 #[allow(dead_code)] // TODO: подключить USN-поллер вместо notify для корневого тома
 pub fn read_usn_journal(root: &str, last_usn: i64) -> Result<Option<UsnChanges>> {
-    use std::ffi::OsStr;
-    use std::os::windows::ffi::OsStrExt;
     use windows::Win32::Foundation::HANDLE;
     use windows::Win32::Storage::FileSystem::{
         CreateFileW, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
@@ -440,7 +441,7 @@ pub fn read_usn_journal(root: &str, last_usn: i64) -> Result<Option<UsnChanges>>
     };
 
     let device_path = format!("\\\\.\\{}:", drive_letter);
-    let wide: Vec<u16> = OsStr::new(&device_path).encode_wide().chain(std::iter::once(0)).collect();
+    let wide = to_wide(&device_path);
 
     unsafe {
         let handle = CreateFileW(

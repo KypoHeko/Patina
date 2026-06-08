@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use crate::index::file_index::IndexRow;
+use crate::index::file_index_repo::IndexRow;
 
 pub mod dups;
 pub mod hasher;

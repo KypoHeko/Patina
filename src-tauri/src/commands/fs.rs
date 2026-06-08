@@ -5,8 +5,9 @@ use std::io::{Cursor, Read};
 use std::path::Path;
 use std::time::UNIX_EPOCH;
 
+use rusqlite::Connection;
 use serde::Serialize;
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Manager};
 
 use crate::error::{Error, Result};
 
@@ -14,6 +15,25 @@ use crate::fs::{lister, operations};
 use crate::index::{edges_repo, tags_repo, versions_repo};
 use crate::models::file::FileEntry;
 use crate::state::AppState;
+
+/// Перенести все привязанные к пути данные (теги, версии, связи) со старого
+/// пути на новый — единая точка для move/rename. Ошибки отдельных репозиториев
+/// намеренно глушим: файл уже перемещён на диске, и сбой сопровождающих
+/// метаданных не должен откатывать саму операцию.
+fn relink_all(conn: &Connection, old: &str, new: &str) {
+    let _ = tags_repo::relink(conn, old, new);
+    let _ = versions_repo::relink(conn, old, new);
+    let _ = edges_repo::relink(conn, old, new);
+}
+
+/// Удалить все привязанные к пути данные (теги, версии, связи) для удалённого
+/// пути (и вложенных), иначе строки копятся в БД, ссылаясь на несуществующие
+/// файлы. Ошибки глушим по тем же причинам, что и в `relink_all`.
+fn purge_all(conn: &Connection, path: &str) {
+    let _ = tags_repo::purge(conn, path);
+    let _ = versions_repo::purge(conn, path);
+    let _ = edges_repo::purge(conn, path);
+}
 
 #[tauri::command]
 pub async fn list_dir(path: String) -> Result<Vec<FileEntry>> {
@@ -34,69 +54,82 @@ pub fn home_dir(app: AppHandle) -> Result<String> {
 }
 
 #[tauri::command]
-pub fn copy_entries(sources: Vec<String>, dest_dir: String, overwrite: bool) -> Result<()> {
-    operations::copy_entries(&sources, &dest_dir, overwrite)
+pub async fn copy_entries(sources: Vec<String>, dest_dir: String, overwrite: bool) -> Result<()> {
+    tauri::async_runtime::spawn_blocking(move || {
+        operations::copy_entries(&sources, &dest_dir, overwrite)
+    })
+    .await
+    .map_err(|e| Error::Operation(format!("copy_entries прерван: {e}")))?
 }
 
 #[tauri::command]
-pub fn move_entries(
-    state: State<AppState>,
+pub async fn move_entries(
+    app: AppHandle,
     sources: Vec<String>,
     dest_dir: String,
     overwrite: bool,
 ) -> Result<()> {
-    operations::move_entries(&sources, &dest_dir, overwrite)?;
-    let conn = state.db()?;
-    for src in &sources {
-        if let Some(name) = Path::new(src).file_name() {
-            let new_path = Path::new(&dest_dir).join(name);
-            let new_path = new_path.to_string_lossy();
-            // Сопровождаем все привязки по пути, чтобы они не "повисли" на старом
-            // месте: теги, история версий и связи переезжают вместе с файлом/папкой.
-            let _ = tags_repo::relink(&conn, src, &new_path);
-            let _ = versions_repo::relink(&conn, src, &new_path);
-            let _ = edges_repo::relink(&conn, src, &new_path);
+    tauri::async_runtime::spawn_blocking(move || {
+        operations::move_entries(&sources, &dest_dir, overwrite)?;
+        let state = app.state::<AppState>();
+        let conn = state.db()?;
+        for src in &sources {
+            if let Some(name) = Path::new(src).file_name() {
+                let new_path = Path::new(&dest_dir).join(name);
+                let new_path = new_path.to_string_lossy();
+                relink_all(&conn, src, &new_path);
+            }
         }
-    }
-    Ok(())
+        Ok(())
+    })
+    .await
+    .map_err(|e| Error::Operation(format!("move_entries прерван: {e}")))?
 }
 
 #[tauri::command]
-pub fn delete_entries(state: State<AppState>, paths: Vec<String>) -> Result<()> {
-    operations::delete_entries(&paths)?;
-    let conn = state.db()?;
-    for p in &paths {
-        // Чистим все привязки удалённого пути (и вложенных), иначе строки копятся
-        // в БД навсегда, ссылаясь на несуществующие файлы.
-        let _ = tags_repo::purge(&conn, p);
-        let _ = versions_repo::purge(&conn, p);
-        let _ = edges_repo::purge(&conn, p);
-    }
-    Ok(())
+pub async fn delete_entries(app: AppHandle, paths: Vec<String>) -> Result<()> {
+    tauri::async_runtime::spawn_blocking(move || {
+        operations::delete_entries(&paths)?;
+        let state = app.state::<AppState>();
+        let conn = state.db()?;
+        for p in &paths {
+            purge_all(&conn, p);
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|e| Error::Operation(format!("delete_entries прерван: {e}")))?
 }
 
 #[tauri::command]
-pub fn rename_entry(state: State<AppState>, path: String, new_name: String) -> Result<String> {
-    let new_path = operations::rename_entry(&path, &new_name)?;
-    let conn = state.db()?;
-    let _ = tags_repo::relink(&conn, &path, &new_path);
-    let _ = versions_repo::relink(&conn, &path, &new_path);
-    let _ = edges_repo::relink(&conn, &path, &new_path);
-    Ok(new_path)
+pub async fn rename_entry(app: AppHandle, path: String, new_name: String) -> Result<String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let new_path = operations::rename_entry(&path, &new_name)?;
+        let state = app.state::<AppState>();
+        let conn = state.db()?;
+        relink_all(&conn, &path, &new_path);
+        Ok(new_path)
+    })
+    .await
+    .map_err(|e| Error::Operation(format!("rename_entry прерван: {e}")))?
 }
 
 /// Имена записей, уже существующие в каталоге назначения.
 #[tauri::command]
-pub fn check_conflicts(sources: Vec<String>, dest_dir: String) -> Result<Vec<String>> {
-    let mut out = Vec::new();
-    for src in &sources {
-        if let Some(name) = Path::new(src).file_name() {
-            if Path::new(&dest_dir).join(name).exists() {
-                out.push(name.to_string_lossy().into_owned());
+pub async fn check_conflicts(sources: Vec<String>, dest_dir: String) -> Result<Vec<String>> {
+    tauri::async_runtime::spawn_blocking(move || -> Result<Vec<String>> {
+        let mut out = Vec::new();
+        for src in &sources {
+            if let Some(name) = Path::new(src).file_name() {
+                if Path::new(&dest_dir).join(name).exists() {
+                    out.push(name.to_string_lossy().into_owned());
+                }
             }
         }
-    }
-    Ok(out)
+        Ok(out)
+    })
+    .await
+    .map_err(|e| Error::Operation(format!("check_conflicts прерван: {e}")))?
 }
 
 #[derive(Serialize)]
@@ -237,17 +270,21 @@ pub async fn read_preview(app: AppHandle, path: String) -> Result<Preview> {
 /// Создать новую папку в `parent`. При занятом имени добавляет " (N)".
 /// Возвращает путь созданной папки.
 #[tauri::command]
-pub fn create_folder(parent: String, name: String) -> Result<String> {
-    let base = Path::new(&parent);
-    if !base.is_dir() {
-        return Err(Error::NotADirectory(parent));
-    }
-    let mut candidate = base.join(&name);
-    let mut n = 2;
-    while candidate.exists() {
-        candidate = base.join(format!("{name} ({n})"));
-        n += 1;
-    }
-    std::fs::create_dir(&candidate)?;
-    Ok(candidate.to_string_lossy().into_owned())
+pub async fn create_folder(parent: String, name: String) -> Result<String> {
+    tauri::async_runtime::spawn_blocking(move || -> Result<String> {
+        let base = Path::new(&parent);
+        if !base.is_dir() {
+            return Err(Error::NotADirectory(parent));
+        }
+        let mut candidate = base.join(&name);
+        let mut n = 2;
+        while candidate.exists() {
+            candidate = base.join(format!("{name} ({n})"));
+            n += 1;
+        }
+        std::fs::create_dir(&candidate)?;
+        Ok(candidate.to_string_lossy().into_owned())
+    })
+    .await
+    .map_err(|e| Error::Operation(format!("create_folder прерван: {e}")))?
 }

@@ -10,8 +10,8 @@ use notify::{recommended_watcher, Event, RecursiveMode, Watcher};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::error::{Error, Result};
-use crate::index::file_index::{self, IndexRow};
-use crate::index::{content_index, edges_repo};
+use crate::index::file_index_repo::{self, IndexRow};
+use crate::index::{content_index_repo, edges_repo};
 use crate::indexer::{build_row, links};
 use crate::state::AppState;
 
@@ -62,9 +62,13 @@ fn explicit_out_edges(src_path: &str, body: &str) -> Vec<(String, String)> {
 /// Полный набор рёбер поддерева: явные ссылки/импорты + слой упоминаний по
 /// уникальному имени файла (дискавери). Строится из уже прочитанных тел.
 fn build_edges(
-    content_rows: &[content_index::ContentRow],
+    app: &AppHandle,
+    root: &str,
+    content_rows: &[content_index_repo::ContentRow],
     rows: &[IndexRow],
 ) -> Vec<(String, String, String)> {
+    use aho_corasick::AhoCorasick;
+
     // basename(lower) -> уникальный путь (None, если имя неуникально).
     let mut by_name: HashMap<String, Option<String>> = HashMap::new();
     for r in rows {
@@ -87,14 +91,28 @@ fn build_edges(
     }
 
     // 2) Упоминания по уникальному имени (слой дискавери). Имена < 4 символов
-    // пропускаем, чтобы не шуметь (a.h, io и т.п.).
-    let unique: Vec<(&String, &String)> = by_name
-        .iter()
-        .filter_map(|(name, p)| p.as_ref().map(|path| (name, path)))
+    //    пропускаем, чтобы не шуметь (a.h, io и т.п.).
+    let unique: Vec<(String, String)> = by_name
+        .into_iter()
+        .filter_map(|(name, p)| p.map(|path| (name, path)))
         .filter(|(name, _)| name.len() >= 4)
         .collect();
 
-    for cr in content_rows {
+    if unique.is_empty() {
+        return out;
+    }
+
+    // Один Aho-Corasick-автомат на все имена: каждое тело сканируется за один
+    // проход (O(длина тела + число совпадений)) вместо перебора всех имён по
+    // каждому телу — это убирает прежнюю квадратичную стоимость.
+    let patterns: Vec<&str> = unique.iter().map(|(name, _)| name.as_str()).collect();
+    let ac = match AhoCorasick::new(&patterns) {
+        Ok(ac) => ac,
+        Err(_) => return out,
+    };
+
+    let total = content_rows.len();
+    for (i, cr) in content_rows.iter().enumerate() {
         let body = &cr.body;
         let slice = if body.len() > MENTION_SCAN_CAP {
             let mut end = MENTION_SCAN_CAP;
@@ -106,13 +124,33 @@ fn build_edges(
             &body[..]
         };
         let hay = slice.to_lowercase();
-        for (name, dst) in &unique {
+        // Нам важно НАЛИЧИЕ имени в теле (как у прежнего contains), а не все его
+        // позиции. find_iter — один линейный проход без перечисления перекрытий:
+        // на повторяющихся/больших телах (node_modules, lock-файлы, логи) это не
+        // «взрывается» по числу совпадений, в отличие от find_overlapping_iter.
+        let mut matched: HashSet<usize> = HashSet::new();
+        for m in ac.find_iter(hay.as_str()) {
+            matched.insert(m.pattern().as_usize());
+            if matched.len() == unique.len() {
+                break; // все имена уже найдены — дальше сканировать тело незачем
+            }
+        }
+        for idx in matched {
+            let dst = &unique[idx].1;
             if dst.as_str() == cr.path {
                 continue;
             }
-            if hay.contains(name.as_str()) && seen.insert((cr.path.clone(), (*dst).clone())) {
-                out.push((cr.path.clone(), (*dst).clone(), "mention".to_string()));
+            if seen.insert((cr.path.clone(), dst.clone())) {
+                out.push((cr.path.clone(), dst.clone(), "mention".to_string()));
             }
+        }
+
+        // Живой прогресс фазы построения связей.
+        if (i + 1) % 200 == 0 {
+            let _ = app.emit(
+                "index:progress",
+                serde_json::json!({ "root": root, "count": i + 1, "total": total, "phase": "relations" }),
+            );
         }
     }
 
@@ -128,14 +166,14 @@ fn apply_change(app: &AppHandle, content_active: bool, path: &Path) {
         if let Some(row) = build_row(path) {
             let text_file = !row.is_dir && is_text(path, row.size);
             if let Ok(conn) = state.db() {
-                let _ = file_index::upsert_one(&conn, &row);
+                let _ = file_index_repo::upsert_one(&conn, &row);
             }
             if content_active && text_file {
                 if let Ok(bytes) = std::fs::read(path) {
                     let body = String::from_utf8_lossy(&bytes).into_owned();
                     if let Ok(conn) = state.db() {
-                        let _ = content_index::ensure_table(&conn);
-                        let _ = content_index::upsert_one(&conn, &pstr, &body);
+                        let _ = content_index_repo::ensure_table(&conn);
+                        let _ = content_index_repo::upsert_one(&conn, &pstr, &body);
                         // Инкрементально обновляем только явные исходящие рёбра
                         // (mention-слой пересоберётся при полной переиндексации).
                         let edges = explicit_out_edges(&pstr, &body);
@@ -145,10 +183,10 @@ fn apply_change(app: &AppHandle, content_active: bool, path: &Path) {
             }
         }
     } else if let Ok(conn) = state.db() {
-        let _ = file_index::delete_path(&conn, &pstr);
+        let _ = file_index_repo::delete_path(&conn, &pstr);
         let _ = edges_repo::purge(&conn, &pstr);
         if content_active {
-            let _ = content_index::delete_path(&conn, &pstr);
+            let _ = content_index_repo::delete_path(&conn, &pstr);
         }
     }
 }
@@ -157,7 +195,8 @@ fn apply_change(app: &AppHandle, content_active: bool, path: &Path) {
 fn build_all(app: &AppHandle, root: &str, content: bool) -> Result<()> {
     let state = app.state::<AppState>();
     let mut rows: Vec<IndexRow> = Vec::new();
-    let mut content_rows: Vec<content_index::ContentRow> = Vec::new();
+    let mut content_rows: Vec<content_index_repo::ContentRow> = Vec::new();
+    let mut since_emit = 0usize;
     for entry in walkdir::WalkDir::new(root)
         .min_depth(1)
         .into_iter()
@@ -170,25 +209,40 @@ fn build_all(app: &AppHandle, root: &str, content: bool) -> Result<()> {
         if let Some(row) = build_row(path) {
             if content && !row.is_dir && is_text(path, row.size) {
                 if let Ok(bytes) = std::fs::read(path) {
-                    content_rows.push(content_index::ContentRow {
+                    content_rows.push(content_index_repo::ContentRow {
                         path: row.path.clone(),
                         body: String::from_utf8_lossy(&bytes).into_owned(),
                     });
                 }
             }
             rows.push(row);
+            // Живой прогресс для UI (граф показывает счётчик вместо «висящей» плашки).
+            since_emit += 1;
+            if since_emit >= 200 {
+                since_emit = 0;
+                let _ = app.emit(
+                    "index:progress",
+                    serde_json::json!({ "root": root, "count": rows.len(), "phase": "scan" }),
+                );
+            }
         }
     }
     {
         let mut conn = state.db()?;
-        file_index::replace_subtree(&mut conn, root, &rows)?;
+        file_index_repo::replace_subtree(&mut conn, root, &rows)?;
     }
     if content {
+        // Построение рёбер может быть заметным по времени — отдельная фаза в UI,
+        // build_edges шлёт инкрементальный прогресс внутри.
+        let _ = app.emit(
+            "index:progress",
+            serde_json::json!({ "root": root, "count": 0, "total": content_rows.len(), "phase": "relations" }),
+        );
         // Содержимое + рёбра связей строятся из одних и тех же прочитанных тел.
-        let edges = build_edges(&content_rows, &rows);
+        let edges = build_edges(app, root, &content_rows, &rows);
         let mut conn = state.db()?;
-        content_index::ensure_table(&conn)?;
-        content_index::replace_subtree(&mut conn, root, &content_rows)?;
+        content_index_repo::ensure_table(&conn)?;
+        content_index_repo::replace_subtree(&mut conn, root, &content_rows)?;
         edges_repo::replace_derived_subtree(&mut conn, root, &edges)?;
     }
     Ok(())
@@ -208,19 +262,23 @@ pub async fn start_index(
         return Ok(());
     }
 
-    // Обновить флаги; узнать, сменился ли корень.
-    let root_changed = {
+    // Обновить флаги; узнать, сменился ли корень и нужно ли впервые строить контент.
+    let (root_changed, need_content_build) = {
         let mut info = state.index_info()?;
+        let was_content = info.content_active;
         if content {
             info.content_active = true;
         }
         let changed = info.root.as_deref() != Some(root.as_str());
         info.root = Some(root.clone());
-        changed
+        (changed, content && !was_content)
     };
 
-    // Построить в фоне, если корень новый, форс, или впервые включили контент.
-    if root_changed || force || content {
+    // Строим в фоне только при реальной необходимости: новый корень, форс, либо
+    // контент запросили впервые для этого корня. Иначе (повторное открытие графа
+    // на том же корне) индекс уже построен и поддерживается вотчером — полный
+    // ребилд не нужен, и граф открывается мгновенно, без «висящей» плашки.
+    if root_changed || force || need_content_build {
         let app2 = app.clone();
         let root2 = root.clone();
         // build_all — синхронный блокирующий обход + транзакции: spawn_blocking,

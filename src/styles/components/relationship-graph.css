@@ -42,6 +42,25 @@
 .graph__close:hover {
   color: var(--text);
 }
+.graph__rebuild {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: 6px;
+}
+.graph__rebuild:hover:not(:disabled) {
+  border-color: var(--accent, #10b981);
+  color: var(--accent, #10b981);
+}
+.graph__rebuild:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
 .graph__canvas {
   display: block;
   background: var(--bg-0);
