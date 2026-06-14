@@ -21,8 +21,6 @@
   max-width: 220px;
   padding: 6px 8px 6px 11px;
   background: var(--bg-2);
-  border: 1px solid var(--border);
-  border-bottom: none;
   border-radius: var(--radius-sm) var(--radius-sm) 0 0;
   color: var(--text-dim);
   cursor: pointer;

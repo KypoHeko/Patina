@@ -11,8 +11,8 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::error::{Error, Result};
 use crate::index::file_index_repo::{self, IndexRow};
-use crate::index::{content_index_repo, edges_repo};
-use crate::indexer::{build_row, links};
+use crate::index::{content_index_repo, edges_repo, usn_position_repo};
+use crate::indexer::{build_row, links, usn_journal};
 use crate::state::AppState;
 
 const TEXT_EXTS: &[&str] = &[
@@ -23,6 +23,27 @@ const TEXT_EXTS: &[&str] = &[
 const MAX_FILE: u64 = 1_048_576; // 1 МБ
 const SCAN_LIMIT: usize = 50_000;
 const MENTION_SCAN_CAP: usize = 200_000; // верхняя граница тела для скана упоминаний
+
+/// Папки, которые НЕ индексируем и не сканируем: VCS, артефакты сборки, кэши.
+/// Иначе индекс/граф забивается мусором (.git/**, target/**, node_modules/**),
+/// а пересборка занимает секунды на пустом месте.
+fn is_ignored_name(name: &str) -> bool {
+    matches!(
+        name,
+        ".git" | ".svn" | ".hg" | "node_modules" | "target" | "dist" | "build"
+            | ".next" | ".nuxt" | ".cache" | "__pycache__" | ".venv" | "venv"
+            | ".idea" | ".vscode" | ".gradle" | ".tox"
+    )
+}
+
+fn is_ignored_dir(e: &walkdir::DirEntry) -> bool {
+    e.file_type().is_dir() && is_ignored_name(e.file_name().to_str().unwrap_or(""))
+}
+
+fn is_ignored_path(p: &Path) -> bool {
+    p.components()
+        .any(|c| is_ignored_name(c.as_os_str().to_str().unwrap_or("")))
+}
 
 fn is_text(path: &Path, len: u64) -> bool {
     if len == 0 || len > MAX_FILE {
@@ -72,6 +93,11 @@ fn build_edges(
     // basename(lower) -> уникальный путь (None, если имя неуникально).
     let mut by_name: HashMap<String, Option<String>> = HashMap::new();
     for r in rows {
+        // Папки целями упоминаний не делаем: «зависеть» от папки по тексту
+        // бессмысленно, а её имя (часто общее слово) плодит ложные рёбра.
+        if r.is_dir {
+            continue;
+        }
         by_name
             .entry(r.name.to_lowercase())
             .and_modify(|v| *v = None)
@@ -90,12 +116,15 @@ fn build_edges(
         }
     }
 
-    // 2) Упоминания по уникальному имени (слой дискавери). Имена < 4 символов
-    //    пропускаем, чтобы не шуметь (a.h, io и т.п.).
+    // 2) Упоминания по уникальному имени (слой дискавери). Берём только имена
+    //    С РАСШИРЕНИЕМ (есть '.') и длиной ≥ 4: это отсекает «голые» слова-имена
+    //    (center, index, montserrat), совпадающие с обычными словами в тексте
+    //    (CSS: text-align: center) и плодящие ложные связи. Имена с расширением
+    //    (utils.js, notes.md) остаются.
     let unique: Vec<(String, String)> = by_name
         .into_iter()
         .filter_map(|(name, p)| p.map(|path| (name, path)))
-        .filter(|(name, _)| name.len() >= 4)
+        .filter(|(name, _)| name.len() >= 4 && name.contains('.'))
         .collect();
 
     if unique.is_empty() {
@@ -124,15 +153,21 @@ fn build_edges(
             &body[..]
         };
         let hay = slice.to_lowercase();
-        // Нам важно НАЛИЧИЕ имени в теле (как у прежнего contains), а не все его
-        // позиции. find_iter — один линейный проход без перечисления перекрытий:
-        // на повторяющихся/больших телах (node_modules, lock-файлы, логи) это не
-        // «взрывается» по числу совпадений, в отличие от find_overlapping_iter.
+        let hb = hay.as_bytes();
+        // Совпадение засчитываем только как ОТДЕЛЬНЫЙ токен: имя не должно быть
+        // частью более длинного слова/имени. Иначе «pt.js» ловится внутри
+        // «scri[pt.js]» — отсюда ложное ребро index.html → pt.js.
+        let nameish = |c: u8| c.is_ascii_alphanumeric() || c == b'.' || c == b'_' || c == b'-';
         let mut matched: HashSet<usize> = HashSet::new();
         for m in ac.find_iter(hay.as_str()) {
-            matched.insert(m.pattern().as_usize());
-            if matched.len() == unique.len() {
-                break; // все имена уже найдены — дальше сканировать тело незачем
+            let (s, e) = (m.start(), m.end());
+            let left_ok = s == 0 || !nameish(hb[s - 1]);
+            let right_ok = e >= hb.len() || !nameish(hb[e]);
+            if left_ok && right_ok {
+                matched.insert(m.pattern().as_usize());
+                if matched.len() == unique.len() {
+                    break; // все имена уже найдены — дальше сканировать тело незачем
+                }
             }
         }
         for idx in matched {
@@ -145,8 +180,10 @@ fn build_edges(
             }
         }
 
-        // Живой прогресс фазы построения связей.
-        if (i + 1) % 200 == 0 {
+        // Живой прогресс фазы связей. Шаг адаптивный + всегда финальный эмит,
+        // иначе для папок < 200 файлов счётчик замирал на 0/total.
+        let step = (total / 20).max(1).min(200);
+        if (i + 1) % step == 0 || i + 1 == total {
             let _ = app.emit(
                 "index:progress",
                 serde_json::json!({ "root": root, "count": i + 1, "total": total, "phase": "relations" }),
@@ -160,6 +197,9 @@ fn build_edges(
 /// Применить изменение ОДНОГО пути к индексам. Best-effort: ошибки глотаются —
 /// это фоновое сопровождение, рассинхрон выправит следующая полная пересборка.
 fn apply_change(app: &AppHandle, content_active: bool, path: &Path) {
+    if is_ignored_path(path) {
+        return; // .git/target/node_modules и т.п. — не индексируем и не реагируем
+    }
     let state = app.state::<AppState>();
     let pstr = path.to_string_lossy().into_owned();
     if path.exists() {
@@ -192,14 +232,18 @@ fn apply_change(app: &AppHandle, content_active: bool, path: &Path) {
 }
 
 /// Полное (пере)построение индекса корня — выполняется в фоне.
+/// После успешной сборки сохраняет текущую USN-позицию, чтобы при следующем
+/// запуске инкрементальное обновление через USN Journal начиналось с нужной точки.
 fn build_all(app: &AppHandle, root: &str, content: bool) -> Result<()> {
     let state = app.state::<AppState>();
+    let _t0 = std::time::Instant::now(); // ВРЕМЕННО: диагностика времени фаз
     let mut rows: Vec<IndexRow> = Vec::new();
     let mut content_rows: Vec<content_index_repo::ContentRow> = Vec::new();
     let mut since_emit = 0usize;
     for entry in walkdir::WalkDir::new(root)
         .min_depth(1)
         .into_iter()
+        .filter_entry(|e| !is_ignored_dir(e))
         .filter_map(|e| e.ok())
     {
         if rows.len() >= SCAN_LIMIT {
@@ -227,10 +271,18 @@ fn build_all(app: &AppHandle, root: &str, content: bool) -> Result<()> {
             }
         }
     }
+    eprintln!("[index] walk+read: {} файлов ({} текстовых) за {:?}", rows.len(), content_rows.len(), _t0.elapsed());
+    let _t1 = std::time::Instant::now();
     {
         let mut conn = state.db()?;
         file_index_repo::replace_subtree(&mut conn, root, &rows)?;
+        // После успешной записи индекса — сохранить USN-позицию для инкрементального
+        // обновления при следующем запуске. Позиция 0 означает «со следующего记录»,
+        // но мы записываем 1, чтобы sync_from_journal при следующем вызове начал
+        // читать изменения, произошедшие ПОСЛЕ этого полного скана.
+        let _ = usn_position_repo::set(&conn, root, 1);
     }
+    eprintln!("[index] file_index write за {:?}", _t1.elapsed());
     if content {
         // Построение рёбер может быть заметным по времени — отдельная фаза в UI,
         // build_edges шлёт инкрементальный прогресс внутри.
@@ -239,12 +291,17 @@ fn build_all(app: &AppHandle, root: &str, content: bool) -> Result<()> {
             serde_json::json!({ "root": root, "count": 0, "total": content_rows.len(), "phase": "relations" }),
         );
         // Содержимое + рёбра связей строятся из одних и тех же прочитанных тел.
+        let _t2 = std::time::Instant::now();
         let edges = build_edges(app, root, &content_rows, &rows);
+        eprintln!("[index] build_edges: {} рёбер за {:?}", edges.len(), _t2.elapsed());
+        let _t3 = std::time::Instant::now();
         let mut conn = state.db()?;
         content_index_repo::ensure_table(&conn)?;
         content_index_repo::replace_subtree(&mut conn, root, &content_rows)?;
         edges_repo::replace_derived_subtree(&mut conn, root, &edges)?;
+        eprintln!("[index] content+edges write за {:?}", _t3.elapsed());
     }
+    eprintln!("[index] ИТОГО build_all за {:?}", _t0.elapsed());
     Ok(())
 }
 
@@ -278,6 +335,11 @@ pub async fn start_index(
     // контент запросили впервые для этого корня. Иначе (повторное открытие графа
     // на том же корне) индекс уже построен и поддерживается вотчером — полный
     // ребилд не нужен, и граф открывается мгновенно, без «висящей» плашки.
+    //
+    // Исключение: если корень НЕ сменился и это НЕ форс, пробуем инкрементальное
+    // обновление через USN Journal (только на NTFS). Если USN Journal доступна —
+    // точечно обновляем изменённые записи и пропускаем полный перескан. Если нет —
+    // fallback на полный build_all.
     if root_changed || force || need_content_build {
         let app2 = app.clone();
         let root2 = root.clone();
@@ -286,6 +348,40 @@ pub async fn start_index(
         tauri::async_runtime::spawn_blocking(move || {
             let _ = build_all(&app2, &root2, content);
             let _ = app2.emit("index:ready", &root2);
+        });
+    } else {
+        // Тот же корень, не форс — пробуем быстрый путь через USN Journal.
+        let app2 = app.clone();
+        let root2 = root.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            let state = app2.state::<AppState>();
+            let usn_ok = match state.db() {
+                Ok(conn) => {
+                    let last = usn_position_repo::get(&conn, &root2).ok().flatten();
+                    match last {
+                        Some(last_usn) => {
+                            match usn_journal::sync_from_journal(&root2, last_usn, &conn) {
+                                Ok(result) if result.used_journal => {
+                                    let new_usn = result.new_usn;
+                                    let _ = usn_position_repo::set(&conn, &root2, new_usn);
+                                    let _ = app2.emit("index:ready", &root2);
+                                    true
+                                }
+                                _ => false, // USN Journal недоступна — fallback
+                            }
+                        }
+                        None => false, // Нет сохранённой позиции — первый запуск
+                    }
+                }
+                Err(_) => false,
+            };
+
+            if !usn_ok {
+                // Fallback: полный перескан (но только file_index, без контента —
+                // контент уже был построен ранее, need_content_build == false).
+                let _ = build_all(&app2, &root2, false);
+                let _ = app2.emit("index:ready", &root2);
+            }
         });
     }
 

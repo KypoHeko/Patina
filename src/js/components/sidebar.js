@@ -1,6 +1,6 @@
 import { Component } from '../core/component.js';
 import { el } from '../core/dom.js';
-import { quickAccess, listStorage } from '../api/system.js';
+import { quickAccess, quickAccessSave, listStorage } from '../api/system.js';
 import { tagCounts } from '../api/tags.js';
 import { TAGS } from '../config/tags.js';
 import { getPane } from '../state/panes.js';

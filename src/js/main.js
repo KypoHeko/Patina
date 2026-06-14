@@ -67,6 +67,12 @@ document.getElementById('preview-btn').addEventListener('click', () => bus.emit(
 
 const searchInput = document.getElementById('topbar-search');
 searchInput.addEventListener('input', () => store.setState({ searchQuery: searchInput.value }));
+// При навигации searchQuery сбрасывается программно — синхронизируем input.
+store.subscribe((state) => {
+  if (document.activeElement !== searchInput && searchInput.value !== (state.searchQuery || '')) {
+    searchInput.value = state.searchQuery || '';
+  }
+});
 
 document.getElementById('duplicates-btn').addEventListener('click', () => bus.emit('duplicates:open'));
 document.getElementById('graph-btn').addEventListener('click', () => bus.emit('graph:open'));

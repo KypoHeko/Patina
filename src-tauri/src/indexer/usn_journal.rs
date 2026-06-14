@@ -11,7 +11,7 @@
 //!
 //! Это превращает O(все файлы) в O(изменения), что на больших томах
 //! даёт ускорение на порядки (секунды → миллисекунды).
-#![allow(dead_code)] // TODO: подключить sync_from_journal вместо notify-вотчера корня
+#![allow(dead_code)] // Модуль используется через indexing.rs; sync_from_journal — публичный API
 
 use crate::error::Result;
 use crate::platform;

@@ -23,10 +23,8 @@ pub mod windows;
 #[cfg(windows)]
 pub use windows::{delete_to_recycle_bin, list_drives_native};
 
-// Реализованы, но ещё не подключены к командам (нативные иконки, USN-поллер).
-// Реэкспорт сохранён для будущей интеграции.
+// Реэкспорт нативных иконок и USN Journal для использования в командах.
 #[cfg(windows)]
-#[allow(unused_imports)]
 pub use windows::{get_native_icon, read_usn_journal};
 
 /// Информация о диске/томе с нативными данными ОС.
@@ -48,6 +46,7 @@ pub struct DriveInfo {
 /// Результат извлечения иконки через SHGetFileInfo.
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
 pub struct NativeIcon {
     /// PNG-байты иконки (16x16 или 32x32)
     pub png: Vec<u8>,
@@ -89,13 +88,11 @@ pub fn delete_to_recycle_bin(_paths: &[String]) -> crate::error::Result<()> {
 }
 
 #[cfg(not(windows))]
-#[allow(dead_code)]
 pub fn get_native_icon(_path: &str, _size: u32) -> Option<NativeIcon> {
     None
 }
 
 #[cfg(not(windows))]
-#[allow(dead_code)]
 pub fn read_usn_journal(_root: &str, _last_usn: i64) -> crate::error::Result<Option<UsnChanges>> {
     // USN Journal доступна только на NTFS/Windows
     Ok(None)

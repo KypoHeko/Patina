@@ -1,4 +1,5 @@
-//! Системные команды: запуск файлов, показ в проводнике, места для сайдбара.
+//! Системные команды: запуск файлов, показ в проводнике, места для сайдбара,
+//! нативные иконки файлов (SHGetFileInfo на Windows).
 
 use serde::Serialize;
 use tauri::{AppHandle, Manager};
@@ -6,6 +7,16 @@ use tauri::{AppHandle, Manager};
 use crate::index::quick_access_repo::{self, QuickItem};
 use crate::state::AppState;
 use crate::error::{Error, Result};
+
+/// Результат запроса нативной иконки: data-URL для использования в <img>.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeIconResult {
+    /// data:image/png;base64,... — готовый URL для <img src="...">
+    data_url: String,
+    width: u32,
+    height: u32,
+}
 
 /// Запись для сайдбара: подпись, путь, тип (для иконки на фронте).
 #[derive(Serialize)]
@@ -221,4 +232,61 @@ fn list_storage_sync() -> Vec<Storage> {
         });
     }
     out
+}
+
+/// Получить нативную иконку файла/папки через WinAPI (SHGetFileInfo).
+///
+/// На Windows извлекает реальную системную иконку (как в проводнике),
+/// конвертирует в PNG и возвращает как data-URL. На других платформах
+/// возвращает None — фронтенд использует SVG-фолбэк.
+///
+/// Иконки кэшируются на диске (ключ — путь+mtime+размер), повторные
+/// запросы мгновенны. Тяжёлая работа уходит в блокирующий пул.
+#[tauri::command]
+pub async fn native_icon(app: AppHandle, path: String, size: u32) -> Result<Option<NativeIconResult>> {
+    tauri::async_runtime::spawn_blocking(move || -> Result<Option<NativeIconResult>> {
+        // Дисковый кэш: ключ = blake3(путь + mtime + размер)
+        let state = app.state::<AppState>();
+        let meta = std::fs::metadata(&path);
+        let mtime = meta.as_ref().ok().and_then(|m| {
+            m.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_millis())
+        }).unwrap_or(0);
+        let fsize = meta.as_ref().map(|m| m.len()).unwrap_or(0);
+        let cache_key = blake3::hash(format!("{path}|{mtime}|{fsize}|icon{size}").as_bytes())
+            .to_hex().to_string();
+        let cache_path = state.thumbs_dir.join(format!("icon_{cache_key}.bin"));
+
+        // Проверяем кэш
+        if let Ok(cached) = std::fs::read(&cache_path) {
+            if let Ok(data_url) = String::from_utf8(cached) {
+                return Ok(Some(NativeIconResult {
+                    data_url,
+                    width: size,
+                    height: size,
+                }));
+            }
+        }
+
+        // Получаем нативную иконку
+        let icon = crate::platform::get_native_icon(&path, size);
+        match icon {
+            Some(ni) => {
+                let data_url = format!(
+                    "data:image/png;base64,{}",
+                    crate::commands::fs::b64(&ni.png)
+                );
+                // Сохраняем в кэш
+                let _ = std::fs::write(&cache_path, data_url.as_bytes());
+                Ok(Some(NativeIconResult {
+                    data_url,
+                    width: ni.width,
+                    height: ni.height,
+                }))
+            }
+            None => Ok(None),
+        }
+    })
+    .await
+    .map_err(|e| Error::Operation(format!("native_icon прерван: {e}")))?
 }

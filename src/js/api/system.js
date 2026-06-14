@@ -32,3 +32,12 @@ export function setWatch(paths) {
 export function quickAccessSave(items) {
   return invoke('quick_access_save', { items });
 }
+
+/**
+ * Получить нативную иконку файла/папки (WinAPI SHGetFileInfo).
+ * Возвращает { dataUrl, width, height } или null на не-Windows.
+ * Иконки кэшируются на диске, повторные вызовы мгновенны.
+ */
+export function nativeIcon(path, size = 16) {
+  return invoke('native_icon', { path, size });
+}

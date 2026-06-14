@@ -260,6 +260,20 @@
   color: var(--text-dim);
   white-space: nowrap;
 }
+/* Состояние «готово»: спиннер скрыт, вместо него галочка акцентного цвета. */
+.graph__loading.is-done .graph__spinner {
+  display: none;
+}
+.graph__loading.is-done::before {
+  content: "✓";
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--accent);
+}
+.graph__loading.is-done .graph__loading-text {
+  color: var(--accent);
+}
 .graph__spinner {
   width: 16px;
   height: 16px;

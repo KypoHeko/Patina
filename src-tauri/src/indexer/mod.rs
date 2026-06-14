@@ -39,7 +39,6 @@ pub fn build_row(path: &Path) -> Option<IndexRow> {
 
 /// Публичная обёртка над `build_row` для использования из `usn_journal`.
 /// Принимает строковый путь, возвращает Option<IndexRow>.
-#[allow(dead_code)] // TODO: используется USN-путём (sync_from_journal), пока не подключён
 pub fn build_row_from_path(path: &str) -> Option<IndexRow> {
     build_row(Path::new(path))
 }

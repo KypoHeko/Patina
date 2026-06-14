@@ -145,9 +145,8 @@ fn get_volume_label(root: &str) -> String {
 ///
 /// Стратегия:
 /// 1. GetDriveTypeW → Removable / Network / RAM
-/// 2. IOCTL_STORAGE_QUERY_PROPERTY → проверка DeviceSeekPenalty
-///    (SSD не имеет seek penalty → это SSD)
-/// 3. Fallback → "HDD"
+/// 2. Для фиксированного диска — detect_fixed_media (TRIM + seek penalty)
+/// 3. Неопределимо → "SSD" (см. detect_fixed_media)
 fn get_drive_kind(root: &str) -> String {
     use windows::Win32::Storage::FileSystem::GetDriveTypeW;
 
@@ -164,20 +163,42 @@ fn get_drive_kind(root: &str) -> String {
         _ => {}                         // 3 = DRIVE_FIXED → проверяем SSD ниже
     }
 
-    // FIXED или UNKNOWN → проверяем SSD через IOCTL
-    if is_ssd(root) {
-        "SSD".into()
-    } else {
-        "HDD".into()
+    // FIXED или UNKNOWN → определяем носитель через IOCTL.
+    detect_fixed_media(root).into()
+}
+
+/// SSD/HDD для фиксированного диска. Комбинируем ДВА сигнала
+/// IOCTL_STORAGE_QUERY_PROPERTY, потому что одного seek-penalty мало: на части
+/// SSD (особенно NVMe) запрос неинформативен или падает, и прежняя реализация в
+/// таком случае всегда отдавала «HDD» — отсюда ложный HDD на реальном SSD.
+///
+/// 1. TRIM включён → SSD (механические HDD его не поддерживают) — надёжнее всего.
+/// 2. Иначе seek penalty: FALSE → SSD, TRUE → HDD.
+/// 3. Оба запроса неинформативны → считаем SSD: на современных фиксированных
+///    дисках это куда вероятнее, а HDD надёжно сообщает seek penalty (поэтому
+///    ложного «SSD вместо HDD» этот дефолт на практике не даёт).
+fn detect_fixed_media(root: &str) -> &'static str {
+    // StorageDeviceTrimProperty = 8
+    if query_storage_property_bool(root, 8) == Some(true) {
+        return "SSD";
+    }
+    // StorageDeviceSeekPenaltyProperty = 7: true = есть seek penalty (HDD).
+    match query_storage_property_bool(root, 7) {
+        Some(false) => "SSD",
+        Some(true) => "HDD",
+        None => "SSD",
     }
 }
 
-/// Проверяет, является ли диск SSD через DeviceIoControl
-/// с IOCTL_STORAGE_QUERY_PROPERTY → StorageDeviceSeekPenaltyProperty.
+/// Запрос булева дескриптора устройства через DeviceIoControl
+/// (IOCTL_STORAGE_QUERY_PROPERTY). Подходит свойствам, чей дескриптор имеет вид
+/// { Version: u32, Size: u32, Value: BOOLEAN } — это SeekPenalty (7) и Trim (8).
 ///
-/// SSD не имеет seek penalty (DeviceSeekPenalty = FALSE).
-fn is_ssd(root: &str) -> bool {
-
+/// Возвращает Some(true)/Some(false) по значению поля, либо None, если запрос
+/// неинформативен (устройство не открылось / IOCTL не поддержан / короткий ответ).
+/// Различие None и Some(false) важно: вызывающая сторона трактует «неизвестно»
+/// иначе, чем достоверное «нет».
+fn query_storage_property_bool(root: &str, property_id: u32) -> Option<bool> {
     // Открываем устройство \\.\C: для корня C:\
     let drive_letter = root.chars().next().unwrap_or('C');
     let device_path = format!("\\\\.\\{}:", drive_letter);
@@ -202,46 +223,44 @@ fn is_ssd(root: &str) -> bool {
 
         let handle = match handle {
             Ok(h) if !h.is_invalid() => h,
-            _ => return false,
+            _ => return None,
         };
 
-        // IOCTL_STORAGE_QUERY_PROPERTY = 0x2D1400
-        // StorageDeviceSeekPenaltyProperty = PropertyStandardQuery (0) + StorageDeviceSeekPenaltyProperty (7)
-        // Упрощённая проверка через прямой IOCTL
+        // STORAGE_PROPERTY_QUERY: PropertyId (u32) + QueryType (u32).
         #[repr(C)]
         #[derive(Default)]
         struct StorageQuery {
-            property: u32, // PropertyId = 7 (SeekPenalty)
-            query_type: u32, // PropertyStandardQuery = 0
+            property: u32,
+            query_type: u32,
         }
 
-        // DEVICE_SEEK_PENALTY_DESCRIPTOR: сначала Version (u32) и Size (u32),
-        // и только потом IncursSeekPenalty (BOOLEAN = 1 байт). Без первых двух
-        // полей мы читали бы Version (он ненулевой) и всегда получали «HDD».
+        // Дескриптор: Version (u32) + Size (u32) + Value (BOOLEAN = 1 байт).
+        // Заголовок (Version/Size) обязателен — без него мы читали бы Version
+        // (он ненулевой) и всегда получали бы «true».
         #[repr(C)]
         #[derive(Default)]
-        struct DeviceSeekPenaltyDescriptor {
+        struct BoolDescriptor {
             version: u32,
             size: u32,
-            incurs_seek_penalty: u8, // BOOLEAN: 0 (FALSE) = нет seek penalty = SSD
+            value: u8, // BOOLEAN
             _reserved: [u8; 3],
         }
 
         let query = StorageQuery {
-            property: 7, // StorageDeviceSeekPenaltyProperty
+            property: property_id,
             query_type: 0, // PropertyStandardQuery
         };
 
-        let mut result = DeviceSeekPenaltyDescriptor::default();
+        let mut result = BoolDescriptor::default();
         let mut bytes_returned = 0u32;
 
         let ok = DeviceIoControl(
             handle,
-            0x0002D1400, // IOCTL_STORAGE_QUERY_PROPERTY
+            0x0002D140, // IOCTL_STORAGE_QUERY_PROPERTY
             Some(&query as *const _ as *const _),
             std::mem::size_of::<StorageQuery>() as u32,
             Some(&mut result as *mut _ as *mut _),
-            std::mem::size_of::<DeviceSeekPenaltyDescriptor>() as u32,
+            std::mem::size_of::<BoolDescriptor>() as u32,
             Some(&mut bytes_returned),
             None,
         );
@@ -249,10 +268,10 @@ fn is_ssd(root: &str) -> bool {
         let _ = windows::Win32::Foundation::CloseHandle(handle);
 
         match ok {
-            // Достоверно, только если устройство реально вернуло поле penalty
-            // (дескриптор с заголовком занимает ≥ 9 байт). Иначе — не SSD.
-            Ok(_) if bytes_returned >= 9 => result.incurs_seek_penalty == 0,
-            _ => false,
+            // Достоверно только если устройство реально вернуло поле значения
+            // (заголовок 8 байт + 1 байт = ≥ 9). Иначе — «неизвестно».
+            Ok(_) if bytes_returned >= 9 => Some(result.value != 0),
+            _ => None,
         }
     }
 }
@@ -291,7 +310,7 @@ fn get_disk_space(root: &str) -> (u64, u64) {
 ///
 /// Использует SHGetFileInfoW с SHGFI_ICON | SHGFI_SMALLICON/LARGEICON,
 /// затем конвертирует HICON → PNG через вспомогательную функцию.
-#[allow(dead_code)] // TODO: подключить нативные иконки к list_dir/превью
+#[allow(dead_code)]
 pub fn get_native_icon(path: &str, size: u32) -> Option<NativeIcon> {
     use windows::Win32::Storage::FileSystem::FILE_FLAGS_AND_ATTRIBUTES;
     use windows::Win32::UI::Shell::{
@@ -340,7 +359,7 @@ pub fn get_native_icon(path: &str, size: u32) -> Option<NativeIcon> {
 ///
 /// Стратегия: получаем BITMAP из иконки, читаем пиксели, кодируем в PNG
 /// через crate `image`.
-#[allow(dead_code)] // TODO: используется get_native_icon (отложено)
+#[allow(dead_code)]
 unsafe fn icon_to_png(
     icon: windows::Win32::UI::WindowsAndMessaging::HICON,
     size: u32,
@@ -426,7 +445,6 @@ unsafe fn icon_to_png(
 ///
 /// `last_usn` — позиция в журнале с прошлого чтения (0 = сначала).
 /// После обработки нужно сохранить новый USN для следующего вызова.
-#[allow(dead_code)] // TODO: подключить USN-поллер вместо notify для корневого тома
 pub fn read_usn_journal(root: &str, last_usn: i64) -> Result<Option<UsnChanges>> {
     use windows::Win32::Foundation::HANDLE;
     use windows::Win32::Storage::FileSystem::{
@@ -468,7 +486,6 @@ pub fn read_usn_journal(root: &str, last_usn: i64) -> Result<Option<UsnChanges>>
 }
 
 /// Внутренняя реализация чтения USN Journal через DeviceIoControl.
-#[allow(dead_code)] // TODO: используется read_usn_journal (отложено)
 unsafe fn read_usn_with_handle(
     handle: windows::Win32::Foundation::HANDLE,
     root: &str,

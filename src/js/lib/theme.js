@@ -6,6 +6,7 @@ const KEY = 'patina:theme';
 export const THEMES = [
   { id: 'emerald', label: 'Тёмно-изумрудный', swatch: '#10b981' },
   { id: 'gold', label: 'Тёпло-золотой', swatch: '#c9a85c' },
+  { id: 'light', label: 'Светло-голубая', swatch: '#0067c0' },
 ];
 
 const DEFAULT = 'emerald';

@@ -155,7 +155,7 @@
 .sidebar__bar {
   height: 4px;
   border-radius: 3px;
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--border-strong);
   overflow: hidden;
   margin-left: 26px;
   max-width: 200px;

@@ -1,5 +1,8 @@
 //! Хранение позиции USN Journal по каждому NTFS-тому.
-#![allow(dead_code)] // TODO: подключить USN-поллер (get/set/remove) — пока не вызывается
+//!
+//! Используется indexing.rs для инкрементальной синхронизации: при запуске
+//! проверяем сохранённую позицию USN и читаем только изменения из журнала,
+//! а не весь том целиком.
 
 use rusqlite::Connection;
 
@@ -29,6 +32,7 @@ pub fn set(conn: &Connection, volume_root: &str, last_usn: i64) -> Result<()> {
 }
 
 /// Удалить позицию для тома.
+#[allow(dead_code)]
 pub fn remove(conn: &Connection, volume_root: &str) -> Result<()> {
     let root = normalize(volume_root);
     conn.execute("DELETE FROM usn_position WHERE volume_root = ?1", [&root])?;

@@ -1,6 +1,6 @@
 //! Команды связей между файлами: ручные связи + построение графа.
 
-use std::collections::BTreeSet;
+use std::collections::HashMap;
 use std::time::UNIX_EPOCH;
 
 use rusqlite::{Connection, OptionalExtension};
@@ -10,6 +10,7 @@ use tauri::{AppHandle, Manager};
 use crate::error::{Error, Result};
 use crate::index::edges_repo::{self, Edge};
 use crate::index::files_repo;
+use crate::index::path_key::normalize;
 use crate::indexer::hasher;
 use crate::state::AppState;
 
@@ -80,16 +81,41 @@ pub async fn file_graph(app: AppHandle, seeds: Vec<String>, hops: usize) -> Resu
         let conn = state.db_read()?;
         let edges = edges_repo::neighborhood(&conn, &seeds, hops)?;
 
-        let mut paths: BTreeSet<String> = seeds.into_iter().collect();
-        for e in &edges {
-            paths.insert(e.src.clone());
-            paths.insert(e.dst.clone());
+        // Рёбра возвращаются в КАНОНИЧЕСКИХ ключах (path_key::normalize: на
+        // Windows — нижний регистр, '\'), а seed-пути приходят с фронта в
+        // ИСХОДНОМ регистре. Без сведения к одному ключу один и тот же файл
+        // попадал в граф ДВАЖДЫ: как seed (исходный регистр, без рёбер) и как
+        // конец ребра (канонический, со связями) — это и есть «те же файлы со
+        // связями и без». Сводим по каноническому ключу, но ОТОБРАЖАЕМ под
+        // исходным путём seed (чтобы reveal/выделение и регистр имени совпадали
+        // с файловой панелью).
+        let mut display: HashMap<String, String> = HashMap::new();
+        for s in &seeds {
+            display.entry(normalize(s)).or_insert_with(|| s.clone());
         }
-        let nodes = paths
+        for e in &edges {
+            display.entry(e.src.clone()).or_insert_with(|| e.src.clone());
+            display.entry(e.dst.clone()).or_insert_with(|| e.dst.clone());
+        }
+
+        let nodes: Vec<GraphNode> = display
+            .iter()
+            .map(|(canon, disp)| {
+                // метаданные — по каноническому ключу (так хранит file_index),
+                // путь узла — отображаемый (исходный регистр для seed).
+                let (name, is_dir) = node_meta(&conn, canon.as_str());
+                GraphNode { path: disp.clone(), name, is_dir }
+            })
+            .collect();
+
+        // Рёбра переводим из канонических ключей в отображаемые пути, иначе на
+        // фронте они не «прицепятся» к узлам (узлы теперь под путями seed).
+        let edges: Vec<Edge> = edges
             .into_iter()
-            .map(|p| {
-                let (name, is_dir) = node_meta(&conn, &p);
-                GraphNode { path: p, name, is_dir }
+            .map(|e| Edge {
+                src: display.get(&e.src).cloned().unwrap_or(e.src),
+                dst: display.get(&e.dst).cloned().unwrap_or(e.dst),
+                kind: e.kind,
             })
             .collect();
 

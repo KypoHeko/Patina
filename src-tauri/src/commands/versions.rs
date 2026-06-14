@@ -3,7 +3,6 @@
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use rusqlite::Connection;
 use tauri::{AppHandle, Manager};
 
 use crate::error::{Error, Result};
@@ -20,7 +19,8 @@ fn now_secs() -> i64 {
 
 /// Снимок, если содержимое изменилось. Хеширование и копирование файла идут
 /// ВНЕ блокировки БД; Mutex берётся лишь короткими сериями.
-fn do_snapshot(db: &std::sync::Mutex<Connection>, versions_dir: &Path, path: &str) -> Result<()> {
+/// Автоматически назначает метку v1, v2, v3…
+fn do_snapshot(db: &std::sync::Mutex<rusqlite::Connection>, versions_dir: &Path, path: &str) -> Result<()> {
     let meta = std::fs::metadata(path)?;
     if !meta.is_file() {
         return Ok(());
@@ -41,7 +41,8 @@ fn do_snapshot(db: &std::sync::Mutex<Connection>, versions_dir: &Path, path: &st
 
     {
         let conn = db.lock().map_err(|_| Error::Operation("БД заблокирована (poisoned)".into()))?;
-        versions_repo::insert(&conn, path, now_secs(), meta.len() as i64, &hash)?;
+        let label = versions_repo::next_label(&conn, path)?;
+        versions_repo::insert(&conn, path, now_secs(), meta.len() as i64, &hash, &label)?;
     }
     Ok(())
 }
@@ -85,4 +86,44 @@ pub async fn restore_version(app: AppHandle, id: i64) -> Result<()> {
     })
     .await
     .map_err(|e| Error::Operation(format!("restore_version прерван: {e}")))?
+}
+
+/// Удалить версию файла по id. Если на блоб (хеш) больше нет ссылок —
+/// блоб тоже удаляется с диска. Нельзя удалить единственную версию
+/// (это разрушает целостность — файл остаётся без истории).
+#[tauri::command]
+pub async fn delete_version(app: AppHandle, id: i64) -> Result<Vec<Version>> {
+    tauri::async_runtime::spawn_blocking(move || -> Result<Vec<Version>> {
+        let state = app.state::<AppState>();
+        let path = {
+            let conn = state.db_read()?;
+            let v = versions_repo::get(&conn, id)?
+                .ok_or_else(|| Error::Operation("версия не найдена".into()))?;
+            let count = versions_repo::count_for(&conn, &v.path)?;
+            if count <= 1 {
+                return Err(Error::Operation("нельзя удалить единственную версию".into()));
+            }
+            v.path
+        };
+
+        let (hash, versions_dir) = {
+            let conn = state.db()?;
+            let removed = versions_repo::delete(&conn, id)?
+                .ok_or_else(|| Error::Operation("версия не найдена".into()))?;
+            // Проверяем, ссылается ли ещё кто-то на этот хеш
+            let refcount = versions_repo::hash_refcount(&conn, &removed.1)?;
+            (removed.1, state.versions_dir.clone())
+        };
+
+        // Блоб больше никому не нужен — удаляем
+        if refcount == 0 {
+            let _ = std::fs::remove_file(versions_dir.join(&hash));
+        }
+
+        // Возвращаем обновлённый список версий
+        let conn = state.db_read()?;
+        versions_repo::list_for(&conn, &path)
+    })
+    .await
+    .map_err(|e| Error::Operation(format!("delete_version прерван: {e}")))?
 }

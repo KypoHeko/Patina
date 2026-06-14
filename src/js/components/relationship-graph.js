@@ -1,6 +1,7 @@
 import { Component } from '../core/component.js';
 import { escapeHtml } from '../core/dom.js';
 import { fileGraph, hashGraphFiles } from '../api/relationships.js';
+import { searchFiles } from '../api/fs.js';
 import { startIndex } from '../api/indexing.js';
 import { onEvent } from '../api/events.js';
 import { getPane } from '../state/panes.js';
@@ -15,6 +16,8 @@ const NODE_MAX_W = 180; // максимальная ширина панели
 const NODE_RADIUS = 6; // скругление углов панели
 const NODE_FONT = '11px system-ui, -apple-system, "Segoe UI", sans-serif';
 const OVERVIEW_CAP = 80; // не строим полотно из тысяч узлов
+const OVERVIEW_INDEX_CAP = 300; // потолок узлов обзора с учётом вложенных файлов из индекса
+const BUSY_DELAY = 350; // мс: спиннер показываем только если операция длится дольше — иначе не мелькаем
 const DEFAULT_W = 900; // ориентир до первой раскладки полотна
 const DEFAULT_H = 600;
 
@@ -108,6 +111,7 @@ function measureLabelWidth(ctx, name, fullPath) {
 // показать файл в панели; двойной по пустому месту — сбросить вид.
 export class RelationshipGraph extends Component {
   init() {
+    console.log('%c[RelationshipGraph]', 'color:#10b981;font-weight:700', 'build: empty-load-guard (если этой строки нет в консоли — у тебя старый файл)');
     this._open = false;
     this._side = 'left';
     this._root = '';
@@ -130,6 +134,9 @@ export class RelationshipGraph extends Component {
     this._indexCount = 0;
     this._indexTotal = 0;
     this._indexPhase = '';
+    this._showBusy = false; // спиннер показываем с задержкой BUSY_DELAY (анти-мелькание на быстрых операциях)
+    this._busyTimer = null;
+    this._selfRebuild = false; // true, пока идёт пересборка, запущенная самим графом («Обновить»)
 
     // Прогрессивная сборка
     this._appeared = new Set(); // пути уже появившихся узлов
@@ -181,10 +188,19 @@ export class RelationshipGraph extends Component {
     onEvent('index:ready', (root) => {
       if (!this._open) return;
       if (root && this._root && root !== this._root) return;
+      // Свою пересборку («Обновить») сопровождаем плашкой; чужую, фоновую —
+      // обновляем тихо, чтобы только что показанное «Загружено!» не сменялось
+      // снова «Загрузкой».
+      const wasSelf = this._selfRebuild;
+      this._selfRebuild = false;
       this._indexing = false;
-      this.updateLoadingState();
       this.updateRebuildButton();
-      this.refetch();
+      // Данные обновляем ВСЕГДА тихо (без мелькания «Загрузка…»). Если это была
+      // своя пересборка («Обновить») — показываем «Загружено!»; фоновую сборку
+      // не афишируем.
+      this.refetch({ silent: true });
+      if (wasSelf) this.markLoaded();
+      else this.updateLoadingState();
     }).then((un) => this._cleanups.push(un));
 
     // Живой прогресс фонового построения индекса — чтобы было видно, что идёт
@@ -192,7 +208,11 @@ export class RelationshipGraph extends Component {
     onEvent('index:progress', (p) => {
       if (!this._open) return;
       if (p && p.root && this._root && p.root !== this._root) return;
-      this._indexing = true;
+      // Прогресс показываем ТОЛЬКО для сборки, запущенной из самого графа
+      // («Обновить» → rebuild() выставляет _indexing). Фоновую индексацию
+      // (например, из палитры) не латчим — иначе плашка «Загрузка» зависала бы,
+      // не дождавшись своего index:ready.
+      if (!this._indexing) return;
       this._indexCount = (p && p.count) || 0;
       this._indexTotal = (p && p.total) || 0;
       this._indexPhase = (p && p.phase) || 'scan';
@@ -219,7 +239,7 @@ export class RelationshipGraph extends Component {
     } else {
       this._mode = 'overview';
       this._focus = null;
-      seeds = entries.slice(0, OVERVIEW_CAP).map((e) => e.path);
+      seeds = null; // обзорные сиды собираем асинхронно ниже (текущая папка + индекс)
     }
 
     this._ox = 0;
@@ -235,13 +255,60 @@ export class RelationshipGraph extends Component {
     this._hashSeq++;
     this._indexing = false;
     this._indexCount = 0;
+    this._selfRebuild = false;
+    this._loaded = false;
+    if (this._loadedTimer) {
+      clearTimeout(this._loadedTimer);
+      this._loadedTimer = null;
+    }
+    this._showBusy = false;
+    if (this._busyTimer) {
+      clearTimeout(this._busyTimer);
+      this._busyTimer = null;
+    }
     this.render();
 
     // Авто-сборку при открытии НЕ запускаем — только читаем уже готовый индекс
     // (если он есть, граф покажется мгновенно). Полная (пере)сборка — по кнопке
     // «Обновить» (rebuild()).
-    this.fetch(seeds, 1);
-  }
+        if (this._mode === 'focus') {
+          this.fetch(seeds, 1);
+        } else {
+          // Обзор: файлы текущей папки + проиндексированные файлы поддерева
+          // (вложенные, напр. src/main.rs).
+          this.overviewSeeds(this._root, entries).then((s) => {
+            if (this._open) this.fetch(s, 1);
+          });
+        }
+      }
+    
+      /** Сиды обзора: файлы текущей папки (всегда) + проиндексированные файлы
+       *  поддерева из индекса (вложенные). Если индекс ещё не построен — останутся
+       *  только файлы текущей папки. */
+      async overviewSeeds(root, entries) {
+        const key = (p) => (p || '').toLowerCase();
+        const seen = new Set();
+        const seeds = [];
+        for (const e of entries.slice(0, OVERVIEW_CAP)) {
+          if (e.path && !seen.has(key(e.path))) {
+            seen.add(key(e.path));
+            seeds.push(e.path);
+          }
+        }
+        try {
+          const files = await searchFiles(root, '', OVERVIEW_INDEX_CAP); // '' → все файлы поддерева
+          for (const f of files || []) {
+            if (seeds.length >= OVERVIEW_INDEX_CAP) break;
+            if (f.path && !seen.has(key(f.path))) {
+              seen.add(key(f.path));
+              seeds.push(f.path);
+            }
+          }
+        } catch {
+          /* индекс недоступен — покажем только файлы текущей папки */
+        }
+        return seeds;
+      }
 
   close() {
     if (!this._open) return;
@@ -259,6 +326,17 @@ export class RelationshipGraph extends Component {
     this._winDrag = null;
     this._loading = false;
     this._indexing = false;
+    this._selfRebuild = false;
+    this._loaded = false;
+    if (this._loadedTimer) {
+      clearTimeout(this._loadedTimer);
+      this._loadedTimer = null;
+    }
+    this._showBusy = false;
+    if (this._busyTimer) {
+      clearTimeout(this._busyTimer);
+      this._busyTimer = null;
+    }
     this._hashing = false;
     this._hashSeq++;
     this._hashes.clear();
@@ -275,8 +353,8 @@ export class RelationshipGraph extends Component {
 
   /* ── Загрузка данных ─────────────────────── */
 
-  refetch() {
-    this.fetch(this._curSeeds, this._curHops);
+  refetch({ silent = false } = {}) {
+    this.fetch(this._curSeeds, this._curHops, { silent });
   }
 
   /** Принудительная (пере)сборка индекса связей — ТОЛЬКО по кнопке «Обновить».
@@ -288,6 +366,7 @@ export class RelationshipGraph extends Component {
       return;
     }
     this._indexing = true;
+    this._selfRebuild = true; // эту сборку запускает сам граф → её index:ready не «тихий»
     this._indexCount = 0;
     this._indexTotal = 0;
     this._indexPhase = 'scan';
@@ -296,6 +375,7 @@ export class RelationshipGraph extends Component {
     // content=true, force=true → полная пересборка в фоне с прогрессом.
     startIndex(this._root, true, true).catch(() => {
       this._indexing = false;
+      this._selfRebuild = false;
       this.updateLoadingState();
       this.updateRebuildButton();
     });
@@ -308,22 +388,37 @@ export class RelationshipGraph extends Component {
     this._rebuildBtn.textContent = this._indexing ? 'Строю…' : 'Обновить';
   }
 
-  async fetch(seeds, hops) {
+  async fetch(seeds, hops, { silent = false } = {}) {
     this._curSeeds = seeds;
     this._curHops = hops;
     const seq = ++this._fetchSeq;
-    this._loading = true;
-    this.updateLoadingState();
+    // silent=true — фоновое обновление (по чужому index:ready): данные графа
+    // обновляем, но плашку «Загрузка…»/«Загружено!» не трогаем, иначе она бы
+    // мигала с галочки обратно на спиннер.
+    if (!silent) {
+      this._loading = true;
+      this.updateLoadingState();
+    }
     let data;
     try {
       data = await fileGraph(seeds, hops);
     } catch (err) {
-      this._loading = false;
-      this.updateLoadingState();
-      if (seq === this._fetchSeq) this.bus.emit('shortcut:hint', `Граф: ${err.message}`);
+      if (seq === this._fetchSeq) {
+        this._loading = false;
+        this.updateLoadingState();
+        this.bus.emit('shortcut:hint', `Граф: ${err.message}`);
+      }
       return;
     }
-    if (seq !== this._fetchSeq || !this._open) return;
+    if (seq !== this._fetchSeq || !this._open) {
+      // Стали старым запросом — сбрасываем _loading, иначе плашка «Загрузка…»
+      // может залипнуть (старый fetch не сбрасывает флаг, а новый уже работает).
+      if (this._loading && !silent) {
+        this._loading = false;
+        this.updateLoadingState();
+      }
+      return;
+    }
     this.ingest(data, seeds);
     if (this._mode === 'focus' && this._focus) {
       this._connectedPaths = this.computeConnectedPaths(this._focus);
@@ -333,6 +428,9 @@ export class RelationshipGraph extends Component {
     // только по клику, автоматически хеширование не стартует).
     this.updateHashButton();
     this._loading = false;
+    // «Загружено!» показываем только для видимой загрузки (первичной или своей
+    // пересборки), но не для фонового тихого обновления по чужому index:ready.
+    if (!silent && !this._indexing) this.markLoaded();
     this.updateLoadingState();
     // Прогрессивная сборка: добавляем только новые узлы
     this.startProgressiveAppear();
@@ -579,7 +677,7 @@ export class RelationshipGraph extends Component {
     c.clearRect(0, 0, this._w, this._h);
 
     if (!this._nodes.size) {
-      c.fillStyle = 'rgba(160,168,184,0.8)';
+      c.fillStyle = this._colors.labelDim;
       c.font = '14px sans-serif';
       c.textAlign = 'center';
       c.fillText('Связей не найдено', this._w / 2, this._h / 2);
@@ -608,6 +706,10 @@ export class RelationshipGraph extends Component {
       back: v('--tag-progress', C_BACK),
       folder: v('--accent-2', '#14b8a6'),
       file: v('--text-faint', '#5b6478'),
+      // Текст на полотне — из токенов, чтобы читался и в светлой теме
+      // (раньше был захардкожен «светлым под тёмное» и пропадал на светлом фоне).
+      label: v('--text', '#e5e7eb'),
+      labelDim: v('--text-dim', '#9ca3af'),
     };
   }
 
@@ -722,7 +824,7 @@ export class RelationshipGraph extends Component {
 
     // Текст внутри панели — показываем путь (папка/файл) вместо просто имени
     const labelText = shortLabel(n.name, n.path);
-    c.fillStyle = isFocus ? '#ffffff' : 'rgba(220,225,235,0.9)';
+    c.fillStyle = this._colors.label;
     c.font = isFocus ? 'bold ' + NODE_FONT : NODE_FONT;
     c.textAlign = 'center';
     c.textBaseline = 'middle';
@@ -914,14 +1016,72 @@ export class RelationshipGraph extends Component {
     this.draw();
   }
 
-  /** Обновить индикатор: показываем при загрузке графа или фоновой индексации,
-   *  с понятным текстом (живой счётчик файлов), а не просто «Загрузка…». */
+  /** Показать плашку «Загружено!» — держится до следующей загрузки. */
+  markLoaded() {
+    if (this._loadedTimer) clearTimeout(this._loadedTimer);
+    this._loadedTimer = null;
+    this._loaded = true;
+    this.updateLoadingState();
+  }
+
+  /** «Занят» для целей плашки. КЛЮЧЕВОЕ правило: спиннер «Загрузка…» показываем
+   *  только на ПУСТОМ графе (первая отрисовка). Как только узлы есть, любые
+   *  до-загрузки/refetch — фоновые и плашку НЕ поднимают; даже если флаг
+   *  _loading из-за гонки залип true, спиннер поверх данных не появится.
+   *  Пересборка (_indexing, кнопка «Обновить») показывается всегда. Это и
+   *  устраняет «галочка → снова Загрузка» при уже отрисованном графе. */
+  _isBusy() {
+    return (this._loading && this._nodes.size === 0) || this._indexing;
+  }
+
+  /** Обновить индикатор: «Загрузка…»/«Индексирую…» при работе, «Загружено!»
+   *  кратко по завершении, иначе скрыт. */
   updateLoadingState() {
-    const active = this._loading || this._indexing;
-    if (this._loadingEl) this._loadingEl.hidden = !active;
+    // Спиннер показываем не сразу, а через BUSY_DELAY: быстрые операции (мелкие
+    // папки) не должны давать мелькающий индикатор. Если за время задержки работа
+    // успела закончиться — спиннер вообще не появится, сразу «Загружено!».
+    if (this._isBusy()) {
+      if (!this._showBusy && !this._busyTimer) {
+        this._busyTimer = setTimeout(() => {
+          this._busyTimer = null;
+          if (this._isBusy()) {
+            this._showBusy = true;
+            this.applyPlate();
+          }
+        }, BUSY_DELAY);
+      }
+    } else {
+      if (this._busyTimer) {
+        clearTimeout(this._busyTimer);
+        this._busyTimer = null;
+      }
+      this._showBusy = false;
+    }
+    this.applyPlate();
+  }
+
+  /** Применить состояние к плашке. busyVisible — спиннер уже разрешён к показу
+   *  (после задержки); «Загружено!» показывается мгновенно, без задержки. */
+  applyPlate() {
+    const busyVisible = this._showBusy && this._isBusy();
+    const loadingVisible = busyVisible && this._loading && this._nodes.size === 0;
+    const show = busyVisible || this._loaded;
+    if (this._loadingEl) {
+      this._loadingEl.hidden = !show;
+      const done = !busyVisible && this._loaded;
+      // Состояние «готово»: текст акцентный + галочка (CSS). Спиннер прячем
+      // прямо здесь, из JS, чтобы не зависеть от того, обновлён ли CSS-файл.
+      this._loadingEl.classList.toggle('is-done', done);
+      const spin = this._loadingEl.querySelector('.graph__spinner');
+      // Спиннер скрыт в двух случаях: «готово» (done=true, видна галочка) И
+      // «простой» (!show, плашка целиком скрыта). При !done && show показываем
+      // спиннер (идёт загрузка). Раньше при done→false спиннер всегда получал
+      // display='', что вызывало его появление даже когда плашка была hidden.
+      if (spin) spin.style.display = (done || !show) ? 'none' : '';
+    }
     const txt = this.mount && this.mount.querySelector('.graph__loading-text');
     if (txt) {
-      if (this._indexing) {
+      if (busyVisible && this._indexing) {
         if (this._indexPhase === 'relations') {
           txt.textContent = this._indexTotal
             ? `Строю связи… ${this._indexCount}/${this._indexTotal}`
@@ -929,8 +1089,10 @@ export class RelationshipGraph extends Component {
         } else {
           txt.textContent = `Индексирую… ${this._indexCount} файлов`;
         }
-      } else {
+      } else if (loadingVisible) {
         txt.textContent = 'Загрузка…';
+      } else if (this._loaded) {
+        txt.textContent = 'Загружено!';
       }
     }
   }
@@ -966,8 +1128,9 @@ export class RelationshipGraph extends Component {
     const state = this.store.getState();
     const pane = getPane(state, this._side);
     const entries = pane.entries || [];
-    const seeds = entries.slice(0, OVERVIEW_CAP).map((e) => e.path);
-    this.fetch(seeds, 1);
+    this.overviewSeeds(this._root, entries).then((seeds) => {
+      if (this._open) this.fetch(seeds, 1);
+    });
   }
 
   /* ── Перетаскивание окна / панорамирование / зум ── */

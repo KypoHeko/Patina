@@ -2,7 +2,7 @@ import { Component } from '../core/component.js';
 import { startDrag, getDrag, clearDrag } from '../state/drag.js';
 import { escapeHtml } from '../core/dom.js';
 import { listDir, copyEntries, moveEntries, deleteEntries, renameEntry, checkConflicts, createFolder } from '../api/fs.js';
-import { openPath } from '../api/system.js';
+import { openPath, nativeIcon } from '../api/system.js';
 import { tagsForPaths, listTag } from '../api/tags.js';
 import { computeDirSizes, dirSizes } from '../api/dir_size.js';
 import { TAGS } from '../config/tags.js';
@@ -52,6 +52,8 @@ export class FilePanel extends Component {
     this._filter = ''; // строка поиска (regex / подстрока)
     this._appliedFilter = '';
     this._cursor = 0;
+    this._nativeIcons = new Map(); // путь → data-URL (кэш нативных иконок)
+    this._iconPending = new Set(); // пути, для которых уже отправлен запрос
   }
 
   init() {
@@ -200,6 +202,11 @@ export class FilePanel extends Component {
   }
 
   async navigate(path, { record = true } = {}) {
+    // Сбрасываем фильтр при навигации — чтобы не «ловить» старый поиск
+    // в новой папке. Input обновится через sync().
+    if (this.store.getState().searchQuery) {
+      this.store.setState({ searchQuery: '' });
+    }
     updatePane(this.store, this.side, { loading: true, error: null });
     try {
       const entries = path.startsWith('tag:') ? await listTag(path.slice(4)) : await listDir(path);
@@ -721,56 +728,119 @@ export class FilePanel extends Component {
     if (pane.error) {
       this.listEl.innerHTML = `<div class="panel__error">${escapeHtml(pane.error)}</div>`;
       this._view = [];
+      this._renderedPaths = new Set();
       return;
     }
     this._view = this.filterList(this.sortedEntries(pane.entries));
+    this._renderedPaths = new Set();
+    this.listEl.innerHTML = '';
     this.listEl.scrollTop = 0;
     this.renderWindow();
   }
 
-  // Виртуализация: в DOM только видимое окно строк + небольшой запас.
-  // Полную высоту задаёт распорка .vlist-sizer, строки позиционируются абсолютно.
+  // Виртуализация: в DOM только видимое окно строк + запас.
+  // .vlist-sizer задаёт полную высоту для скроллбара, строки — абсолютно.
+  // Вместо полной замены innerHTML при каждом скролле используем дифференцированное
+  // обновление: создаём недостающие строки, обновляем изменённые, удаляем лишние.
+  // Это на порядок быстрее для больших списков (5 000+ файлов).
   renderWindow() {
     if (!this._lastPane || this._lastPane.error || !this._view) return;
     const view = this._view;
     if (!view.length) {
       this.listEl.innerHTML = `<div class="panel__empty">${this._filter ? 'Ничего не найдено' : 'Папка пуста'}</div>`;
+      this._renderedPaths = new Set();
       return;
     }
     const rowH = this._rowH;
     const total = view.length;
     const scrollTop = this.listEl.scrollTop;
     const viewport = this.listEl.clientHeight || rowH * 20;
-    const over = 6; // запас строк сверху/снизу
+    const over = 10; // запас строк сверху/снизу (увеличен для плавности при быстром скролле)
     const start = Math.max(0, Math.floor(scrollTop / rowH) - over);
     const end = Math.min(total, start + Math.ceil(viewport / rowH) + over * 2);
     const selected = new Set(this._lastPane.selected || []);
 
-    let html = `<div class="vlist-sizer" style="height:${total * rowH}px"></div>`;
-    for (let i = start; i < end; i++) html += this.rowHtml(view[i], i, selected);
-    this.listEl.innerHTML = html;
-  }
-
-  rowHtml(e, index, selected) {
-    const sel = selected.has(e.path) ? ' is-selected' : '';
-    let size;
-    if (e.kind === 'folder') {
-      if (this._dirSizes.has(e.path)) size = formatSize(this._dirSizes.get(e.path));
-      else if (this._dirComputing) size = '<span class="dirsize-spin" title="Подсчёт…"></span>';
-      else size = '';
-    } else {
-      size = formatSize(e.size);
+    // Обновляем или создаём sizer
+    let sizer = this.listEl.querySelector('.vlist-sizer');
+    if (!sizer) {
+      sizer = document.createElement('div');
+      sizer.className = 'vlist-sizer';
+      this.listEl.appendChild(sizer);
     }
-    const type = e.kind === 'folder' ? '' : (e.extension || '').toUpperCase();
-    const top = index * this._rowH;
-    return `<div class="row${sel}" draggable="true" data-path="${escapeHtml(e.path)}" data-kind="${e.kind}" style="top:${top}px">
-        <span class="row__icon">${fileIcon(e)}</span>
-        <span class="row__name">${escapeHtml(e.name)}</span>
-        <span class="row__type">${escapeHtml(type)}</span>
-        <span class="row__tags">${this.dotsHtml(e.path)}</span>
-        <span class="row__size">${size}</span>
-        <span class="row__modified">${escapeHtml(formatDate(e.modified))}</span>
-      </div>`;
+    const totalHeight = total * rowH;
+    if (sizer.style.height !== totalHeight + 'px') {
+      sizer.style.height = totalHeight + 'px';
+    }
+
+    // Собираем набор видимых путей
+    const visiblePaths = new Set();
+    for (let i = start; i < end; i++) visiblePaths.add(view[i].path);
+
+    // Удаляем строки, которые больше не видны
+    if (!this._renderedPaths) this._renderedPaths = new Set();
+    for (const p of this._renderedPaths) {
+      if (!visiblePaths.has(p)) {
+        const row = this.listEl.querySelector(`.row[data-path="${CSS.escape(p)}"]`);
+        if (row) row.remove();
+      }
+    }
+    this._renderedPaths = visiblePaths;
+
+    // Обновляем/создаём видимые строки
+    for (let i = start; i < end; i++) {
+      const e = view[i];
+      const path = e.path;
+      let row = this.listEl.querySelector(`.row[data-path="${CSS.escape(path)}"]`);
+
+      if (row) {
+        // Обновляем только то, что могло измениться: выделение, позицию, размер папки
+        const topPx = i * rowH;
+        if (row.style.top !== topPx + 'px') row.style.top = topPx + 'px';
+        const isSel = selected.has(path);
+        if (isSel !== row.classList.contains('is-selected')) {
+          row.classList.toggle('is-selected', isSel);
+        }
+        // Обновляем размер папки (динамическое поле)
+        if (e.kind === 'folder') {
+          const sizeSpan = row.querySelector('.row__size');
+          if (sizeSpan) {
+            let sizeText;
+            if (this._dirSizes.has(path)) sizeText = formatSize(this._dirSizes.get(path));
+            else if (this._dirComputing) sizeText = '<span class="dirsize-spin" title="Подсчёт…"></span>';
+            else sizeText = '';
+            if (sizeSpan.innerHTML !== sizeText) sizeSpan.innerHTML = sizeText;
+          }
+        }
+      } else {
+        // Создаём новую строку
+        row = document.createElement('div');
+        row.className = 'row' + (selected.has(path) ? ' is-selected' : '');
+        row.draggable = true;
+        row.dataset.path = path;
+        row.dataset.kind = e.kind;
+        row.style.top = (i * rowH) + 'px';
+        const iconHtml = this._nativeIcons.has(path)
+          ? `<img class="row__native-icon" src="${this._nativeIcons.get(path)}" width="16" height="16" alt="" draggable="false">`
+          : fileIcon(e);
+        let size;
+        if (e.kind === 'folder') {
+          if (this._dirSizes.has(path)) size = formatSize(this._dirSizes.get(path));
+          else if (this._dirComputing) size = '<span class="dirsize-spin" title="Подсчёт…"></span>';
+          else size = '';
+        } else {
+          size = formatSize(e.size);
+        }
+        const type = e.kind === 'folder' ? '' : (e.extension || '').toUpperCase();
+        row.innerHTML =
+          `<span class="row__icon">${iconHtml}</span>` +
+          `<span class="row__name">${escapeHtml(e.name)}</span>` +
+          `<span class="row__type">${escapeHtml(type)}</span>` +
+          `<span class="row__tags">${this.dotsHtml(path)}</span>` +
+          `<span class="row__size">${size}</span>` +
+          `<span class="row__modified">${escapeHtml(formatDate(e.modified))}</span>`;
+        this.listEl.appendChild(row);
+      }
+    }
   }
 
   _scheduleWindow() {
@@ -778,7 +848,43 @@ export class FilePanel extends Component {
     this._raf = requestAnimationFrame(() => {
       this._raf = null;
       this.renderWindow();
+      this.loadNativeIcons();
     });
+  }
+
+  /** Ленивая загрузка нативных иконок для видимых строк.
+   *  Запрашивает только те, которых ещё нет в кэше и не в процессе загрузки.
+   *  При получении — обновляет только иконку в DOM, не перерисовывая всю строку. */
+  loadNativeIcons() {
+    if (!this._nativeIcons) return;
+    const rows = this.listEl.querySelectorAll('.row');
+    const paths = [];
+    for (const row of rows) {
+      const p = row.dataset.path;
+      if (p && !this._nativeIcons.has(p) && !this._iconPending.has(p)) {
+        paths.push(p);
+        this._iconPending.add(p);
+        if (paths.length >= 30) break; // лимит одновременных запросов
+      }
+    }
+    if (!paths.length) return;
+    // Запускаем запросы параллельно, каждый сам обновит DOM
+    for (const p of paths) {
+      nativeIcon(p, 16).then((result) => {
+        this._iconPending.delete(p);
+        if (result && result.dataUrl) {
+          this._nativeIcons.set(p, result.dataUrl);
+          // Обновляем иконку в DOM без полного перерендера
+          const iconSpan = this.listEl.querySelector(`.row[data-path="${CSS.escape(p)}"] .row__icon`);
+          if (iconSpan && !iconSpan.querySelector('.row__native-icon')) {
+            iconSpan.innerHTML = `<img class="row__native-icon" src="${result.dataUrl}" width="16" height="16" alt="" draggable="false">`;
+          }
+        }
+      }).catch(() => {
+        this._iconPending.delete(p);
+        // Фолбэк на SVG уже отрисован — ничего не делаем
+      });
+    }
   }
 
   updateTags() {
@@ -791,5 +897,12 @@ export class FilePanel extends Component {
     for (const row of this.listEl.querySelectorAll('.row')) {
       row.classList.toggle('is-selected', selected.has(row.dataset.path));
     }
+  }
+
+  destroy() {
+    this._nativeIcons?.clear();
+    this._iconPending?.clear();
+    this._renderedPaths?.clear();
+    super.destroy();
   }
 }

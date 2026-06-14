@@ -9,3 +9,6 @@ export function listVersions(path) {
 export function restoreVersion(id) {
   return invoke('restore_version', { id });
 }
+export function deleteVersion(id) {
+  return invoke('delete_version', { id });
+}

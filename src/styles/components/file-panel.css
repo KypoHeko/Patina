@@ -173,6 +173,11 @@
 .row__icon {
   text-align: center;
 }
+.row__native-icon {
+  display: block;
+  image-rendering: -webkit-optimize-contrast;
+  image-rendering: crisp-edges;
+}
 .row__name {
   overflow: hidden;
   text-overflow: ellipsis;
