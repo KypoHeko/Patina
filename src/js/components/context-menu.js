@@ -3,18 +3,18 @@ import { el } from '../core/dom.js';
 import { revealInExplorer } from '../api/system.js';
 import { assignTag, removeTag, tagsForPaths } from '../api/tags.js';
 import { TAGS } from '../config/tags.js';
+import { t, tagLabel } from '../lib/i18n.js';
 
 function buildItems() {
   return [
-    { label: 'Открыть', action: 'open' },
-    { label: 'Создать папку', action: 'new-folder' },
-    { label: 'Показать в проводнике', action: 'reveal' },
-    { label: 'Переименовать…', action: 'rename' },
+    { label: t('ctx.open'), action: 'open' },
+    { label: t('ctx.newFolder'), action: 'new-folder' },
+    { label: t('ctx.reveal'), action: 'reveal' },
+    { label: t('ctx.rename'), action: 'rename' },
     { sep: true },
-    { label: 'Найти дубликаты', action: 'duplicates' },
-    { label: 'История версий', action: 'versions' },
+    { label: t('ctx.duplicates'), action: 'duplicates' },
     { sep: true },
-    { label: 'Удалить в корзину', action: 'delete', danger: true },
+    { label: t('ctx.delete'), action: 'delete', danger: true },
   ];
 }
 
@@ -77,16 +77,16 @@ export class ContextMenu extends Component {
 
     // Полоска тегов
     const strip = el('div', { class: 'ctx-menu__tags' });
-    for (const t of TAGS) {
+    for (const tag of TAGS) {
       strip.append(
         el('button', {
           class: 'ctx-tag',
-          dataset: { tag: t.id },
-          title: t.label,
-          style: `background:${t.color}`,
+          dataset: { tag: tag.id },
+          title: tagLabel(tag.id),
+          style: `background:${tag.color}`,
           onClick: (e) => {
             e.stopPropagation(); // не закрывать меню — можно навесить несколько
-            this.toggleTag(t.id, e.currentTarget);
+            this.toggleTag(tag.id, e.currentTarget);
           },
         }),
       );
@@ -152,9 +152,6 @@ export class ContextMenu extends Component {
         break;
       case 'duplicates':
         this.bus.emit('duplicates:open');
-        break;
-      case 'versions':
-        this.bus.emit('versions:open', { path: ctx.entry.path, name: ctx.entry.name });
         break;
       case 'delete':
         this.bus.emit('file:delete', { side: ctx.side });

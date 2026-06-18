@@ -13,7 +13,6 @@ import { StatusBar } from './components/status-bar.js';
 import { ContextMenu } from './components/context-menu.js';
 import { CommandPalette } from './components/command-palette.js';
 import { DuplicatePanel } from './components/duplicate-panel.js';
-import { VersionHistory } from './components/version-history.js';
 import { RelationshipGraph } from './components/relationship-graph.js';
 import { ConfirmDialog } from './components/confirm-dialog.js';
 import { PreviewPanel } from './components/preview-panel.js';
@@ -21,12 +20,15 @@ import { Divider } from './components/divider.js';
 import { ThemeMenu } from './components/theme-menu.js';
 import { homeDir } from './api/fs.js';
 import { initTheme } from './lib/theme.js';
+import { initLang, getLang, setLang, t } from './lib/i18n.js';
 
 const store = createStore({ ...initialTabsState(), ...initialUiState() });
 const bus = createEventBus();
 
 // Применяем сохранённую палитру до монтажа компонентов (без мигания темы).
 initTheme();
+// Язык тоже выбираем до монтажа — компоненты сразу отрисуются на нужном языке.
+initLang();
 
 // Стартуем homeDir() IPC ДО инициализации сайдбара — чтобы быстрый вызов
 // встал в очередь первым, до медленного listStorage() / sysinfo.
@@ -43,7 +45,6 @@ const statusBar = new StatusBar({ mount: document.getElementById('statusbar'), s
 const contextMenu = new ContextMenu({ mount: document.getElementById('context-menu-root'), store, bus });
 const palette = new CommandPalette({ mount: document.getElementById('palette-root'), store, bus });
 const duplicates = new DuplicatePanel({ mount: document.getElementById('duplicate-root'), store, bus });
-const versionHistory = new VersionHistory({ mount: document.getElementById('versions-root'), store, bus });
 const graph = new RelationshipGraph({ mount: document.getElementById('graph-root'), store, bus });
 const confirmDialog = new ConfirmDialog({ mount: document.getElementById('confirm-root'), store, bus });
 const preview = new PreviewPanel({ mount: document.getElementById('preview-root'), store, bus });
@@ -52,10 +53,11 @@ const themeMenu = new ThemeMenu({ mount: document.getElementById('theme-root'), 
 
 // Инициализируем устойчиво: сбой одного компонента не должен срывать
 // подключение обработчиков кнопок ниже по файлу.
-for (const c of [
+const components = [
   sidebar, tabBar, left, right, statusBar, contextMenu, palette,
-  duplicates, versionHistory, graph, confirmDialog, preview, divider, themeMenu,
-]) {
+  duplicates, graph, confirmDialog, preview, divider, themeMenu,
+];
+for (const c of components) {
   try {
     c.init();
   } catch (err) {
@@ -74,9 +76,58 @@ store.subscribe((state) => {
   }
 });
 
+document.getElementById('dirsize-btn').addEventListener('click', () => bus.emit('dirsize:recalc'));
 document.getElementById('duplicates-btn').addEventListener('click', () => bus.emit('duplicates:open'));
 document.getElementById('graph-btn').addEventListener('click', () => bus.emit('graph:open'));
 document.getElementById('theme-btn').addEventListener('click', () => bus.emit('theme:open'));
+
+// --- Язык интерфейса ---
+// Подсказки кнопок топбара и плейсхолдер поиска живут в статичном index.html,
+// поэтому переводим их из JS (на старте и при каждой смене языка).
+function syncTopbar() {
+  const titles = {
+    'dirsize-btn': 'topbar.dirsize',
+    'preview-btn': 'topbar.preview',
+    'collapse-sidebar-btn': 'topbar.collapse',
+    'duplicates-btn': 'topbar.duplicates',
+    'graph-btn': 'topbar.graph',
+    'theme-btn': 'topbar.theme',
+    'tabcolors-btn': 'topbar.tabcolors',
+    'lang-btn': 'topbar.lang',
+  };
+  for (const [id, key] of Object.entries(titles)) {
+    const el = document.getElementById(id);
+    if (el) el.title = t(key);
+  }
+  searchInput.placeholder = t('topbar.search.placeholder');
+  searchInput.title = t('topbar.search.title');
+  const langBtn = document.getElementById('lang-btn');
+  if (langBtn) langBtn.textContent = getLang().toUpperCase();
+}
+
+// Смена языка: повторно переводим топбар, пере-инициализируем все компоненты
+// (destroy() снимает слушатели без утечек, init() рисует заново на новом языке),
+// затем «пинаем» store — и завязанные на него панели/статус-бар перерисовываются.
+// Состояние навигации живёт в store и переживает перезапуск компонентов.
+function applyLanguage() {
+  syncTopbar();
+  for (const c of components) {
+    try {
+      c.destroy();
+      c.init();
+    } catch (err) {
+      console.error('[patina] ошибка перерисовки при смене языка:', err);
+    }
+  }
+  store.setState({});
+}
+
+document.getElementById('lang-btn').addEventListener('click', () => {
+  setLang(getLang() === 'ru' ? 'en' : 'ru');
+  applyLanguage();
+});
+
+syncTopbar();
 
 const collapseBtn = document.getElementById('collapse-sidebar-btn');
 collapseBtn.addEventListener('click', () => {

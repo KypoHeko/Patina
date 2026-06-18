@@ -18,6 +18,9 @@ const MIGRATIONS: &[&str] = &[
     include_str!("schema/0008_usn_position.sql"),
     include_str!("schema/0009_dir_agg.sql"),
     include_str!("schema/0010_version_label.sql"),
+    include_str!("schema/0011_version_strategy.sql"),
+    include_str!("schema/0012_version_chunks.sql"),
+    include_str!("schema/0013_dict_zstd_count.sql"),
 ];
 
 pub fn open(app: &AppHandle) -> Result<Connection> {

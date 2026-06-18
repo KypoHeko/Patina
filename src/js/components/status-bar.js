@@ -4,6 +4,7 @@ import { formatSize } from '../lib/format.js';
 import { getPane } from '../state/panes.js';
 import { getActiveSide } from '../state/tabs.js';
 import { listStorage } from '../api/system.js';
+import { t } from '../lib/i18n.js';
 
 const SVG =
   'xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"';
@@ -55,7 +56,7 @@ export class StatusBar extends Component {
       const bytes = pane.entries
         .filter((e) => e.kind !== 'folder' && pane.selected.includes(e.path))
         .reduce((s, e) => s + e.size, 0);
-      sel = ` ${sep} <span class="status__sel">${pane.selected.length} выделено ${sep} ${formatSize(bytes)}</span>`;
+      sel = ` ${sep} <span class="status__sel">${t('status.selected', { n: pane.selected.length })} ${sep} ${formatSize(bytes)}</span>`;
     }
 
     const storage = this._storage
@@ -69,13 +70,13 @@ export class StatusBar extends Component {
       `<span class="status__group status__group--path"><span class="status__ico">${ICON.folder}</span><span class="status__path">${escapeHtml(
         pane.path || '—',
       )}</span></span>` +
-      `<span class="status__counts">${folders} папок ${sep} ${files} файлов${sel}</span>` +
+      `<span class="status__counts">${t('status.folders', { n: folders })} ${sep} ${t('status.files', { n: files })}${sel}</span>` +
       `</div>` +
       `<div class="status__right">` +
       `<span class="status__group"><span class="status__ico">${ICON.keyboard}</span>` +
-      `<kbd class="status__kbd">Ctrl+K</kbd> Поиск ${sep} ` +
-      `<kbd class="status__kbd">Ctrl+D</kbd> Дубликаты ${sep} ` +
-      `<kbd class="status__kbd">Ctrl+G</kbd> Связи</span>` +
+      `<kbd class="status__kbd">Ctrl+K</kbd> ${t('status.search')} ${sep} ` +
+      `<kbd class="status__kbd">Ctrl+D</kbd> ${t('status.duplicates')} ${sep} ` +
+      `<kbd class="status__kbd">Ctrl+G</kbd> ${t('status.links')}</span>` +
       storage +
       `</div>`;
   }

@@ -4,7 +4,7 @@ use tauri::{AppHandle, Manager};
 use walkdir::WalkDir;
 
 use crate::error::{Error, Result};
-use crate::index::content_index_repo::{self, ContentHit, ContentRow};
+use crate::index::content_index::{self, ContentHit, ContentRow};
 use crate::state::AppState;
 
 const TEXT_EXTS: &[&str] = &[
@@ -55,8 +55,8 @@ pub async fn reindex_content(app: AppHandle, root: String) -> Result<usize> {
         {
             let state = app.state::<AppState>();
             let mut conn = state.db()?;
-            content_index_repo::ensure_table(&conn)?;
-            content_index_repo::replace_subtree(&mut conn, &root, &rows)?;
+            content_index::ensure_table(&conn)?;
+            content_index::replace_subtree(&mut conn, &root, &rows)?;
         }
         Ok(n)
     })
@@ -76,14 +76,14 @@ pub async fn search_content(
         let state = app.state::<AppState>();
         let result = {
             let conn = state.db_read()?;
-            content_index_repo::search(&conn, &root, &query, cap)
+            content_index::search(&conn, &root, &query, cap)
         };
         match result {
             Ok(hits) => Ok(hits),
             Err(_) => {
                 let conn = state.db()?;
-                content_index_repo::ensure_table(&conn)?;
-                content_index_repo::search(&conn, &root, &query, cap)
+                content_index::ensure_table(&conn)?;
+                content_index::search(&conn, &root, &query, cap)
             }
         }
     })

@@ -20,13 +20,14 @@ import {
 import { getActiveSide, closeSplit, splitTab } from '../state/tabs.js';
 import { Breadcrumbs } from './breadcrumbs.js';
 import { makeMatcher } from '../lib/regex.js';
+import { t } from '../lib/i18n.js';
 
 const TAG_COLOR = Object.fromEntries(TAGS.map((t) => [t.id, t.color]));
 const TAG_LABEL = Object.fromEntries(TAGS.map((t) => [t.id, t.label]));
 
 // Оверлеи, которые сами обрабатывают клавиатуру (стрелки/Enter) — при их
 // открытии навигация по списку не должна срабатывать.
-const OVERLAY_ROOTS = ['palette-root', 'versions-root', 'graph-root', 'confirm-root'];
+const OVERLAY_ROOTS = ['palette-root', 'graph-root', 'confirm-root'];
 function overlayOpen() {
   return OVERLAY_ROOTS.some((id) => {
     const n = document.getElementById(id);
@@ -59,7 +60,7 @@ export class FilePanel extends Component {
   init() {
     const splitBtn =
       this.side === 'left'
-        ? '<button class="panel__split" data-split title="Разделить">▥</button>'
+        ? `<button class="panel__split" data-split title="${t('panel.split')}">▥</button>`
         : '';
     const closeBtn =
       '<button class="panel__close" data-close-split title="Закрыть панель">×</button>';
@@ -72,11 +73,11 @@ export class FilePanel extends Component {
         </div>
         <div class="panel__colhead">
           <span></span>
-          <span class="col-sort" data-sort="name">Имя<i class="sort-arrow"></i></span>
-          <span class="col-sort" data-sort="type">Тип<i class="sort-arrow"></i></span>
-          <span>Метка</span>
-          <span class="col-sort col-r" data-sort="size">Размер<i class="sort-arrow"></i><button class="col-dirsize" data-dirsize title="Посчитать размеры папок в этой директории">∑</button></span>
-          <span class="col-sort" data-sort="modified">Изменено<i class="sort-arrow"></i></span>
+          <span class="col-sort" data-sort="name">${t('col.name')}<i class="sort-arrow"></i></span>
+          <span class="col-sort" data-sort="type">${t('col.type')}<i class="sort-arrow"></i></span>
+          <span>${t('col.tag')}</span>
+          <span class="col-sort col-r" data-sort="size">${t('col.size')}<i class="sort-arrow"></i></span>
+          <span class="col-sort" data-sort="modified">${t('col.modified')}<i class="sort-arrow"></i></span>
         </div>
         <div class="panel__list"></div>
       </div>`;
@@ -141,6 +142,9 @@ export class FilePanel extends Component {
     });
     this.listen('fs:changed', ({ dirs }) => {
       if (this._lastPane && dirs.includes(this._lastPane.path)) this.reload();
+    });
+    this.listen('dirsize:recalc', () => {
+      if (getActiveSide(this.store.getState()) === this.side) this.recalcDirSizes();
     });
     this.listen('tags:changed', ({ paths }) => {
       const cur = this._lastPane;
@@ -299,7 +303,7 @@ export class FilePanel extends Component {
     try {
       await openPath(entry.path);
     } catch (err) {
-      this.bus.emit('shortcut:hint', `Не удалось открыть: ${err.message}`);
+      this.bus.emit('shortcut:hint', t('panel.openError', { msg: err.message }));
     }
   }
 
@@ -396,12 +400,12 @@ export class FilePanel extends Component {
   async createFolderHere() {
     const pane = this._lastPane;
     if (!pane || !pane.path || pane.path.startsWith('tag:')) {
-      this.bus.emit('shortcut:hint', 'Здесь нельзя создать папку');
+          this.bus.emit('shortcut:hint', t('panel.noCreateHere'));
       return;
     }
     const dir = pane.path;
     try {
-      const newPath = await createFolder(dir, 'Новая папка');
+      const newPath = await createFolder(dir, t('panel.newFolderName'));
       const entries = await listDir(dir);
       updatePane(this.store, this.side, { entries, selected: [newPath] });
       requestAnimationFrame(() => {
@@ -415,7 +419,7 @@ export class FilePanel extends Component {
         if (entry) this.startRename(entry);
       });
     } catch (err) {
-      this.bus.emit('shortcut:hint', `Не удалось создать папку: ${err.message}`);
+      this.bus.emit('shortcut:hint', t('panel.createFolderError', { msg: err.message }));
     }
   }
 
@@ -430,17 +434,17 @@ export class FilePanel extends Component {
     if (!paths.length) return;
     const dir = this._lastPane.path;
     this.bus.emit('confirm:open', {
-      title: 'Удаление',
-      message: `Удалить в корзину: ${paths.length}?`,
-      confirmLabel: 'Удалить',
+      title: t('panel.deleteTitle'),
+      message: t('panel.deleteMsg', { n: paths.length }),
+      confirmLabel: t('panel.deleteConfirm'),
       danger: true,
       onConfirm: async () => {
         try {
           await deleteEntries(paths);
-          this.bus.emit('shortcut:hint', `В корзину: ${paths.length}`);
+          this.bus.emit('shortcut:hint', t('common.trashed', { n: paths.length }));
           this.bus.emit('fs:changed', { dirs: [dir] });
         } catch (err) {
-          this.bus.emit('shortcut:hint', `Ошибка удаления: ${err.message}`);
+          this.bus.emit('shortcut:hint', t('panel.deleteError', { msg: err.message }));
         }
       },
     });
@@ -474,7 +478,7 @@ export class FilePanel extends Component {
           this.bus.emit('fs:changed', { dirs: [this._lastPane.path] });
           return;
         } catch (err) {
-          this.bus.emit('shortcut:hint', `Ошибка переименования: ${err.message}`);
+          this.bus.emit('shortcut:hint', t('panel.renameError', { msg: err.message }));
         }
       }
       nameEl.textContent = entry.name;
@@ -532,7 +536,7 @@ export class FilePanel extends Component {
     clearDrag();
     this.clearDropHighlight();
     if (destDir.startsWith('tag:')) {
-      this.bus.emit('shortcut:hint', 'Нельзя бросать в тег-папку');
+      this.bus.emit('shortcut:hint', t('panel.noDropTag'));
       return;
     }
     this.dropEntries(paths, destDir, copy);
@@ -571,10 +575,10 @@ export class FilePanel extends Component {
     if (conflicts.length) {
       const conflictSet = new Set(conflicts);
       this.bus.emit('confirm:open', {
-        title: 'Конфликт имён',
-        message: `Уже существует в назначении: ${conflicts.length}`,
-        confirmLabel: 'Перезаписать',
-        altLabel: 'Пропустить',
+        title: t('panel.conflictTitle'),
+        message: t('panel.conflictMsg', { n: conflicts.length }),
+        confirmLabel: t('panel.overwrite'),
+        altLabel: t('panel.skip'),
         onConfirm: () => this.doTransfer(filtered, destDir, copy, true),
         onAlt: () => {
           const rest = filtered.filter((p) => !conflictSet.has(folderName(p)));
@@ -598,9 +602,9 @@ export class FilePanel extends Component {
         if (parent) affected.add(parent);
       });
       this.bus.emit('fs:changed', { dirs: [...affected] });
-      this.bus.emit('shortcut:hint', `${copy ? 'Скопировано' : 'Перемещено'}: ${sources.length}`);
+      this.bus.emit('shortcut:hint', copy ? t('panel.copied', { n: sources.length }) : t('panel.moved', { n: sources.length }));
     } catch (err) {
-      this.bus.emit('shortcut:hint', `Ошибка: ${err.message}`);
+      this.bus.emit('shortcut:hint', t('common.error', { msg: err.message }));
     }
   }
 
@@ -694,10 +698,6 @@ export class FilePanel extends Component {
   }
 
   onSort(e) {
-    if (e.target.closest('[data-dirsize]')) {
-      this.recalcDirSizes();
-      return;
-    }
     const h = e.target.closest('[data-sort]');
     if (!h) return;
     const key = h.dataset.sort;
@@ -747,7 +747,7 @@ export class FilePanel extends Component {
     if (!this._lastPane || this._lastPane.error || !this._view) return;
     const view = this._view;
     if (!view.length) {
-      this.listEl.innerHTML = `<div class="panel__empty">${this._filter ? 'Ничего не найдено' : 'Папка пуста'}</div>`;
+      this.listEl.innerHTML = `<div class="panel__empty">${this._filter ? t('panel.notFound') : t('panel.empty')}</div>`;
       this._renderedPaths = new Set();
       return;
     }
@@ -806,10 +806,16 @@ export class FilePanel extends Component {
           if (sizeSpan) {
             let sizeText;
             if (this._dirSizes.has(path)) sizeText = formatSize(this._dirSizes.get(path));
-            else if (this._dirComputing) sizeText = '<span class="dirsize-spin" title="Подсчёт…"></span>';
+            else if (this._dirComputing) sizeText = `<span class="dirsize-spin" title="${t('panel.computing')}"></span>`;
             else sizeText = '';
             if (sizeSpan.innerHTML !== sizeText) sizeSpan.innerHTML = sizeText;
           }
+        }
+        // Обновляем теги (метки) — могли измениться через контекстное меню
+        const tagsSpan = row.querySelector('.row__tags');
+        if (tagsSpan) {
+          const newTags = this.dotsHtml(path);
+          if (tagsSpan.innerHTML !== newTags) tagsSpan.innerHTML = newTags;
         }
       } else {
         // Создаём новую строку
@@ -825,7 +831,7 @@ export class FilePanel extends Component {
         let size;
         if (e.kind === 'folder') {
           if (this._dirSizes.has(path)) size = formatSize(this._dirSizes.get(path));
-          else if (this._dirComputing) size = '<span class="dirsize-spin" title="Подсчёт…"></span>';
+          else if (this._dirComputing) size = `<span class="dirsize-spin" title="${t('panel.computing')}"></span>`;
           else size = '';
         } else {
           size = formatSize(e.size);

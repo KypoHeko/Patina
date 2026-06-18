@@ -4,7 +4,7 @@ use tauri::{AppHandle, Manager};
 use walkdir::WalkDir;
 
 use crate::error::{Error, Result};
-use crate::index::file_index_repo::{self, IndexRow};
+use crate::index::file_index::{self, IndexRow};
 use crate::models::file::FileEntry;
 use crate::state::AppState;
 
@@ -45,7 +45,7 @@ pub async fn reindex_tree(app: AppHandle, root: String) -> Result<usize> {
         {
             let state = app.state::<AppState>();
             let mut conn = state.db()?;
-            file_index_repo::replace_subtree(&mut conn, &root, &rows)?;
+            file_index::replace_subtree(&mut conn, &root, &rows)?;
         }
         Ok(n)
     })
@@ -64,7 +64,7 @@ pub async fn search_files(
         let cap = if limit == 0 { 20_000 } else { limit };
         let state = app.state::<AppState>();
         let conn = state.db_read()?;
-        file_index_repo::search(&conn, &root, &query, cap)
+        file_index::search(&conn, &root, &query, cap)
     })
     .await
     .map_err(|e| Error::Operation(format!("search_files прерван: {e}")))?

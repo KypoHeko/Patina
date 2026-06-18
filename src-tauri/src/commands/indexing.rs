@@ -10,8 +10,8 @@ use notify::{recommended_watcher, Event, RecursiveMode, Watcher};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::error::{Error, Result};
-use crate::index::file_index_repo::{self, IndexRow};
-use crate::index::{content_index_repo, edges_repo, usn_position_repo};
+use crate::index::file_index::{self, IndexRow};
+use crate::index::{content_index, edges_repo, usn_position_repo};
 use crate::indexer::{build_row, links, usn_journal};
 use crate::state::AppState;
 
@@ -85,7 +85,7 @@ fn explicit_out_edges(src_path: &str, body: &str) -> Vec<(String, String)> {
 fn build_edges(
     app: &AppHandle,
     root: &str,
-    content_rows: &[content_index_repo::ContentRow],
+    content_rows: &[content_index::ContentRow],
     rows: &[IndexRow],
 ) -> Vec<(String, String, String)> {
     use aho_corasick::AhoCorasick;
@@ -206,14 +206,14 @@ fn apply_change(app: &AppHandle, content_active: bool, path: &Path) {
         if let Some(row) = build_row(path) {
             let text_file = !row.is_dir && is_text(path, row.size);
             if let Ok(conn) = state.db() {
-                let _ = file_index_repo::upsert_one(&conn, &row);
+                let _ = file_index::upsert_one(&conn, &row);
             }
             if content_active && text_file {
                 if let Ok(bytes) = std::fs::read(path) {
                     let body = String::from_utf8_lossy(&bytes).into_owned();
                     if let Ok(conn) = state.db() {
-                        let _ = content_index_repo::ensure_table(&conn);
-                        let _ = content_index_repo::upsert_one(&conn, &pstr, &body);
+                        let _ = content_index::ensure_table(&conn);
+                        let _ = content_index::upsert_one(&conn, &pstr, &body);
                         // Инкрементально обновляем только явные исходящие рёбра
                         // (mention-слой пересоберётся при полной переиндексации).
                         let edges = explicit_out_edges(&pstr, &body);
@@ -223,10 +223,10 @@ fn apply_change(app: &AppHandle, content_active: bool, path: &Path) {
             }
         }
     } else if let Ok(conn) = state.db() {
-        let _ = file_index_repo::delete_path(&conn, &pstr);
+        let _ = file_index::delete_path(&conn, &pstr);
         let _ = edges_repo::purge(&conn, &pstr);
         if content_active {
-            let _ = content_index_repo::delete_path(&conn, &pstr);
+            let _ = content_index::delete_path(&conn, &pstr);
         }
     }
 }
@@ -238,7 +238,7 @@ fn build_all(app: &AppHandle, root: &str, content: bool) -> Result<()> {
     let state = app.state::<AppState>();
     let _t0 = std::time::Instant::now(); // ВРЕМЕННО: диагностика времени фаз
     let mut rows: Vec<IndexRow> = Vec::new();
-    let mut content_rows: Vec<content_index_repo::ContentRow> = Vec::new();
+    let mut content_rows: Vec<content_index::ContentRow> = Vec::new();
     let mut since_emit = 0usize;
     for entry in walkdir::WalkDir::new(root)
         .min_depth(1)
@@ -253,7 +253,7 @@ fn build_all(app: &AppHandle, root: &str, content: bool) -> Result<()> {
         if let Some(row) = build_row(path) {
             if content && !row.is_dir && is_text(path, row.size) {
                 if let Ok(bytes) = std::fs::read(path) {
-                    content_rows.push(content_index_repo::ContentRow {
+                    content_rows.push(content_index::ContentRow {
                         path: row.path.clone(),
                         body: String::from_utf8_lossy(&bytes).into_owned(),
                     });
@@ -275,7 +275,7 @@ fn build_all(app: &AppHandle, root: &str, content: bool) -> Result<()> {
     let _t1 = std::time::Instant::now();
     {
         let mut conn = state.db()?;
-        file_index_repo::replace_subtree(&mut conn, root, &rows)?;
+        file_index::replace_subtree(&mut conn, root, &rows)?;
         // После успешной записи индекса — сохранить USN-позицию для инкрементального
         // обновления при следующем запуске. Позиция 0 означает «со следующего记录»,
         // но мы записываем 1, чтобы sync_from_journal при следующем вызове начал
@@ -296,8 +296,8 @@ fn build_all(app: &AppHandle, root: &str, content: bool) -> Result<()> {
         eprintln!("[index] build_edges: {} рёбер за {:?}", edges.len(), _t2.elapsed());
         let _t3 = std::time::Instant::now();
         let mut conn = state.db()?;
-        content_index_repo::ensure_table(&conn)?;
-        content_index_repo::replace_subtree(&mut conn, root, &content_rows)?;
+        content_index::ensure_table(&conn)?;
+        content_index::replace_subtree(&mut conn, root, &content_rows)?;
         edges_repo::replace_derived_subtree(&mut conn, root, &edges)?;
         eprintln!("[index] content+edges write за {:?}", _t3.elapsed());
     }

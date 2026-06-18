@@ -1,5 +1,6 @@
 import { Component } from '../core/component.js';
 import { THEMES, getTheme, setTheme } from '../lib/theme.js';
+import { t } from '../lib/i18n.js';
 
 // Меню выбора палитры. Открывается из кнопки топбара (событие 'theme:open'),
 // рисуется поповером под ней. Выбор применяется мгновенно и сохраняется.
@@ -46,17 +47,17 @@ export class ThemeMenu extends Component {
   render() {
     const active = getTheme();
     const rows = THEMES.map(
-      (t) => `
-      <button class="theme-menu__row${t.id === active ? ' is-active' : ''}" data-theme-id="${t.id}">
-        <span class="theme-menu__swatch" style="background:${t.swatch}"></span>
-        <span class="theme-menu__label">${t.label}</span>
-        <span class="theme-menu__check" aria-hidden="true">${t.id === active ? '✓' : ''}</span>
+      (th) => `
+      <button class="theme-menu__row${th.id === active ? ' is-active' : ''}" data-theme-id="${th.id}">
+        <span class="theme-menu__swatch" style="background:${th.swatch}"></span>
+        <span class="theme-menu__label">${t('theme.' + th.id)}</span>
+        <span class="theme-menu__check" aria-hidden="true">${th.id === active ? '✓' : ''}</span>
       </button>`,
     ).join('');
     this.mount.innerHTML = `
       <div class="theme-menu__backdrop"></div>
-      <div class="theme-menu" role="menu" aria-label="Палитра">
-        <div class="theme-menu__title">Палитра</div>
+      <div class="theme-menu" role="menu" aria-label="${t('theme.title')}">
+        <div class="theme-menu__title">${t('theme.title')}</div>
         ${rows}
       </div>`;
     this.mount.querySelectorAll('[data-theme-id]').forEach((el) =>

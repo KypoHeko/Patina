@@ -365,8 +365,8 @@ unsafe fn icon_to_png(
     size: u32,
 ) -> Option<Vec<u8>> {
     use windows::Win32::Graphics::Gdi::{
-        CreateCompatibleDC, DeleteDC, GetDIBits, SelectObject, BITMAPINFO, BITMAPINFOHEADER,
-        BI_RGB, DIB_RGB_COLORS,
+        CreateCompatibleDC, DeleteDC, DeleteObject, GetDIBits, SelectObject, BITMAPINFO,
+        BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS,
     };
     use windows::Win32::UI::WindowsAndMessaging::{GetIconInfo, ICONINFO};
 
@@ -376,8 +376,19 @@ unsafe fn icon_to_png(
         return None;
     }
 
+    // GetIconInfo создаёт два битмапа (hbmColor и hbmMask); по контракту WinAPI
+    // их обязан удалить вызывающий, иначе на каждый вызов течёт GDI-объект.
+    // hbmMask не используется — удаляем сразу; hbmColor нужен для GetDIBits,
+    // его освобождаем после DC (а на раннем выходе — прямо здесь).
+    if !icon_info.hbmMask.is_invalid() {
+        let _ = DeleteObject(icon_info.hbmMask);
+    }
+
     let hdc = CreateCompatibleDC(None);
     if hdc.is_invalid() {
+        if !icon_info.hbmColor.is_invalid() {
+            let _ = DeleteObject(icon_info.hbmColor);
+        }
         return None;
     }
 
@@ -410,6 +421,9 @@ unsafe fn icon_to_png(
 
     let _ = SelectObject(hdc, old_bmp);
     let _ = DeleteDC(hdc);
+    if !icon_info.hbmColor.is_invalid() {
+        let _ = DeleteObject(icon_info.hbmColor);
+    }
 
     if scan_lines == 0 {
         return None;

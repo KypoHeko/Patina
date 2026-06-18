@@ -1,5 +1,6 @@
 import { Component } from '../core/component.js';
 import { el } from '../core/dom.js';
+import { t } from '../lib/i18n.js';
 
 // Универсальный диалог. Открывается событием шины:
 // confirm:open { title, message, confirmLabel, altLabel, danger, onConfirm, onAlt }
@@ -17,11 +18,11 @@ export class ConfirmDialog extends Component {
     const backdrop = el('div', { class: 'cd__backdrop', onClick: () => this.close() });
     const box = el('div', { class: 'cd' });
     box.append(
-      el('div', { class: 'cd__title' }, req.title || 'Подтверждение'),
+      el('div', { class: 'cd__title' }, req.title || t('confirm.title')),
       el('div', { class: 'cd__msg' }, req.message || ''),
     );
     const actions = el('div', { class: 'cd__actions' });
-    actions.append(el('button', { class: 'cd__btn', onClick: () => this.close() }, 'Отмена'));
+    actions.append(el('button', { class: 'cd__btn', onClick: () => this.close() }, t('confirm.cancel')));
     if (req.altLabel) {
       actions.append(
         el('button', { class: 'cd__btn', onClick: () => this.run('onAlt') }, req.altLabel),
@@ -31,7 +32,7 @@ export class ConfirmDialog extends Component {
       el(
         'button',
         { class: 'cd__btn cd__btn--primary' + (req.danger ? ' is-danger' : ''), onClick: () => this.run('onConfirm') },
-        req.confirmLabel || 'OK',
+        req.confirmLabel || t('confirm.ok'),
       ),
     );
     box.append(actions);

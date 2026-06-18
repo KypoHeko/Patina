@@ -1,5 +1,6 @@
 // Палитры приложения. Тема — это атрибут data-theme на <html>; CSS-токены
 // (styles/tokens.css) делают всю работу. Выбор сохраняется в localStorage.
+// Подписи палитр локализуются по id через i18n: t('theme.<id>').
 
 const KEY = 'patina:theme';
 

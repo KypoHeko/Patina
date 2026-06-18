@@ -139,6 +139,12 @@ pub struct Preview {
     name: String,
     text: Option<String>,
     data_url: Option<String>,
+    /// Размер файла в байтах
+    size: u64,
+    /// Время изменения (Unix мс)
+    modified: i64,
+    /// Время создания (Unix мс), 0 если недоступно
+    created: i64,
 }
 
 pub fn b64(data: &[u8]) -> String {
@@ -164,16 +170,37 @@ const TXT: &[&str] = &[
     "java", "c", "h", "cpp", "sql",
 ];
 
-fn none_preview(name: String) -> Preview {
-    Preview { kind: "none".into(), name, text: None, data_url: None }
+fn file_times(meta: &std::fs::Metadata) -> (i64, i64) {
+    let modified = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    let created = meta
+        .created()
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    (modified, created)
 }
 
-fn image_jpeg(name: String, bytes: &[u8]) -> Preview {
+fn none_preview(name: String, meta: &std::fs::Metadata) -> Preview {
+    let (modified, created) = file_times(meta);
+    Preview { kind: "none".into(), name, text: None, data_url: None, size: meta.len(), modified, created }
+}
+
+fn image_jpeg(name: String, bytes: &[u8], meta: &std::fs::Metadata) -> Preview {
+    let (modified, created) = file_times(meta);
     Preview {
         kind: "image".into(),
         name,
         text: None,
         data_url: Some(format!("data:image/jpeg;base64,{}", b64(bytes))),
+        size: meta.len(),
+        modified,
+        created,
     }
 }
 
@@ -192,17 +219,21 @@ fn build_preview(thumbs_dir: &Path, path: &str) -> Result<Preview> {
         .unwrap_or_default();
     let meta = std::fs::metadata(path)?;
     if meta.is_dir() {
-        return Ok(none_preview(name));
+        return Ok(none_preview(name, &meta));
     }
 
     // SVG — вектор, инлайним как есть (без растеризации).
     if ext == "svg" {
         let bytes = std::fs::read(path)?;
+        let (modified, created) = file_times(&meta);
         return Ok(Preview {
             kind: "image".into(),
             name,
             text: None,
             data_url: Some(format!("data:image/svg+xml;base64,{}", b64(&bytes))),
+            size: meta.len(),
+            modified,
+            created,
         });
     }
 
@@ -220,7 +251,7 @@ fn build_preview(thumbs_dir: &Path, path: &str) -> Result<Preview> {
         let cache = thumbs_dir.join(format!("{key}.jpg"));
 
         if let Ok(bytes) = std::fs::read(&cache) {
-            return Ok(image_jpeg(name, &bytes));
+            return Ok(image_jpeg(name, &bytes, &meta));
         }
         if let Ok(img) = image::open(path) {
             let thumb = img.thumbnail(1024, 1024);
@@ -231,10 +262,10 @@ fn build_preview(thumbs_dir: &Path, path: &str) -> Result<Preview> {
                 .is_ok()
             {
                 let _ = std::fs::write(&cache, &bytes);
-                return Ok(image_jpeg(name, &bytes));
+                return Ok(image_jpeg(name, &bytes, &meta));
             }
         }
-        return Ok(none_preview(name));
+        return Ok(none_preview(name, &meta));
     }
 
     if TXT.contains(&ext.as_str()) {
@@ -242,14 +273,18 @@ fn build_preview(thumbs_dir: &Path, path: &str) -> Result<Preview> {
         let mut buf = vec![0u8; 16 * 1024];
         let n = f.read(&mut buf)?;
         buf.truncate(n);
+        let (modified, created) = file_times(&meta);
         return Ok(Preview {
             kind: "text".into(),
             name,
             text: Some(String::from_utf8_lossy(&buf).into_owned()),
             data_url: None,
+            size: meta.len(),
+            modified,
+            created,
         });
     }
-    Ok(none_preview(name))
+    Ok(none_preview(name, &meta))
 }
 
 /// Превью: текстовая «голова», SVG как есть, либо миниатюра растрового
@@ -257,6 +292,9 @@ fn build_preview(thumbs_dir: &Path, path: &str) -> Result<Preview> {
 /// результат кэшируется на диск (ключ — путь+mtime+размер), повторные открытия
 /// мгновенны и работают для изображений любого размера. Тяжёлая работа уходит
 /// в блокирующий пул, не занимая воркеры async-рантайма.
+///
+/// Возвращает также мета-информацию файла (размер, даты) для отображения
+/// в секции FILE INFO панели превью.
 #[tauri::command]
 pub async fn read_preview(app: AppHandle, path: String) -> Result<Preview> {
     tauri::async_runtime::spawn_blocking(move || -> Result<Preview> {

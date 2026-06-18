@@ -4,6 +4,7 @@ import { tabTitle, createTab, closeTab, switchTab, moveTab, moveTabEnd } from '.
 import { pathToColor, textColorFor } from '../lib/path-color.js';
 import { folderName } from '../lib/paths.js';
 import { TAGS } from '../config/tags.js';
+import { t, tagLabel } from '../lib/i18n.js';
 
 const TAG_BY_ID = Object.fromEntries(TAGS.map((t) => [t.id, t]));
 const DEFAULT_TAB_COLOR = '#3a3a48';
@@ -12,8 +13,8 @@ const DEFAULT_TAB_COLOR = '#3a3a48';
 function sideInfo(pane) {
   const p = pane.path || '';
   if (p.startsWith('tag:')) {
-    const t = TAG_BY_ID[p.slice(4)];
-    return { color: DEFAULT_TAB_COLOR, dot: t ? t.color : null, label: t ? t.label : p.slice(4) };
+    const tag = TAG_BY_ID[p.slice(4)];
+    return { color: DEFAULT_TAB_COLOR, dot: tag ? tag.color : null, label: tag ? tagLabel(tag.id) : p.slice(4) };
   }
   return { color: pathToColor(p), dot: null, label: folderName(p) || '—' };
 }
@@ -91,12 +92,12 @@ export class TabBar extends Component {
       }
       item.append(titleEl);
       item.append(
-        el('button', { class: 'tab__close', dataset: { close: tab.id }, title: 'Закрыть' }, '×'),
+        el('button', { class: 'tab__close', dataset: { close: tab.id }, title: t('tab.close') }, '×'),
       );
       list.append(item);
     }
 
-    list.append(el('button', { class: 'tab-add', 'data-add': '', title: 'Новая вкладка' }, '+'));
+    list.append(el('button', { class: 'tab-add', 'data-add': '', title: t('tab.new') }, '+'));
     this.mount.append(list);
   }
 

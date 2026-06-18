@@ -78,6 +78,11 @@
   width: 16px;
   height: 16px;
 }
+/* Кнопка языка — текстовая (двухбуквенный код), в габаритах icon-btn. */
+.lang-btn {
+  font: 700 11px/1 var(--font, system-ui, sans-serif);
+  letter-spacing: 0.06em;
+}
 
 /* Боковая панель */
 .sidebar {

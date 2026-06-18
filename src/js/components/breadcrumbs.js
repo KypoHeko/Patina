@@ -2,6 +2,7 @@ import { Component } from '../core/component.js';
 import { el } from '../core/dom.js';
 import { pathCrumbs } from '../lib/paths.js';
 import { TAGS } from '../config/tags.js';
+import { t, tagLabel } from '../lib/i18n.js';
 
 const TAG_BY_ID = Object.fromEntries(TAGS.map((t) => [t.id, t]));
 import { getPane } from '../state/panes.js';
@@ -87,22 +88,22 @@ export class Breadcrumbs extends Component {
       return;
     }
 
-    const backProps = { class: 'crumbs__back', 'data-back': '', title: 'Назад' };
+    const backProps = { class: 'crumbs__back', 'data-back': '', title: t('crumbs.back') };
     if (!this._canBack) backProps.disabled = '';
     this.mount.append(el('button', backProps, '←'));
 
     if ((this._path || '').startsWith('tag:')) {
-      const t = TAG_BY_ID[this._path.slice(4)];
+      const tag = TAG_BY_ID[this._path.slice(4)];
       const wrap = el('span', { class: 'crumbs__tag' });
-      if (t) {
+      if (tag) {
         wrap.append(
           el('span', {
             class: 'crumbs__tagdot',
-            style: `background:${t.color}`,
+            style: `background:${tag.color}`,
           }),
         );
       }
-      wrap.append(document.createTextNode(t ? t.label : this._path.slice(4)));
+      wrap.append(document.createTextNode(tag ? tagLabel(tag.id) : this._path.slice(4)));
       this.mount.append(wrap);
       return;
     }

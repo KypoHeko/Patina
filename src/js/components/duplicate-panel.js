@@ -7,6 +7,7 @@ import { formatSize } from '../lib/format.js';
 import { parentPath, folderName } from '../lib/paths.js';
 import { getPane } from '../state/panes.js';
 import { getActiveSide } from '../state/tabs.js';
+import { t } from '../lib/i18n.js';
 
 // Выдвижная панель поиска дубликатов (Ctrl+D) по папке активной панели.
 export class DuplicatePanel extends Component {
@@ -45,7 +46,7 @@ export class DuplicatePanel extends Component {
     try {
       this._groups = (await findDuplicates(this._dir)) || [];
     } catch (err) {
-      this.bus.emit('shortcut:hint', `Ошибка поиска: ${err.message}`);
+      this.bus.emit('shortcut:hint', t('dup.scanError', { msg: err.message }));
       this._groups = [];
     }
     this._loading = false;
@@ -63,7 +64,7 @@ export class DuplicatePanel extends Component {
 
   progressText() {
     const p = this._progress;
-    return p && p.total ? `Хеширование ${p.done} / ${p.total}` : 'Сканирование…';
+    return p && p.total ? t('dup.hashing', { done: p.done, total: p.total }) : t('dup.scanning');
   }
 
   close() {
@@ -79,14 +80,14 @@ export class DuplicatePanel extends Component {
       await deleteEntries(paths);
       const dirs = [...new Set(paths.map((p) => parentPath(p)).filter(Boolean))];
       this.bus.emit('fs:changed', { dirs });
-      this.bus.emit('shortcut:hint', `В корзину: ${paths.length}`);
+      this.bus.emit('shortcut:hint', t('common.trashed', { n: paths.length }));
       const gone = new Set(paths);
       this._groups = this._groups
         .map((g) => ({ ...g, paths: g.paths.filter((p) => !gone.has(p)) }))
         .filter((g) => g.paths.length > 1);
       this.render();
     } catch (err) {
-      this.bus.emit('shortcut:hint', `Ошибка удаления: ${err.message}`);
+      this.bus.emit('shortcut:hint', t('panel.deleteError', { msg: err.message }));
     }
   }
 
@@ -113,18 +114,18 @@ export class DuplicatePanel extends Component {
       ? `<div class="dup__msg"><span class="dup__spinner" aria-hidden="true"></span><span class="dup__progress">${this.progressText()}</span></div>`
       : this._groups.length
         ? this._groups.map((g, i) => this.renderGroup(g, i)).join('')
-        : '<div class="dup__msg">Дубликаты не найдены</div>';
+        : `<div class="dup__msg">${t('dup.none')}</div>`;
 
     this.mount.innerHTML = `
       <div class="dup">
         <div class="dup__head">
           <div>
-            <div class="dup__title">Дубликаты</div>
+            <div class="dup__title">${t('dup.title')}</div>
             <div class="dup__sub" title="${escapeHtml(this._dir)}">${escapeHtml(folderName(this._dir) || this._dir)}${
-              !this._loading && total ? ` · можно освободить ${total} копий` : ''
+              !this._loading && total ? ` · ${t('dup.canFree', { n: total })}` : ''
             }</div>
           </div>
-          <button class="dup__close" data-close title="Закрыть">×</button>
+          <button class="dup__close" data-close title="${t('tab.close')}">×</button>
         </div>
         <div class="dup__body">${body}</div>
       </div>`;
@@ -133,18 +134,18 @@ export class DuplicatePanel extends Component {
   renderGroup(g, i) {
     const files = g.paths
       .map((p, idx) => {
-        const tag = idx === 0 ? '<span class="dup__keep">оставить</span>' : '';
+        const tag = idx === 0 ? `<span class="dup__keep">${t('dup.keep')}</span>` : '';
         return `<div class="dup__file">
             <span class="dup__path" title="${escapeHtml(p)}">${escapeHtml(p)}</span>
             ${tag}
-            <button class="dup__del" data-del="${escapeHtml(p)}" title="Удалить в корзину">×</button>
+            <button class="dup__del" data-del="${escapeHtml(p)}" title="${t('dup.delTitle')}">×</button>
           </div>`;
       })
       .join('');
     return `<div class="dup__group">
         <div class="dup__group-head">
-          <span>${g.paths.length} копий · ${formatSize(g.size)}</span>
-          <button class="dup__keepbtn" data-keepfirst="${i}">Оставить первый</button>
+          <span>${t('dup.copies', { n: g.paths.length })} · ${formatSize(g.size)}</span>
+          <button class="dup__keepbtn" data-keepfirst="${i}">${t('dup.keepFirst')}</button>
         </div>
         ${files}
       </div>`;
