@@ -1,4 +1,4 @@
-//! Команды персистентного индекса файлов.
+//! Persistent file index commands.
 
 use tauri::{AppHandle, Manager};
 use walkdir::WalkDir;
@@ -50,7 +50,7 @@ pub async fn reindex_tree(app: AppHandle, root: String) -> Result<usize> {
         Ok(n)
     })
     .await
-    .map_err(|e| Error::Operation(format!("reindex_tree прерван: {e}")))?
+    .map_err(|e| Error::Operation(format!("reindex_tree interrupted: {e}")))?
 }
 
 #[tauri::command]
@@ -67,5 +67,5 @@ pub async fn search_files(
         file_index::search(&conn, &root, &query, cap)
     })
     .await
-    .map_err(|e| Error::Operation(format!("search_files прерван: {e}")))?
+    .map_err(|e| Error::Operation(format!("search_files interrupted: {e}")))?
 }

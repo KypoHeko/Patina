@@ -6,6 +6,7 @@ import { TAGS } from '../config/tags.js';
 import { getPane } from '../state/panes.js';
 import { getActiveSide } from '../state/tabs.js';
 import { formatSize } from '../lib/format.js';
+import { t, tagLabel } from '../lib/i18n.js';
 
 const LOC_ICON = {
   home: '🏠',
@@ -44,10 +45,24 @@ export class Sidebar extends Component {
   renderFrame() {
     this.mount.innerHTML = '';
     this.mount.append(
-      this.section('Быстрый доступ', 'quick'),
-      this.section('Хранилище', 'storage'),
-      this.section('Теги', 'tags'),
+      this.section(t('sidebar.quick'), 'quick'),
+      this.section(t('sidebar.storage'), 'storage'),
+      this.section(t('sidebar.tags'), 'tags'),
     );
+    this.renderTags();
+  }
+  
+  /** Перерисовать секции и теги при смене языка. Сохраняет свёрнутые секции. */
+  applyLang() {
+    // Обновляем заголовки секций на месте — body не трогаем, там данные.
+    const titles = { quick: t('sidebar.quick'), storage: t('sidebar.storage'), tags: t('sidebar.tags') };
+    for (const [key, label] of Object.entries(titles)) {
+      const head = this.mount.querySelector(`[data-toggle="${key}"]`);
+      if (head) {
+        const titleEl = head.querySelector('.sidebar__title');
+        if (titleEl) titleEl.textContent = label;
+      }
+    }
     this.renderTags();
   }
 
@@ -261,7 +276,7 @@ export class Sidebar extends Component {
       this.renderQuick();
       this._saveQuick();
     } else {
-      this.bus.emit('shortcut:hint', 'Уже в быстром доступе');
+      this.bus.emit('shortcut:hint', t('sidebar.alreadyInQuick'));
     }
   }
 
@@ -316,14 +331,15 @@ export class Sidebar extends Component {
     const body = this.mount.querySelector('[data-section="tags"]');
     if (!body) return;
     body.innerHTML = '';
-    for (const t of TAGS) {
-      const count = this._counts[t.id] || 0;
+    for (const tag of TAGS) {
+      const count = this._counts[tag.id] || 0;
+      const label = tagLabel(tag.id);
       body.append(
         el(
           'button',
-          { class: 'sidebar__tagrow', dataset: { tag: t.id }, title: t.label },
-          el('span', { class: 'sidebar__dot', style: `background:${t.color}` }),
-          el('span', { class: 'sidebar__label' }, t.label),
+          { class: 'sidebar__tagrow', dataset: { tag: tag.id }, title: label },
+          el('span', { class: 'sidebar__dot', style: `background:${tag.color}` }),
+          el('span', { class: 'sidebar__label' }, label),
           el('span', { class: 'sidebar__count' }, String(count)),
         ),
       );

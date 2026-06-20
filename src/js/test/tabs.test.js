@@ -9,7 +9,7 @@ import {
   splitTab,
   closeSplit,
   tabTitle,
-} from './tabs.js';
+} from '../state/tabs.js';
 import { createStore } from '../core/store.js';
 import { createEventBus } from '../core/event-bus.js';
 

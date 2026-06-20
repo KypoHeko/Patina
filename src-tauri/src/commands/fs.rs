@@ -1,4 +1,4 @@
-//! Команды файловой системы.
+//! Filesystem commands.
 
 use std::fs::File;
 use std::io::{Cursor, Read};
@@ -12,36 +12,36 @@ use tauri::{AppHandle, Manager};
 use crate::error::{Error, Result};
 
 use crate::fs::{lister, operations};
-use crate::index::{edges_repo, tags_repo, versions_repo};
+use crate::index::{edges, tags, versions};
 use crate::models::file::FileEntry;
 use crate::state::AppState;
 
-/// Перенести все привязанные к пути данные (теги, версии, связи) со старого
-/// пути на новый — единая точка для move/rename. Ошибки отдельных репозиториев
-/// намеренно глушим: файл уже перемещён на диске, и сбой сопровождающих
-/// метаданных не должен откатывать саму операцию.
+/// Move all path-bound data (tags, versions, links) from the old path to the
+/// new one — a single point for move/rename. Errors from individual
+/// repositories are intentionally swallowed: the file is already moved on disk,
+/// and a failure of the accompanying metadata must not roll back the operation.
 fn relink_all(conn: &Connection, old: &str, new: &str) {
-    let _ = tags_repo::relink(conn, old, new);
-    let _ = versions_repo::relink(conn, old, new);
-    let _ = edges_repo::relink(conn, old, new);
+    let _ = tags::relink(conn, old, new);
+    let _ = versions::relink(conn, old, new);
+    let _ = edges::relink(conn, old, new);
 }
 
-/// Удалить все привязанные к пути данные (теги, версии, связи) для удалённого
-/// пути (и вложенных), иначе строки копятся в БД, ссылаясь на несуществующие
-/// файлы. Ошибки глушим по тем же причинам, что и в `relink_all`.
+/// Delete all path-bound data (tags, versions, links) for a removed path (and
+/// nested ones), otherwise rows pile up in the DB referencing non-existent
+/// files. Errors are swallowed for the same reasons as in `relink_all`.
 fn purge_all(conn: &Connection, path: &str) {
-    let _ = tags_repo::purge(conn, path);
-    let _ = versions_repo::purge(conn, path);
-    let _ = edges_repo::purge(conn, path);
+    let _ = tags::purge(conn, path);
+    let _ = versions::purge(conn, path);
+    let _ = edges::purge(conn, path);
 }
 
 #[tauri::command]
 pub async fn list_dir(path: String) -> Result<Vec<FileEntry>> {
-    // Листинг каталога — блокирующий I/O. Уводим в spawn_blocking, чтобы не
-    // занимать главный поток вебвью (иначе панели «подвисают» при навигации).
+    // Directory listing is blocking I/O. Offload to spawn_blocking so we do not
+    // occupy the webview's main thread (otherwise panels "hang" during navigation).
     tauri::async_runtime::spawn_blocking(move || lister::list_dir(&path))
         .await
-        .map_err(|e| Error::Operation(format!("листинг прерван: {e}")))?
+        .map_err(|e| Error::Operation(format!("listing interrupted: {e}")))?
 }
 
 #[tauri::command]
@@ -59,7 +59,7 @@ pub async fn copy_entries(sources: Vec<String>, dest_dir: String, overwrite: boo
         operations::copy_entries(&sources, &dest_dir, overwrite)
     })
     .await
-    .map_err(|e| Error::Operation(format!("copy_entries прерван: {e}")))?
+    .map_err(|e| Error::Operation(format!("copy_entries interrupted: {e}")))?
 }
 
 #[tauri::command]
@@ -83,7 +83,7 @@ pub async fn move_entries(
         Ok(())
     })
     .await
-    .map_err(|e| Error::Operation(format!("move_entries прерван: {e}")))?
+    .map_err(|e| Error::Operation(format!("move_entries interrupted: {e}")))?
 }
 
 #[tauri::command]
@@ -98,7 +98,7 @@ pub async fn delete_entries(app: AppHandle, paths: Vec<String>) -> Result<()> {
         Ok(())
     })
     .await
-    .map_err(|e| Error::Operation(format!("delete_entries прерван: {e}")))?
+    .map_err(|e| Error::Operation(format!("delete_entries interrupted: {e}")))?
 }
 
 #[tauri::command]
@@ -111,10 +111,10 @@ pub async fn rename_entry(app: AppHandle, path: String, new_name: String) -> Res
         Ok(new_path)
     })
     .await
-    .map_err(|e| Error::Operation(format!("rename_entry прерван: {e}")))?
+    .map_err(|e| Error::Operation(format!("rename_entry interrupted: {e}")))?
 }
 
-/// Имена записей, уже существующие в каталоге назначения.
+/// Names of entries that already exist in the destination directory.
 #[tauri::command]
 pub async fn check_conflicts(sources: Vec<String>, dest_dir: String) -> Result<Vec<String>> {
     tauri::async_runtime::spawn_blocking(move || -> Result<Vec<String>> {
@@ -129,7 +129,7 @@ pub async fn check_conflicts(sources: Vec<String>, dest_dir: String) -> Result<V
         Ok(out)
     })
     .await
-    .map_err(|e| Error::Operation(format!("check_conflicts прерван: {e}")))?
+    .map_err(|e| Error::Operation(format!("check_conflicts interrupted: {e}")))?
 }
 
 #[derive(Serialize)]
@@ -139,11 +139,11 @@ pub struct Preview {
     name: String,
     text: Option<String>,
     data_url: Option<String>,
-    /// Размер файла в байтах
+    /// File size in bytes
     size: u64,
-    /// Время изменения (Unix мс)
+    /// Modification time (Unix ms)
     modified: i64,
-    /// Время создания (Unix мс), 0 если недоступно
+    /// Creation time (Unix ms), 0 if unavailable
     created: i64,
 }
 
@@ -204,9 +204,9 @@ fn image_jpeg(name: String, bytes: &[u8], meta: &std::fs::Metadata) -> Preview {
     }
 }
 
-/// Синхронная реализация превью. Вызывается из `read_preview` внутри
-/// `spawn_blocking`, чтобы тяжёлое декодирование изображений не занимало
-/// воркер async-рантайма.
+/// Synchronous preview implementation. Called from `read_preview` inside
+/// `spawn_blocking` so that heavy image decoding does not occupy an
+/// async-runtime worker.
 fn build_preview(thumbs_dir: &Path, path: &str) -> Result<Preview> {
     let p = Path::new(path);
     let name = p
@@ -222,7 +222,7 @@ fn build_preview(thumbs_dir: &Path, path: &str) -> Result<Preview> {
         return Ok(none_preview(name, &meta));
     }
 
-    // SVG — вектор, инлайним как есть (без растеризации).
+    // SVG is a vector — inline it as-is (no rasterization).
     if ext == "svg" {
         let bytes = std::fs::read(path)?;
         let (modified, created) = file_times(&meta);
@@ -237,7 +237,7 @@ fn build_preview(thumbs_dir: &Path, path: &str) -> Result<Preview> {
         });
     }
 
-    // Растровые — миниатюра с дисковым кэшом.
+    // Raster images — a thumbnail with a disk cache.
     if RASTER.contains(&ext.as_str()) {
         let mtime = meta
             .modified()
@@ -287,14 +287,14 @@ fn build_preview(thumbs_dir: &Path, path: &str) -> Result<Preview> {
     Ok(none_preview(name, &meta))
 }
 
-/// Превью: текстовая «голова», SVG как есть, либо миниатюра растрового
-/// изображения. Растровые декодируются и ужимаются до 1024px на стороне Rust,
-/// результат кэшируется на диск (ключ — путь+mtime+размер), повторные открытия
-/// мгновенны и работают для изображений любого размера. Тяжёлая работа уходит
-/// в блокирующий пул, не занимая воркеры async-рантайма.
+/// Preview: a text "head", SVG as-is, or a thumbnail of a raster image. Raster
+/// images are decoded and shrunk to 1024px on the Rust side, the result is
+/// cached on disk (key = path+mtime+size), so repeat opens are instant and work
+/// for images of any size. The heavy work goes to the blocking pool, without
+/// occupying async-runtime workers.
 ///
-/// Возвращает также мета-информацию файла (размер, даты) для отображения
-/// в секции FILE INFO панели превью.
+/// Also returns the file's metadata (size, dates) for display in the FILE INFO
+/// section of the preview panel.
 #[tauri::command]
 pub async fn read_preview(app: AppHandle, path: String) -> Result<Preview> {
     tauri::async_runtime::spawn_blocking(move || -> Result<Preview> {
@@ -302,11 +302,11 @@ pub async fn read_preview(app: AppHandle, path: String) -> Result<Preview> {
         build_preview(&state.thumbs_dir, &path)
     })
     .await
-    .map_err(|e| Error::Operation(format!("превью прервано: {e}")))?
+    .map_err(|e| Error::Operation(format!("preview interrupted: {e}")))?
 }
 
-/// Создать новую папку в `parent`. При занятом имени добавляет " (N)".
-/// Возвращает путь созданной папки.
+/// Create a new folder in `parent`. If the name is taken, appends " (N)".
+/// Returns the path of the created folder.
 #[tauri::command]
 pub async fn create_folder(parent: String, name: String) -> Result<String> {
     tauri::async_runtime::spawn_blocking(move || -> Result<String> {
@@ -324,5 +324,5 @@ pub async fn create_folder(parent: String, name: String) -> Result<String> {
         Ok(candidate.to_string_lossy().into_owned())
     })
     .await
-    .map_err(|e| Error::Operation(format!("create_folder прерван: {e}")))?
+    .map_err(|e| Error::Operation(format!("create_folder interrupted: {e}")))?
 }

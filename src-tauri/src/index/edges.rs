@@ -1,5 +1,5 @@
-//! Направленные рёбра между файлами (таблица file_edges).
-//! Зависимости = исходящие (src -> dst), обратные ссылки = входящие (по dst).
+//! Directed edges between files (the file_edges table).
+//! Dependencies = outgoing (src -> dst), back-references = incoming (by dst).
 
 use std::collections::HashSet;
 
@@ -22,7 +22,7 @@ fn norm<'a>(a: &'a str, b: &'a str) -> (&'a str, &'a str) {
     if a <= b { (a, b) } else { (b, a) }
 }
 
-/// Ручная (неориентированная) связь: храним нормализованной парой с kind='manual'.
+/// A manual (undirected) link: stored as a normalized pair with kind='manual'.
 pub fn add_manual(conn: &Connection, a: &str, b: &str) -> Result<()> {
     let a = normalize(a);
     let b = normalize(b);
@@ -50,8 +50,8 @@ pub fn remove_manual(conn: &Connection, a: &str, b: &str) -> Result<()> {
     Ok(())
 }
 
-/// Заменить производные (не-manual) исходящие рёбра одного источника —
-/// для инкрементального сопровождения при изменении файла. Ручные не трогаем.
+/// Replace the derived (non-manual) outgoing edges of a single source —
+/// for incremental maintenance when a file changes. Manual edges are left alone.
 pub fn replace_derived_for_src(
     conn: &Connection,
     src: &str,
@@ -71,9 +71,9 @@ pub fn replace_derived_for_src(
     Ok(())
 }
 
-/// Полная замена производных рёбер поддерева (после полной переиндексации).
-/// Удаляются все не-manual рёбра, исходящие из поддерева, и вставляются новые —
-/// одной транзакцией. Ручные связи сохраняются.
+/// Full replacement of a subtree's derived edges (after a full reindex).
+/// All non-manual edges originating in the subtree are deleted and the new ones
+/// inserted — in a single transaction. Manual links are preserved.
 pub fn replace_derived_subtree(
     conn: &mut Connection,
     root: &str,
@@ -98,8 +98,8 @@ pub fn replace_derived_subtree(
     Ok(())
 }
 
-/// Окрестность графа: рёбра в пределах `hops` прыжков от seed-путей, в обе
-/// стороны (исходящие = зависимости, входящие = обратные ссылки).
+/// Graph neighborhood: edges within `hops` hops of the seed paths, in both
+/// directions (outgoing = dependencies, incoming = back-references).
 pub fn neighborhood(conn: &Connection, seeds: &[String], hops: usize) -> Result<Vec<Edge>> {
     let mut seen: HashSet<String> = seeds.iter().map(|s| normalize(s)).collect();
     let mut frontier: Vec<String> = seen.iter().cloned().collect();
@@ -142,9 +142,9 @@ pub fn neighborhood(conn: &Connection, seeds: &[String], hops: usize) -> Result<
         .collect())
 }
 
-/// Перенос рёбер при переименовании/перемещении: old -> new (с любого конца,
-/// включая поддерево). Затронутые строки удаляются и переинсертятся с новыми
-/// концами; ручные пары ренормализуются (a<=b).
+/// Remap edges on rename/move: old -> new (from either end, including the
+/// subtree). Affected rows are deleted and re-inserted with the new endpoints;
+/// manual pairs are re-normalized (a<=b).
 pub fn relink(conn: &Connection, old: &str, new: &str) -> Result<()> {
     let old = normalize(old);
     let new = normalize(new);
@@ -204,7 +204,7 @@ pub fn relink(conn: &Connection, old: &str, new: &str) -> Result<()> {
     }
 }
 
-/// Удалить все рёбра пути и поддерева (с любого конца) — при удалении в Корзину.
+/// Delete all edges of a path and its subtree (from either end) — on move to Trash.
 pub fn purge(conn: &Connection, path: &str) -> Result<()> {
     let path = normalize(path);
     let path = path.as_str();
@@ -230,10 +230,11 @@ mod tests {
         c
     }
 
+    // Write edge endpoints canonicalized — like the production edge insert.
     fn ins(c: &Connection, s: &str, d: &str, k: &str) {
         c.execute(
             "INSERT OR IGNORE INTO file_edges (src, dst, kind) VALUES (?1, ?2, ?3)",
-            (s, d, k),
+            (normalize(s), normalize(d), k),
         )
         .unwrap();
     }
@@ -241,10 +242,10 @@ mod tests {
     #[test]
     fn neighborhood_finds_out_and_back_edges() {
         let c = mem();
-        ins(&c, "a.md", "b.md", "link"); // a зависит от b
-        ins(&c, "c.md", "b.md", "link"); // c тоже ссылается на b
-        ins(&c, "x.md", "y.md", "link"); // несвязанная пара
-        // окрестность b: исходящих нет, входящие = обратные ссылки (a, c)
+        ins(&c, "a.md", "b.md", "link"); // a depends on b
+        ins(&c, "c.md", "b.md", "link"); // c also references b
+        ins(&c, "x.md", "y.md", "link"); // unrelated pair
+        // neighborhood of b: no outgoing, incoming = back-references (a, c)
         let e = neighborhood(&c, &["b.md".into()], 1).unwrap();
         let mut got: Vec<(String, String)> =
             e.iter().map(|x| (x.src.clone(), x.dst.clone())).collect();
@@ -280,10 +281,12 @@ mod tests {
     #[test]
     fn purge_removes_from_either_end() {
         let c = mem();
-        ins(&c, "dir\\a", "other", "link");
-        ins(&c, "other2", "dir\\b", "link");
-        ins(&c, "keep1", "keep2", "link");
-        purge(&c, "dir").unwrap();
+        // Realistic absolute paths: purge's subtree range works
+        // (subtree_bounds picks the separator from the path itself).
+        ins(&c, "C:\\dir\\a", "C:\\other", "link"); // in subtree by src
+        ins(&c, "C:\\other2", "C:\\dir\\b", "link"); // in subtree by dst
+        ins(&c, "C:\\keep1", "C:\\keep2", "link"); // outside — keep
+        purge(&c, "C:\\dir").unwrap();
         let mut all: Vec<(String, String)> = {
             let mut s = c
                 .prepare("SELECT src, dst FROM file_edges ORDER BY src")
@@ -294,6 +297,6 @@ mod tests {
                 .collect()
         };
         all.sort();
-        assert_eq!(all, vec![("keep1".to_string(), "keep2".to_string())]);
+        assert_eq!(all, vec![(normalize("C:\\keep1"), normalize("C:\\keep2"))]);
     }
 }

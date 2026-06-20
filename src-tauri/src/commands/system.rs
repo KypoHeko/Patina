@@ -1,24 +1,24 @@
-//! Системные команды: запуск файлов, показ в проводнике, места для сайдбара,
-//! нативные иконки файлов (SHGetFileInfo на Windows).
+//! System commands: launching files, revealing in the file manager, sidebar
+//! locations, native file icons (SHGetFileInfo on Windows).
 
 use serde::Serialize;
 use tauri::{AppHandle, Manager};
 
-use crate::index::quick_access_repo::{self, QuickItem};
+use crate::index::quick_access::{self, QuickItem};
 use crate::state::AppState;
 use crate::error::{Error, Result};
 
-/// Результат запроса нативной иконки: data-URL для использования в <img>.
+/// Native icon request result: a data URL for use in an <img>.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NativeIconResult {
-    /// data:image/png;base64,... — готовый URL для <img src="...">
+    /// data:image/png;base64,... — a ready URL for <img src="...">
     data_url: String,
     width: u32,
     height: u32,
 }
 
-/// Запись для сайдбара: подпись, путь, тип (для иконки на фронте).
+/// A sidebar entry: label, path, kind (for the icon on the front end).
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Location {
@@ -27,14 +27,14 @@ pub struct Location {
     kind: String,
 }
 
-/// Открыть путь в приложении по умолчанию (ярлыки .lnk разворачивает ОС).
+/// Open a path in the default application (.lnk shortcuts are resolved by the OS).
 #[tauri::command]
 pub fn open_path(path: String) -> Result<()> {
     open::that(&path)?;
     Ok(())
 }
 
-/// Показать файл в системном проводнике (с выделением на Windows).
+/// Reveal a file in the system file manager (with selection on Windows).
 #[tauri::command]
 pub fn reveal_in_explorer(path: String) -> Result<()> {
     #[cfg(windows)]
@@ -57,8 +57,8 @@ pub fn reveal_in_explorer(path: String) -> Result<()> {
     }
 }
 
-/// Быстрый доступ: домашняя, рабочий стол, документы, загрузки
-/// (только существующие).
+/// Quick access: home, desktop, documents, downloads
+/// (only the ones that exist).
 pub fn quick_access_defaults(app: &tauri::AppHandle) -> Vec<Location> {
     let p = app.path();
 
@@ -88,40 +88,40 @@ pub fn quick_access_defaults(app: &tauri::AppHandle) -> Vec<Location> {
 pub async fn quick_access(app: AppHandle) -> Result<Vec<Location>> {
     tauri::async_runtime::spawn_blocking(move || -> Result<Vec<Location>> {
         let state = app.state::<AppState>();
-        // Проверяем наличие данных (чтение), при пустоте — сеем (запись).
+        // Check whether data exists (read); if empty — seed it (write).
         let conn = state.db()?;
-        if quick_access_repo::is_empty(&conn)? {
+        if quick_access::is_empty(&conn)? {
             let seed: Vec<QuickItem> = quick_access_defaults(&app)
                 .into_iter()
                 .map(|l| QuickItem { path: l.path, label: l.label, kind: l.kind })
                 .collect();
-            quick_access_repo::replace_all(&conn, &seed)?;
+            quick_access::replace_all(&conn, &seed)?;
         }
-        let items = quick_access_repo::list(&conn)?;
+        let items = quick_access::list(&conn)?;
         Ok(items
             .into_iter()
             .map(|i| Location { label: i.label, path: i.path, kind: i.kind })
             .collect())
     })
     .await
-    .map_err(|e| Error::Operation(format!("quick_access прерван: {e}")))?
+    .map_err(|e| Error::Operation(format!("quick_access interrupted: {e}")))?
 }
 
-/// Сохранить пользовательский список (полная замена).
+/// Save the user's list (full replacement).
 #[tauri::command]
 pub async fn quick_access_save(app: AppHandle, items: Vec<QuickItem>) -> Result<()> {
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<AppState>();
         let conn = state.db()?;
-        quick_access_repo::replace_all(&conn, &items)
+        quick_access::replace_all(&conn, &items)
     })
     .await
-    .map_err(|e| Error::Operation(format!("quick_access_save прерван: {e}")))?
+    .map_err(|e| Error::Operation(format!("quick_access_save interrupted: {e}")))?
 }
 
-/// Список доступных дисков. Перечисление обходит ФС (проверка существования
-/// корней), поэтому уводим его на блокирующий пул — единая политика с остальными
-/// командами, трогающими диск.
+/// List the available drives. Enumeration touches the filesystem (checking that
+/// roots exist), so we offload it to the blocking pool — uniform policy with the
+/// other commands that touch the disk.
 #[tauri::command]
 pub async fn list_drives() -> Vec<Location> {
     tauri::async_runtime::spawn_blocking(list_drives_sync)
@@ -156,7 +156,7 @@ fn list_drives_sync() -> Vec<Location> {
     out
 }
 
-/// Запись о хранилище для сайдбара.
+/// A storage entry for the sidebar.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Storage {
@@ -167,20 +167,20 @@ pub struct Storage {
     used: u64,
 }
 
-/// Список томов: точка монтирования, тип (SSD/HDD), занято/всего.
-/// Тип «Cloud» через sysinfo не определяется — будет «Диск».
-/// Ограничен таймаутом 5 с — sysinfo может зависать на сетевых томах.
+/// List of volumes: mount point, kind (SSD/HDD), used/total.
+/// The "Cloud" kind is not detected via sysinfo — it shows as "Диск".
+/// Bounded by a 5 s timeout — sysinfo can hang on network volumes.
 #[tauri::command]
 pub async fn list_storage() -> Vec<Storage> {
-    // sysinfo обходит все тома — это блокирующая работа, уводим её с главного
-    // потока (на старте сайдбар не должен тормозить отрисовку окна).
+    // sysinfo walks all volumes — this is blocking work, move it off the main
+    // thread (at startup the sidebar must not slow down window rendering).
     tauri::async_runtime::spawn_blocking(list_storage_sync)
         .await
         .unwrap_or_default()
 }
 
-/// На Windows — нативное перечисление томов через WinAPI: реальные метки тома
-/// и тип носителя (SSD/HDD). sysinfo на Windows часто отдаёт пустые метки.
+/// On Windows — native volume enumeration via WinAPI: real volume labels and
+/// media type (SSD/HDD). sysinfo on Windows often returns empty labels.
 #[cfg(windows)]
 fn list_storage_sync() -> Vec<Storage> {
     crate::platform::list_drives_native()
@@ -199,7 +199,7 @@ fn list_storage_sync() -> Vec<Storage> {
         .collect()
 }
 
-/// На Linux/macOS — через кроссплатформенный sysinfo.
+/// On Linux/macOS — via the cross-platform sysinfo.
 #[cfg(not(windows))]
 fn list_storage_sync() -> Vec<Storage> {
     use std::collections::HashSet;
@@ -234,18 +234,18 @@ fn list_storage_sync() -> Vec<Storage> {
     out
 }
 
-/// Получить нативную иконку файла/папки через WinAPI (SHGetFileInfo).
+/// Get a native file/folder icon via WinAPI (SHGetFileInfo).
 ///
-/// На Windows извлекает реальную системную иконку (как в проводнике),
-/// конвертирует в PNG и возвращает как data-URL. На других платформах
-/// возвращает None — фронтенд использует SVG-фолбэк.
+/// On Windows it extracts the real system icon (as in the file manager),
+/// converts it to PNG and returns it as a data URL. On other platforms it
+/// returns None — the front end uses an SVG fallback.
 ///
-/// Иконки кэшируются на диске (ключ — путь+mtime+размер), повторные
-/// запросы мгновенны. Тяжёлая работа уходит в блокирующий пул.
+/// Icons are cached on disk (key = path+mtime+size), so repeat requests are
+/// instant. The heavy work goes to the blocking pool.
 #[tauri::command]
 pub async fn native_icon(app: AppHandle, path: String, size: u32) -> Result<Option<NativeIconResult>> {
     tauri::async_runtime::spawn_blocking(move || -> Result<Option<NativeIconResult>> {
-        // Дисковый кэш: ключ = blake3(путь + mtime + размер)
+        // Disk cache: key = blake3(path + mtime + size)
         let state = app.state::<AppState>();
         let meta = std::fs::metadata(&path);
         let mtime = meta.as_ref().ok().and_then(|m| {
@@ -257,7 +257,7 @@ pub async fn native_icon(app: AppHandle, path: String, size: u32) -> Result<Opti
             .to_hex().to_string();
         let cache_path = state.thumbs_dir.join(format!("icon_{cache_key}.bin"));
 
-        // Проверяем кэш
+        // Check the cache
         if let Ok(cached) = std::fs::read(&cache_path) {
             if let Ok(data_url) = String::from_utf8(cached) {
                 return Ok(Some(NativeIconResult {
@@ -268,7 +268,7 @@ pub async fn native_icon(app: AppHandle, path: String, size: u32) -> Result<Opti
             }
         }
 
-        // Получаем нативную иконку
+        // Get the native icon
         let icon = crate::platform::get_native_icon(&path, size);
         match icon {
             Some(ni) => {
@@ -276,7 +276,7 @@ pub async fn native_icon(app: AppHandle, path: String, size: u32) -> Result<Opti
                     "data:image/png;base64,{}",
                     crate::commands::fs::b64(&ni.png)
                 );
-                // Сохраняем в кэш
+                // Save to the cache
                 let _ = std::fs::write(&cache_path, data_url.as_bytes());
                 Ok(Some(NativeIconResult {
                     data_url,
@@ -288,5 +288,5 @@ pub async fn native_icon(app: AppHandle, path: String, size: u32) -> Result<Opti
         }
     })
     .await
-    .map_err(|e| Error::Operation(format!("native_icon прерван: {e}")))?
+    .map_err(|e| Error::Operation(format!("native_icon interrupted: {e}")))?
 }

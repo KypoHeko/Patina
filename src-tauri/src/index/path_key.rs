@@ -1,20 +1,20 @@
-//! Канонический ключ пути для индекса — единый источник правды.
+//! Canonical index path key — the single source of truth.
 //!
-//! NTFS регистронезависим, а ключи в SQLite сравниваются побайтно (коллация
-//! BINARY — её требует диапазонный трюк в `path_bounds`; NOCASE его ломает,
-//! т.к. сворачивание регистра меняет порядок относительно байта сепаратора).
-//! Поэтому регистр складываем здесь, в приложении, ОДИН раз — перед любой
-//! записью и поиском по ключу. Иначе один файл, пришедший как `C:\Foo` и
-//! `c:/foo/`, даст разные ключи, и теги/версии/связи "отвалятся".
+//! NTFS is case-insensitive, while SQLite keys are compared byte-for-byte
+//! (the BINARY collation — required by the range trick in `path_bounds`; NOCASE
+//! breaks it, because case folding changes ordering relative to the separator
+//! byte). So we fold case here, in the application, ONCE — before any write or
+//! key lookup. Otherwise a single file arriving as `C:\Foo` and `c:/foo/` would
+//! produce different keys and its tags/versions/links would "fall off".
 
-/// Привести путь к канонической форме ключа индекса.
-/// Windows: нижний регистр, сепаратор `\`, схлопнутые повторы, без хвостового
-/// слеша (кроме корня `C:\`). Прочие ОС: регистр сохраняется (FS
-/// регистрозависима), сепаратор `/`, тот же трим. UNC-префикс `\\` сохраняется.
+/// Bring a path to the canonical key form.
+/// Windows: lowercase, `\` separator, collapsed repeats, no trailing slash
+/// (except the root `C:\`). Other OSes: case preserved (the FS is
+/// case-sensitive), `/` separator, same trimming. The UNC prefix `\\` is kept.
 pub fn normalize(path: &str) -> String {
     let sep = std::path::MAIN_SEPARATOR;
 
-    // Регистр складываем только на Windows.
+    // Fold case on Windows only.
     #[cfg(windows)]
     let path = path.to_lowercase();
 
@@ -41,7 +41,7 @@ pub fn normalize(path: &str) -> String {
         }
     }
 
-    // Хвостовой сепаратор убираем, кроме корней: "/", "\\", "C:\".
+    // Strip the trailing separator, except for roots: "/", "\\", "C:\".
     let root_len = if unc { 2 } else { 1 };
     if out.ends_with(sep) {
         let is_drive_root = cfg!(windows) && out.len() == 3 && out.as_bytes()[1] == b':';

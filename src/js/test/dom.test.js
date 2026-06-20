@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { el, escapeHtml } from './dom.js';
+import { el, escapeHtml } from '../core/dom.js';
 
 describe('escapeHtml', () => {
   it('экранирует &, <, >, ", \'', () => {

@@ -1,39 +1,40 @@
 // @ts-check
-//! Безопасная компиляция пользовательских регулярных выражений.
+//! Safe compilation of user-supplied regular expressions.
 //!
-//! Движок RegExp в JS — бэктрекинговый, поэтому «злые» паттерны вроде (a+)+$
-//! на неудачном вводе дают экспоненциальное время на ГЛАВНОМ потоке (ReDoS):
-//! интерфейс намертво виснет. Прервать синхронный .test() на том же потоке
-//! нельзя, поэтому защита здесь ПРЕВЕНТИВНАЯ — отсекаем опасное ДО запуска:
-//!   1) ограничиваем длину паттерна;
-//!   2) режем гигантские повторы {n,m};
-//!   3) эвристически отсеиваем вложенные неограниченные квантификаторы
-//!      ((a+)+, (.*)* и т.п. — классическая причина катастрофического бэктрекинга).
+//! JS's RegExp engine is backtracking, so "evil" patterns like (a+)+$ give
+//! exponential time on bad input on the MAIN thread (ReDoS): the UI freezes
+//! solid. A synchronous .test() cannot be interrupted on the same thread, so
+//! the protection here is PREVENTIVE — we reject the dangerous ones BEFORE
+//! running:
+//!   1) limit the pattern length;
+//!   2) cut out giant {n,m} repeats;
+//!   3) heuristically reject nested unbounded quantifiers
+//!      ((a+)+, (.*)* etc. — the classic cause of catastrophic backtracking).
 //!
-//! Это не пуленепробиваемо (см. примечание в конце), но снимает типовые случаи.
-//! Любой отклонённый паттерн = тихая деградация до поиска по подстроке, а не сбой:
-//! вызывающий код всегда получает рабочий матчер.
+//! This is not bulletproof (see the note at the end), but it handles the typical
+//! cases. Any rejected pattern = silent degradation to substring search, not a
+//! failure: the caller always gets a working matcher.
 
-/** Максимальная длина паттерна. Длиннее — сразу в фолбэк. */
+/** Maximum pattern length. Longer → straight to the fallback. */
 export const MAX_PATTERN_LENGTH = 200;
 
-/** Верхняя граница счётчика в {n}, {n,}, {n,m}. Больше — в фолбэк. */
+/** Upper bound for the counter in {n}, {n,}, {n,m}. Larger → fallback. */
 export const MAX_REPEAT = 1000;
 
 /**
- * Эвристика катастрофического бэктрекинга: есть ли в паттерне группа,
- * квантифицированная неограниченно (`*`, `+`, `{…`), чьё тело само содержит
- * квантификатор — на любой глубине вложенности. Это (a+)+, (.*)* , ((a+))+ …
+ * Catastrophic-backtracking heuristic: does the pattern contain a group
+ * quantified unboundedly (`*`, `+`, `{…`) whose body itself contains a
+ * quantifier — at any nesting depth. That is (a+)+, (.*)* , ((a+))+ …
  *
- * Корректно игнорирует экранированные скобки (`\(`) и содержимое классов `[…]`,
- * где `(`, `+`, `*` — литералы. Альтернацию саму по себе НЕ считает опасной
- * ((a|b)* линейна), чтобы не плодить ложные отказы.
+ * Correctly ignores escaped parentheses (`\(`) and the contents of `[…]`
+ * classes, where `(`, `+`, `*` are literals. Alternation by itself is NOT
+ * treated as dangerous ((a|b)* is linear), to avoid false rejections.
  *
  * @param {string} src
  * @returns {boolean}
  */
 export function hasNestedQuantifier(src) {
-  /** @type {boolean[]} стек: для каждой открытой группы — содержит ли её тело квантификатор */
+  /** @type {boolean[]} stack: for each open group — whether its body contains a quantifier */
   const stack = [];
   let inClass = false;
 
@@ -41,7 +42,7 @@ export function hasNestedQuantifier(src) {
     const c = src[i];
 
     if (c === '\\') {
-      i++; // пропускаем экранированный символ целиком
+      i++; // skip the escaped character entirely
       continue;
     }
     if (inClass) {
@@ -63,11 +64,11 @@ export function hasNestedQuantifier(src) {
       const quantified = next === '*' || next === '+' || next === '?' || next === '{';
       const unbounded = next === '*' || next === '+' || next === '{';
 
-      // Опасно: группа повторяется неограниченно, а её тело уже содержит квантификатор.
+      // Dangerous: the group repeats unboundedly and its body already contains a quantifier.
       if (unbounded && bodyHadQuant) return true;
 
-      // Транзитивно: для родителя эта группа = «квантификатор в теле», если она
-      // сама квантифицирована ИЛИ её тело уже содержало квантификатор.
+      // Transitively: for the parent this group = "a quantifier in the body" if it
+      // is itself quantified OR its body already contained a quantifier.
       if (stack.length && (quantified || bodyHadQuant)) {
         stack[stack.length - 1] = true;
       }
@@ -82,8 +83,8 @@ export function hasNestedQuantifier(src) {
 }
 
 /**
- * Есть ли повтор {n}, {n,}, {n,m} с числом больше MAX_REPEAT.
- * Игнорирует экранирование и классы символов.
+ * Whether there is a {n}, {n,}, {n,m} repeat with a number greater than MAX_REPEAT.
+ * Ignores escaping and character classes.
  * @param {string} src
  * @returns {boolean}
  */
@@ -118,11 +119,11 @@ function hasHugeRepeat(src) {
 }
 
 /**
- * Скомпилировать пользовательский паттерн в RegExp с превентивной защитой.
- * Никогда не бросает исключение.
+ * Compile a user pattern into a RegExp with preventive protection.
+ * Never throws.
  *
  * @param {string} pattern
- * @param {string} [flags]  по умолчанию 'i' (без 'g' — чтобы .test() был без состояния)
+ * @param {string} [flags]  default 'i' (no 'g' — so .test() is stateless)
  * @returns {{ ok: true, re: RegExp, reason: null } | { ok: false, re: null, reason: string }}
  */
 export function safeRegExp(pattern, flags = 'i') {
@@ -141,12 +142,12 @@ export function safeRegExp(pattern, flags = 'i') {
 }
 
 /**
- * Готовый предикат для фильтрации списков. Инкапсулирует «regex-если-безопасно,
- * иначе подстрока», убирая inline new RegExp и логику фолбэка из компонентов.
+ * A ready predicate for filtering lists. Encapsulates "regex-if-safe, otherwise
+ * substring", removing inline new RegExp and fallback logic from components.
  *
- * - пустой запрос → пропускает всё;
- * - regex: true и паттерн безопасен → матч регуляркой (флаг 'i');
- * - regex: false, либо паттерн опасен/битый → регистронезависимая подстрока.
+ * - empty query → passes everything;
+ * - regex: true and the pattern is safe → match by regex (flag 'i');
+ * - regex: false, or the pattern is dangerous/broken → case-insensitive substring.
  *
  * @param {string} query
  * @param {{ regex?: boolean }} [opts]

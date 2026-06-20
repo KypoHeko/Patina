@@ -1,44 +1,43 @@
-//! Content-defined chunking на базе Rabin fingerprint.
+//! Content-defined chunking based on Rabin fingerprinting.
 //!
-//! Разбивает данные на чанки переменной длины по границам содержимого.
-//! Неизменённые участки дают те же чанки — это основа дедупликации.
+//! Splits data into variable-length chunks at content-defined boundaries.
+//! Unchanged regions yield the same chunks — this is the basis of deduplication.
 
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom, Write};
 
 use crate::error::{Error, Result};
 
-/// Параметры чанкования.
-pub const CHUNK_MIN: usize = 256 * 1024;       // 256 KB — минимальный чанк
-pub const CHUNK_MAX: usize = 8 * 1024 * 1024;   // 8 MB — максимальный чанк
-pub const CHUNK_TARGET: usize = 4 * 1024 * 1024; // 4 MB — целевой размер
+/// Chunking parameters.
+pub const CHUNK_MIN: usize = 256 * 1024;       // 256 KB — minimum chunk
+pub const CHUNK_MAX: usize = 8 * 1024 * 1024;   // 8 MB — maximum chunk
 
-/// Маска для определения границы чанка.
-/// Граница = хеш делится на CHUNK_MASK без остатка.
-/// Вероятность границы на каждом байте ≈ 1/(CHUNK_MASK+1).
-/// При CHUNK_MASK = 0x1FFFF (131071) средний чанк ≈ 128 KB × 32 ≈ 4 MB.
+/// Mask used to detect a chunk boundary.
+/// Boundary = hash divisible by CHUNK_MASK with no remainder.
+/// Probability of a boundary at each byte ≈ 1/(CHUNK_MASK+1).
+/// With CHUNK_MASK = 0x1FFFF (131071) the average chunk ≈ 128 KB × 32 ≈ 4 MB.
 const CHUNK_MASK: u32 = 0x1FFFF;
 
-/// Полином для Rabin fingerprint (неприводимый над GF(2), степень 31).
+/// Polynomial for the Rabin fingerprint (irreducible over GF(2), degree 31).
 const RABIN_POLY: u64 = 0x3DA3358B4DC173;
 
-/// Окно скользящего хеша (байты).
+/// Rolling-hash window (bytes).
 const WINDOW_SIZE: usize = 48;
 
-/// Результат чанкования: хеш + размер каждого чанка.
+/// Chunking result: hash + size of each chunk.
 #[derive(Debug, Clone)]
 pub struct Chunk {
     pub hash: String,
     pub size: i64,
 }
 
-/// Разбить файл на чанки. Чанки не хранятся в памяти целиком —
-/// читаем файл потоком, находим границы, хешируем каждый чанк BLAKE3.
+/// Split a file into chunks. Chunks are not held in memory in full —
+/// we stream the file, find boundaries, and hash each chunk with BLAKE3.
 pub fn chunk_file(path: &str) -> Result<Vec<Chunk>> {
     let mut file = File::open(path).map_err(Error::Io)?;
     let meta = file.metadata().map_err(Error::Io)?;
     if meta.len() == 0 {
-        // Пустой файл — один пустой чанк
+        // Empty file — a single empty chunk
         let hash = blake3::Hasher::new().finalize().to_hex().to_string();
         return Ok(vec![Chunk { hash, size: 0 }]);
     }
@@ -46,25 +45,28 @@ pub fn chunk_file(path: &str) -> Result<Vec<Chunk>> {
     let mut chunks = Vec::new();
     let mut buf = Vec::with_capacity(CHUNK_MAX);
     let mut window = [0u8; WINDOW_SIZE];
-    let mut wi = 0usize; // позиция в окне
+    let mut wi = 0usize; // position in the window
     let mut fp: u64 = 0;
-    let mut out_table = RABIN_POLY;
+    // RABIN_POLY is kept for a future table-based Rabin fingerprint
+    // implementation; the simplified Buzhash below does not use it, so the
+    // variable needs no mut.
+    let _out_table = RABIN_POLY;
 
-    // Предвычисляем table[i] = RABIN_POLY^(8*i)
-    // для быстрого удаления байта из окна.
-    // Но это дорого — вместо этого используем упрощённый rolling hash:
-    // Buzhash-style с таблицей случайных значений.
+    // Precompute table[i] = RABIN_POLY^(8*i)
+    // for fast removal of a byte from the window.
+    // But that is expensive — instead we use a simplified rolling hash:
+    // Buzhash-style with a table of random values.
     let lookup = build_lookup();
 
-    // Сброс окна
+    // Reset the window
     for b in &mut window {
         *b = 0;
     }
 
-    // Буферизованное чтение: раньше тут был [0u8; 1] и syscall read на каждый
-    // байт — для файла 15 MB это ~15 миллионов сисколлов. Теперь читаем
-    // чанками по 256 KB и итерируемся по байтам слайса в памяти.
-    // 256 KB достаточно для эффективности и не перегружает page cache.
+    // Buffered read: this used to be [0u8; 1] with a read syscall per byte —
+    // for a 15 MB file that is ~15 million syscalls. Now we read in 256 KB
+    // blocks and iterate over the bytes of the in-memory slice.
+    // 256 KB is enough for efficiency and does not overload the page cache.
     let mut read_buf = vec![0u8; 256 * 1024];
     loop {
         let n = match file.read(&mut read_buf) {
@@ -74,7 +76,7 @@ pub fn chunk_file(path: &str) -> Result<Vec<Chunk>> {
         };
 
         for &b in &read_buf[..n] {
-            // Удаляем старый байт из окна, добавляем новый
+            // Remove the old byte from the window, add the new one
             let old = window[wi];
             fp = fp
                 .wrapping_shl(1)
@@ -86,31 +88,26 @@ pub fn chunk_file(path: &str) -> Result<Vec<Chunk>> {
             buf.push(b);
 
             if buf.len() >= CHUNK_MIN && (fp & CHUNK_MASK as u64) == 0 {
-                // Граница чанка
+                // Chunk boundary
                 chunks.push(hash_chunk(&buf));
                 buf.clear();
             } else if buf.len() >= CHUNK_MAX {
-                // Жёсткий предел — рубим
+                // Hard limit — cut here
                 chunks.push(hash_chunk(&buf));
                 buf.clear();
             }
         }
     }
 
-    // Остаток — последний чанк
+    // Remainder — the last chunk
     if !buf.is_empty() {
         chunks.push(hash_chunk(&buf));
     }
 
-    // Подавляем предупреждение о неиспользуемой переменной out_table:
-    // она оставлена для будущей реализации табличного Rabin fingerprint
-    // (см. комментарий выше про RABIN_POLY^(8*i)).
-    let _ = out_table;
-
     Ok(chunks)
 }
 
-/// Хешировать содержимое чанка BLAKE3.
+/// Hash a chunk's contents with BLAKE3.
 fn hash_chunk(data: &[u8]) -> Chunk {
     let hash = blake3::hash(data).to_hex().to_string();
     Chunk {
@@ -119,8 +116,8 @@ fn hash_chunk(data: &[u8]) -> Chunk {
     }
 }
 
-/// Прочитать указанные чанки и собрать файл.
-/// Чанки читаются из каталога `chunks_dir` в порядке `hashes`.
+/// Read the given chunks and reassemble the file.
+/// Chunks are read from `chunks_dir` in the order given by `hashes`.
 pub fn reassemble(chunks_dir: &std::path::Path, hashes: &[String]) -> Result<Vec<u8>> {
     let mut out = Vec::new();
     for h in hashes {
@@ -131,15 +128,15 @@ pub fn reassemble(chunks_dir: &std::path::Path, hashes: &[String]) -> Result<Vec
     Ok(out)
 }
 
-/// Сохранить чанки на диск. Для каждого чанка: если файл уже существует —
-/// пропускаем (контент-адресное хранение).
+/// Store chunks on disk. For each chunk: if the file already exists —
+/// skip it (content-addressed storage).
 ///
-/// Файл-источник стримится в чанки порциями, без загрузки целиком в память.
-/// Раньше тут был `std::fs::read(path)`, что для файлов 15 MB+ давало пик
-/// памяти, равный размеру файла (а chunked-стратегия применяется именно к
-/// большим файлам — теоретически до гигабайт). Теперь держим открытым один
-/// `File` и для каждого чанка копируем ровно `chunk.size` байт через
-/// `io::copy(file.take(n), out)`.
+/// The source file is streamed into chunks in portions, without loading it
+/// fully into memory. This used to be `std::fs::read(path)`, which for files
+/// of 15 MB+ gave a memory peak equal to the file size (and the chunked
+/// strategy applies precisely to large files — theoretically up to gigabytes).
+/// Now we keep a single `File` open and copy exactly `chunk.size` bytes per
+/// chunk via `io::copy(file.take(n), out)`.
 pub fn store_chunks(
     chunks_dir: &std::path::Path,
     path: &str,
@@ -147,7 +144,7 @@ pub fn store_chunks(
 ) -> Result<()> {
     std::fs::create_dir_all(chunks_dir).map_err(Error::Io)?;
 
-    // Пустой файл — чанк не пишем, но запись в БД будет
+    // Empty file — write no chunk, but the DB row will still be created
     if chunks.len() == 1 && chunks[0].size == 0 {
         return Ok(());
     }
@@ -156,37 +153,36 @@ pub fn store_chunks(
 
     for chunk in chunks {
         let chunk_path = chunks_dir.join(&chunk.hash);
-        // chunk.size имеет тип i64, но чанки никогда не бывают отрицательными
-        // (chunker гарантирует size >= 0). Приводим к u64 для take()/seek().
+        // chunk.size is i64, but chunks are never negative (the chunker
+        // guarantees size >= 0). Cast to u64 for take()/seek().
         let chunk_size = chunk.size.max(0) as u64;
 
         if chunk_path.exists() {
-            // Чанк уже хранится — пропускаем, но позицию файла сдвигаем,
-            // чтобы следующий чанк читался с правильного offset.
+            // Chunk is already stored — skip it, but advance the file position
+            // so the next chunk is read from the correct offset.
             file.seek(SeekFrom::Current(chunk.size))
                 .map_err(Error::Io)?;
             continue;
         }
 
-        // Копируем ровно chunk_size байт в новый файл. take(n) ограничивает
-        // чтение n байтами; io::copy копирует, пока источник не вернёт EOF
-        // (для take это момент достижения лимита). Таким образом, copied
-        // равен chunk_size, если только исходный файл не оказался короче
-        // ожидаемого.
+        // Copy exactly chunk_size bytes into the new file. take(n) caps the
+        // read at n bytes; io::copy copies until the source returns EOF
+        // (for take, that is when the limit is reached). Thus copied equals
+        // chunk_size unless the source file turned out shorter than expected.
         let mut out = std::fs::File::create(&chunk_path).map_err(Error::Io)?;
         let copied = io::copy(&mut (&mut file).take(chunk_size), &mut out).map_err(Error::Io)?;
-        // Явно flush + drop, чтобы закрыть файл и сбросить буферы ДО того,
-        // как мы будем читать chunk_path ниже по потоку (иначе на Windows
-        // можно получить Sharing violation).
+        // Explicit flush + drop to close the file and flush buffers BEFORE we
+        // read chunk_path downstream (otherwise on Windows we can hit a
+        // sharing violation).
         out.flush().map_err(Error::Io)?;
         drop(out);
 
         if copied != chunk_size {
-            // Файл оказался короче суммы размеров чанков — удаляем
-            // недописанный файл и возвращаем ошибку.
+            // The file turned out shorter than the sum of chunk sizes — remove
+            // the partially written file and return an error.
             let _ = std::fs::remove_file(&chunk_path);
             return Err(Error::Operation(format!(
-                "чанк выходит за пределы файла: запрошено {} байт, прочитано {}",
+                "chunk extends past end of file: requested {} bytes, read {}",
                 chunk_size, copied
             )));
         }
@@ -195,8 +191,8 @@ pub fn store_chunks(
     Ok(())
 }
 
-/// Таблица случайных 64-битных значений для Buzhash.
-/// Генерируется детерминистически на основе простого PRNG.
+/// Table of random 64-bit values for Buzhash.
+/// Generated deterministically from a simple PRNG.
 fn build_lookup() -> [u64; 256] {
     let mut table = [0u64; 256];
     let mut seed: u64 = 0x12345678_9ABCDEF0;
@@ -215,7 +211,7 @@ mod tests {
 
     #[test]
     fn empty_file_produces_one_chunk() {
-        let mut f = NamedTempFile::new().unwrap();
+        let f = NamedTempFile::new().unwrap();
         let chunks = chunk_file(f.path().to_str().unwrap()).unwrap();
         assert_eq!(chunks.len(), 1);
         assert_eq!(chunks[0].size, 0);
@@ -268,17 +264,17 @@ mod tests {
         assert_eq!(reassembled, data);
     }
 
-    /// Регрессия для бага #5: файл должен корректно чанковаться при
-    /// буферизованном чтении (256 KB-чанками), в том числе когда размер файла
-    /// не кратен размеру буфера и превышает его в несколько раз.
+    /// Regression for bug #5: a file must chunk correctly under buffered
+    /// reading (256 KB blocks), including when the file size is not a multiple
+    /// of the buffer size and is several times larger than it.
     #[test]
     fn chunk_file_handles_large_non_aligned_file() {
-        // 1 MB + 1 байт — точно не кратно 256 KB буферу чтения
+        // 1 MB + 1 byte — definitely not a multiple of the 256 KB read buffer
         let size = 1024 * 1024 + 1;
         let mut data = Vec::with_capacity(size);
         let mut x: u32 = 0xDEAD_BEEF;
         for _ in 0..size {
-            // Псевдослучайные байты, чтобы границы chunker не падали предсказуемо
+            // Pseudo-random bytes so chunk boundaries do not fall predictably
             x ^= x << 13;
             x ^= x >> 17;
             x ^= x << 5;
@@ -291,27 +287,27 @@ mod tests {
 
         let chunks = chunk_file(f.path().to_str().unwrap()).unwrap();
 
-        // Сумма размеров чанков должна равняться размеру файла
+        // The sum of chunk sizes must equal the file size
         let total: i64 = chunks.iter().map(|c| c.size).sum();
-        assert_eq!(total, size as i64, "сумма размеров чанков должна совпадать с размером файла");
+        assert_eq!(total, size as i64, "sum of chunk sizes must match the file size");
 
-        // Все чанки имеют ненулевой размер (кроме возможного пустого, но данных > 0)
+        // Every chunk has a non-zero size (apart from a possible empty one, but data > 0)
         assert!(chunks.iter().all(|c| c.size > 0));
 
-        // Каждый чанк не превышает CHUNK_MAX
+        // No chunk exceeds CHUNK_MAX
         assert!(chunks.iter().all(|c| c.size as usize <= CHUNK_MAX));
     }
-    
-    /// Регрессия для бага #6: store_chunks должен стримить файл в чанки
-    /// без загрузки целиком в память. Проверяем roundtrip на файле, который
-    /// заведомо больше старого 256 KB-блока (используем 2 MB, чтобы получить
-    /// несколько чанков), и idempotency: повторный вызов store_chunks не
-    /// должен ни перезаписывать существующие чанки, ни портить данные.
+
+    /// Regression for bug #6: store_chunks must stream the file into chunks
+    /// without loading it fully into memory. We check a roundtrip on a file
+    /// that is deliberately larger than the old 256 KB block (using 2 MB to get
+    /// several chunks), and idempotency: a repeated store_chunks call must
+    /// neither overwrite existing chunks nor corrupt the data.
     #[test]
     fn store_chunks_streams_and_is_idempotent() {
-        // 2 MB псевдослучайных данных — даст несколько чанков по умолчанию
-        // (целевой размер ~4 MB, мин 256 KB, но на случайных данных границы
-        // могут выпадать раньше — главное, что файл больше старого буфера).
+        // 2 MB of pseudo-random data — yields several chunks by default
+        // (target size ~4 MB, min 256 KB, but on random data boundaries may
+        // fall earlier — the point is the file is larger than the old buffer).
         let size = 2 * 1024 * 1024;
         let mut data = Vec::with_capacity(size);
         let mut x: u32 = 0xCAFEBABE;
@@ -327,61 +323,62 @@ mod tests {
         f.flush().unwrap();
 
         let chunks = chunk_file(f.path().to_str().unwrap()).unwrap();
-        assert!(chunks.len() >= 1, "ожидаем хотя бы один чанк");
+        assert!(chunks.len() >= 1, "expect at least one chunk");
 
         let dir = tempfile::tempdir().unwrap();
         let chunks_dir = dir.path().join("chunks");
 
-        // Первый вызов — записывает все чанки
+        // First call — writes all chunks
         store_chunks(&chunks_dir, f.path().to_str().unwrap(), &chunks).unwrap();
 
-        // Запоминаем mtime каждого чанк-файла (на Windows точность mtime
-        // ограничена, поэтому второй store_chunks просто не должен падать).
+        // Remember each chunk file's mtime (on Windows mtime precision is
+        // limited, so the second store_chunks just must not fail).
         let hashes: Vec<String> = chunks.iter().map(|c| c.hash.clone()).collect();
         let reassembled = reassemble(&chunks_dir, &hashes).unwrap();
-        assert_eq!(reassembled, data, "первый roundtrip должен дать исходные данные");
+        assert_eq!(reassembled, data, "first roundtrip must yield the original data");
 
-        // Второй вызов — все чанки уже существуют, должны быть пропущены.
-        // Проверяем, что данные не изменились.
+        // Second call — all chunks already exist and must be skipped.
+        // Verify the data is unchanged.
         store_chunks(&chunks_dir, f.path().to_str().unwrap(), &chunks).unwrap();
         let reassembled2 = reassemble(&chunks_dir, &hashes).unwrap();
-        assert_eq!(reassembled2, data, "повторный store_chunks не должен портить данные");
+        assert_eq!(reassembled2, data, "a repeated store_chunks must not corrupt the data");
     }
 
-    /// Регрессия для бага #6: store_chunks должен вернуть ошибку, если размер
-    /// файла меньше суммы размеров чанков (например, файл усечён между вызовами
-    /// chunk_file и store_chunks). Недописанный чанк-файл должен быть удалён.
+    /// Regression for bug #6: store_chunks must return an error if the file
+    /// size is smaller than the sum of chunk sizes (e.g. the file was truncated
+    /// between chunk_file and store_chunks). The partially written chunk file
+    /// must be removed.
     #[test]
     fn store_chunks_errors_on_short_source_file() {
-        // Создаём «длинный» файл и чанкуем его
+        // Create a "long" file and chunk it
         let long_data = vec![0x77u8; 1024 * 1024]; // 1 MB
         let mut f_long = NamedTempFile::new().unwrap();
         f_long.write_all(&long_data).unwrap();
         f_long.flush().unwrap();
         let chunks = chunk_file(f_long.path().to_str().unwrap()).unwrap();
 
-        // Теперь создаём «короткий» файл с тем же именем — store_chunks должен
-        // обнаружить несоответствие и вернуть ошибку.
+        // Now create a "short" file with the same name — store_chunks must
+        // detect the mismatch and return an error.
         let dir = tempfile::tempdir().unwrap();
         let chunks_dir = dir.path().join("chunks");
 
         let mut f_short = NamedTempFile::new().unwrap();
-        f_short.write_all(&[0u8; 16]).unwrap(); // всего 16 байт вместо мегабайта
+        f_short.write_all(&[0u8; 16]).unwrap(); // only 16 bytes instead of a megabyte
         f_short.flush().unwrap();
 
         let result = store_chunks(&chunks_dir, f_short.path().to_str().unwrap(), &chunks);
-        assert!(result.is_err(), "ожидали ошибку при коротком исходном файле");
+        assert!(result.is_err(), "expected an error on a short source file");
 
-        // Все чанки, которые успели создаться, должны быть удалены (или ни
-        // один не создан) — проверяем, что каталог chunks либо пуст, либо
-        // содержит только частично записанные файлы, которые мы потом удалили.
-        // На практике: первый чанк запросит size > 16 байт, получит 16, упадёт.
+        // Every chunk that managed to be created must be removed (or none was
+        // created) — verify the chunks dir is either empty or contains only
+        // partially written files that we later removed.
+        // In practice: the first chunk requests size > 16 bytes, gets 16, fails.
         if chunks_dir.exists() {
             let entries: Vec<_> = std::fs::read_dir(&chunks_dir).unwrap().collect();
             for entry in entries {
                 let p = entry.unwrap().path();
-                // Недописанный чанк должен быть удалён
-                assert!(!p.exists(), "недописанный чанк-файл не должен оставаться: {:?}", p);
+                // A partially written chunk must not remain
+                assert!(!p.exists(), "a partially written chunk file must not remain: {:?}", p);
             }
         }
     }

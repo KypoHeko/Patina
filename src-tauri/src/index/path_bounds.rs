@@ -1,10 +1,10 @@
-//! Границы поддерева для запросов по диапазону пути (одно место, одни тесты).
+//! Subtree bounds for path-range queries (one place, one set of tests).
 
-/// `(sep, prefix, upper)`: prefix = base+sep; upper = base + следующий байт
-/// сепаратора (`\` 0x5C -> `]`, `/` 0x2F -> `0`). Полуинтервал [prefix, upper) —
-/// ровно все вложенные пути: без ловушек LIKE, выбирается по индексу/PK,
-/// сравнение байтовое (коллация BINARY). `sep` нужен вызовам, что собирают
-/// новый путь (relink); остальные его игнорируют.
+/// `(sep, prefix, upper)`: prefix = base+sep; upper = base + the byte after the
+/// separator (`\` 0x5C -> `]`, `/` 0x2F -> `0`). The half-open interval
+/// [prefix, upper) is exactly all nested paths: no LIKE pitfalls, picked via the
+/// index/PK, compared byte-wise (BINARY collation). `sep` is needed by callers
+/// that rebuild a new path (relink); the rest ignore it.
 pub fn subtree_bounds(base: &str) -> (char, String, String) {
     let sep = if base.contains('\\') { '\\' } else { '/' };
     let prefix = format!("{base}{sep}");
@@ -12,10 +12,10 @@ pub fn subtree_bounds(base: &str) -> (char, String, String) {
     (sep, prefix, upper)
 }
 
-/// Перенос пути при переименовании/перемещении `old` -> `new`.
-/// Возвращает новый путь, если `path` равен `old` или лежит в его поддереве;
-/// иначе `None` (путь вне зоны переноса — трогать не нужно). Сепаратор берётся
-/// из `old`, чтобы реконструкция совпадала с `subtree_bounds`.
+/// Remap a path on rename/move `old` -> `new`.
+/// Returns the new path if `path` equals `old` or lies inside its subtree;
+/// otherwise `None` (the path is outside the remap zone — leave it alone). The
+/// separator is taken from `old` so reconstruction matches `subtree_bounds`.
 pub fn remap(path: &str, old: &str, new: &str) -> Option<String> {
     if path == old {
         return Some(new.to_string());
@@ -39,8 +39,8 @@ mod tests {
         assert_eq!(sep, '\\');
         assert_eq!(prefix, "C:\\a\\b\\");
         assert_eq!(upper, "C:\\a\\b]"); // 0x5C + 1 = 0x5D = ']'
-        assert!(in_range("C:\\a\\b\\x.txt", &prefix, &upper)); // вложенный
-        assert!(!in_range("C:\\a\\bb\\y.txt", &prefix, &upper)); // сосед — НЕ задет
+        assert!(in_range("C:\\a\\b\\x.txt", &prefix, &upper)); // nested
+        assert!(!in_range("C:\\a\\bb\\y.txt", &prefix, &upper)); // sibling — NOT touched
     }
 
     #[test]
@@ -55,16 +55,16 @@ mod tests {
 
     #[test]
     fn remap_exact_nested_and_outside() {
-        // точное совпадение -> новый путь
+        // exact match -> new path
         assert_eq!(remap("C:\\a\\b", "C:\\a\\b", "C:\\a\\c").as_deref(), Some("C:\\a\\c"));
-        // вложенный -> перенос с сохранением хвоста
+        // nested -> remapped, keeping the tail
         assert_eq!(
             remap("C:\\a\\b\\x.txt", "C:\\a\\b", "C:\\a\\c").as_deref(),
             Some("C:\\a\\c\\x.txt")
         );
-        // сосед (bb) — вне зоны переноса
+        // sibling (bb) — outside the remap zone
         assert_eq!(remap("C:\\a\\bb\\y.txt", "C:\\a\\b", "C:\\a\\c"), None);
-        // совсем посторонний путь
+        // completely unrelated path
         assert_eq!(remap("D:\\other", "C:\\a\\b", "C:\\a\\c"), None);
     }
 }

@@ -104,6 +104,12 @@ export class DuplicatePanel extends Component {
     if (del) this.removePaths([del.dataset.del]);
   }
 
+  /** Перерисовка при смене языка. Сохраняет найденные группы. */
+  applyLang() {
+    if (!this._open) return;
+    this.render();
+  }
+
   render() {
     if (!this._open) {
       this.mount.innerHTML = '';

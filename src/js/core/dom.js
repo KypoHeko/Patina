@@ -1,9 +1,9 @@
-// Мини-помощники для работы с DOM.
+// Mini DOM helpers.
 
 /**
- * Создать элемент.
+ * Create an element.
  * @param {string} tag
- * @param {object} [props]  class | dataset | text | on<Event> | любой атрибут
+ * @param {object} [props]  class | dataset | text | on<Event> | any attribute
  * @param {...(Node|string)} children
  */
 export function el(tag, props = {}, ...children) {
@@ -23,7 +23,7 @@ export function el(tag, props = {}, ...children) {
   return node;
 }
 
-/** Экранирование для безопасной вставки в innerHTML. */
+/** Escaping for safe insertion into innerHTML. */
 export function escapeHtml(value) {
   return String(value ?? '').replace(
     /[&<>"']/g,

@@ -1,31 +1,31 @@
 import { invoke } from './invoke.js';
 
-/** Назначить тег файлу/папке. */
+/** Assign a tag to a file/folder. */
 export function assignTag(path, tagId) {
   return invoke('assign_tag', { path, tagId });
 }
 
-/** Снять тег. */
+/** Remove a tag. */
 export function removeTag(path, tagId) {
   return invoke('remove_tag', { path, tagId });
 }
 
-/** Карта путь -> [tagId] для заданных путей (только помеченные). */
+/** Map path -> [tagId] for the given paths (tagged ones only). */
 export function tagsForPaths(paths) {
   return invoke('tags_for_paths', { paths });
 }
 
-/** Все пути с данным тегом. */
+/** All paths with the given tag. */
 export function pathsForTag(tagId) {
   return invoke('paths_for_tag', { tagId });
 }
 
-/** Виртуальный список файлов с данным тегом. */
+/** Virtual list of files with the given tag. */
 export function listTag(tagId) {
   return invoke('list_tag', { tagId });
 }
 
-/** Кол-во файлов на каждый тег: { tagId: count }. */
+/** Number of files per tag: { tagId: count }. */
 export function tagCounts() {
   return invoke('tag_counts');
 }

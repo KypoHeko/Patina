@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { CommandPalette } from './command-palette.js';
+import { CommandPalette } from '../components/command-palette.js';
 import { createStore } from '../core/store.js';
 import { createEventBus } from '../core/event-bus.js';
 import { initialTabsState } from '../state/tabs.js';

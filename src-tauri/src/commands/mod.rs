@@ -1,18 +1,19 @@
-//! Тонкий слой IPC-команд.
+//! Thin IPC command layer.
 //!
-//! Политика потоков (единая для всех команд):
-//! любая команда, которая может заблокировать поток — лезет на диск
-//! (чтение/запись данных) или в БД (lock соединения) — объявляется `async`
-//! и выполняет работу через `tauri::async_runtime::spawn_blocking`, доставая
-//! состояние ВНУТРИ замыкания через `app.state::<AppState>()`.
-//! Параметр `State<'_, AppState>` для этого не годится: он не `'static`
-//! и не может быть занесён в `spawn_blocking`-замыкание.
+//! Threading policy (uniform for all commands):
+//! any command that may block the thread — touching the disk (reading/writing
+//! data) or the DB (locking the connection) — is declared `async` and does its
+//! work via `tauri::async_runtime::spawn_blocking`, fetching state INSIDE the
+//! closure through `app.state::<AppState>()`.
+//! The `State<'_, AppState>` parameter is unsuitable for this: it is not
+//! `'static` and cannot be moved into a `spawn_blocking` closure.
 //!
-//! Исключение — дешёвые команды без data-I/O: разрешение путей (`home_dir`)
-//! и запуск внешних процессов (`open_path`, `reveal_in_explorer`) остаются
-//! синхронными. Особый случай — `indexing::start_index`: оркестратор, который
-//! на async-потоке делает только быстрые операции со state и установку
-//! вотчера, а тяжёлую сборку индекса уже уводит в `spawn_blocking`.
+//! The exception is cheap commands without data I/O: path resolution
+//! (`home_dir`) and launching external processes (`open_path`,
+//! `reveal_in_explorer`) stay synchronous. A special case is
+//! `indexing::start_index`: an orchestrator that, on the async thread, performs
+//! only quick state operations and watcher setup, offloading the heavy index
+//! build to `spawn_blocking`.
 
 pub mod content;
 pub mod dir_size;

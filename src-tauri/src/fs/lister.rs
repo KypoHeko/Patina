@@ -1,4 +1,4 @@
-//! Чтение содержимого директории.
+//! Reading directory contents.
 
 use std::fs;
 use std::path::Path;
@@ -7,7 +7,7 @@ use std::time::UNIX_EPOCH;
 use crate::error::{Error, Result};
 use crate::models::file::{EntryKind, FileEntry};
 
-/// Построить запись из произвольного пути (для виртуальных списков, напр. по тегу).
+/// Build an entry from an arbitrary path (for virtual lists, e.g. by tag).
 pub fn entry_from_path(path: &str) -> Option<FileEntry> {
     let p = Path::new(path);
     let meta = fs::metadata(p).ok()?;
@@ -79,8 +79,8 @@ pub fn list_dir(path: &str) -> Result<Vec<FileEntry>> {
         });
     }
 
-    // Сортировка не делается здесь: единственный источник правды — фронтенд
-    // (sortedEntries: папки выше файлов + активная колонка). Двойная сортировка
-    // была лишней работой на каждом списании каталога.
+    // Sorting is not done here: the single source of truth is the front end
+    // (sortedEntries: folders above files + the active column). Double sorting
+    // was wasted work on every directory listing.
     Ok(entries)
 }

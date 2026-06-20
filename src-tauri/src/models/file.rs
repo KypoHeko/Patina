@@ -1,6 +1,8 @@
+//! A file/folder entry (`FileEntry`) and its kind (`EntryKind`) for the front end.
+
 use serde::Serialize;
 
-/// Тип записи в директории.
+/// The kind of a directory entry.
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum EntryKind {
@@ -8,17 +10,17 @@ pub enum EntryKind {
     Folder,
 }
 
-/// Одна запись в списке файлов. Поля сериализуются в camelCase для фронта.
+/// A single entry in a file listing. Fields are serialized as camelCase for the front end.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FileEntry {
     pub name: String,
     pub path: String,
     pub kind: EntryKind,
-    /// Размер в байтах (для папок — 0).
+    /// Size in bytes (0 for folders).
     pub size: u64,
-    /// Время изменения, миллисекунды от epoch (None, если недоступно).
+    /// Modification time, milliseconds since epoch (None if unavailable).
     pub modified: Option<u64>,
-    /// Расширение без точки (только для файлов).
+    /// Extension without the dot (files only).
     pub extension: Option<String>,
 }

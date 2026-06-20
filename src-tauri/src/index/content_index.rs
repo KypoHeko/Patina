@@ -1,6 +1,6 @@
-//! Полнотекстовый индекс содержимого текстовых файлов (SQLite FTS5).
-//! Таблица создаётся лениво — если FTS5 не собран в SQLite, это обычная ошибка,
-//! а не падение старта приложения.
+//! Full-text index of text-file contents (SQLite FTS5).
+//! The table is created lazily — if FTS5 is not built into SQLite, that is a
+//! regular error, not a crash on application startup.
 
 use rusqlite::Connection;
 use serde::Serialize;
@@ -22,7 +22,7 @@ pub struct ContentRow {
     pub body: String,
 }
 
-/// Создать FTS5-таблицу, если её ещё нет. Вызывается перед индексацией/поиском.
+/// Create the FTS5 table if it does not exist yet. Called before indexing/search.
 pub fn ensure_table(conn: &Connection) -> Result<()> {
     conn.execute_batch(
         "CREATE VIRTUAL TABLE IF NOT EXISTS content_fts
@@ -33,7 +33,7 @@ pub fn ensure_table(conn: &Connection) -> Result<()> {
 
 
 
-/// Полностью заменить содержимое поддерева в индексе (одной транзакцией).
+/// Fully replace a subtree's contents in the index (in a single transaction).
 pub fn replace_subtree(conn: &mut Connection, root: &str, rows: &[ContentRow]) -> Result<()> {
     let root = normalize(root);
     let root = root.as_str();
@@ -53,7 +53,7 @@ pub fn replace_subtree(conn: &mut Connection, root: &str, rows: &[ContentRow]) -
     Ok(())
 }
 
-/// Поиск по содержимому в поддереве. Возвращает путь, имя и сниппет с подсветкой.
+/// Search file contents within a subtree. Returns path, name and a highlighted snippet.
 pub fn search(conn: &Connection, root: &str, query: &str, limit: usize) -> Result<Vec<ContentHit>> {
     let root = normalize(root);
     let root = root.as_str();
@@ -84,10 +84,10 @@ pub fn search(conn: &Connection, root: &str, query: &str, limit: usize) -> Resul
     Ok(out)
 }
 
-/// Пользовательский запрос -> безопасный FTS5 MATCH.
-/// Запрос целиком в кавычках ("точная фраза") -> фразовый поиск как есть.
-/// Иначе каждое слово -> "слово"* (префикс), склейка пробелом (неявный AND).
-/// Кавычки внутри слов вычищаются, чтобы не ломать синтаксис FTS5.
+/// Convert a user query into a safe FTS5 MATCH.
+/// A fully quoted query ("exact phrase") -> phrase search as-is.
+/// Otherwise each word -> "word"* (prefix), joined by spaces (implicit AND).
+/// Quotes inside words are stripped so they do not break FTS5 syntax.
 fn build_match(q: &str) -> String {
     let t = q.trim();
     if t.len() >= 2 && t.starts_with('"') && t.ends_with('"') {
@@ -106,7 +106,7 @@ fn build_match(q: &str) -> String {
         .join(" ")
 }
 
-/// Точечно обновить содержимое одного файла (delete+insert: у FTS5 нет upsert).
+/// Update a single file's contents in place (delete+insert: FTS5 has no upsert).
 pub fn upsert_one(conn: &Connection, path: &str, body: &str) -> Result<()> {
     let path = normalize(path);
     let path = path.as_str();
@@ -118,7 +118,7 @@ pub fn upsert_one(conn: &Connection, path: &str, body: &str) -> Result<()> {
     Ok(())
 }
 
-/// Удалить путь и его поддерево из индекса содержимого.
+/// Delete a path and its subtree from the content index.
 pub fn delete_path(conn: &Connection, path: &str) -> Result<()> {
     let path = normalize(path);
     let path = path.as_str();

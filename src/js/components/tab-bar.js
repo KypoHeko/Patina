@@ -58,6 +58,12 @@ export class TabBar extends Component {
     this.render(state);
   }
 
+  /** Перерисовка при смене языка: сбрасываем сигнатуру, чтобы maybeRender сработал. */
+  applyLang() {
+    this._sig = null;
+    this.maybeRender(this.store.getState());
+  }
+
   render(state) {
     this.mount.innerHTML = '';
     const list = el('div', { class: 'tabs' });

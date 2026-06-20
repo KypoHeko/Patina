@@ -71,6 +71,24 @@ export class ContextMenu extends Component {
     this.mount.innerHTML = '';
   }
 
+  /** Перерисовка при смене языка (если меню открыто). Сохраняет цель и позицию. */
+  applyLang() {
+    if (!this._open || !this._ctx) return;
+    const menu = this.mount.firstElementChild;
+    const prevLeft = menu && menu.style.left;
+    const prevTop = menu && menu.style.top;
+    this.render();
+    const newMenu = this.mount.firstElementChild;
+    if (newMenu) {
+      if (prevLeft) newMenu.style.left = prevLeft;
+      if (prevTop) newMenu.style.top = prevTop;
+    }
+    // Восстанавливаем подсветку активных тегов.
+    this.mount.querySelectorAll('.ctx-tag').forEach((d) => {
+      d.classList.toggle('is-on', this._entryTags.has(d.dataset.tag));
+    });
+  }
+
   render() {
     this.mount.innerHTML = '';
     const menu = el('div', { class: 'ctx-menu', onClick: (e) => e.stopPropagation() });

@@ -44,6 +44,12 @@ export class ThemeMenu extends Component {
     this.close();
   }
 
+  /** Перерисовка при смене языка (если меню открыто). */
+  applyLang() {
+    if (!this._open) return;
+    this.render();
+  }
+
   render() {
     const active = getTheme();
     const rows = THEMES.map(

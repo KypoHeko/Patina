@@ -1,15 +1,18 @@
-//! Хранение позиции USN Journal по каждому NTFS-тому.
+//! Storage of the USN Journal position per NTFS volume.
 //!
-//! Используется indexing.rs для инкрементальной синхронизации: при запуске
-//! проверяем сохранённую позицию USN и читаем только изменения из журнала,
-//! а не весь том целиком.
+//! Intended for incremental synchronization: on startup, read only the journal
+//! changes since the saved position instead of rescanning the whole volume.
+//! In 0.1 USN sync is DISABLED (see `commands/indexing.rs::plan_index` — reopen
+//! always rescans), so the functions below are not called yet and are marked
+//! `#[allow(dead_code)]`. The table and API are kept for enabling USN later.
 
 use rusqlite::Connection;
 
 use crate::error::Result;
 use crate::index::path_key::normalize;
 
-/// Прочитать сохранённую USN-позицию для тома.
+/// Read the saved USN position for a volume.
+#[allow(dead_code)]
 pub fn get(conn: &Connection, volume_root: &str) -> Result<Option<i64>> {
     let root = normalize(volume_root);
     let mut stmt = conn.prepare("SELECT last_usn FROM usn_position WHERE volume_root = ?1")?;
@@ -21,7 +24,8 @@ pub fn get(conn: &Connection, volume_root: &str) -> Result<Option<i64>> {
     }
 }
 
-/// Сохранить/обновить USN-позицию для тома.
+/// Save/update the USN position for a volume.
+#[allow(dead_code)]
 pub fn set(conn: &Connection, volume_root: &str, last_usn: i64) -> Result<()> {
     let root = normalize(volume_root);
     conn.execute(
@@ -31,7 +35,7 @@ pub fn set(conn: &Connection, volume_root: &str, last_usn: i64) -> Result<()> {
     Ok(())
 }
 
-/// Удалить позицию для тома.
+/// Remove the position for a volume.
 #[allow(dead_code)]
 pub fn remove(conn: &Connection, volume_root: &str) -> Result<()> {
     let root = normalize(volume_root);

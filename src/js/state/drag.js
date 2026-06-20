@@ -1,6 +1,6 @@
-// Состояние перетаскивания файлов между панелями — единый синглтон с явным
-// интерфейсом вместо мутабельной переменной на уровне модуля. Безопасно при
-// будущем расширении (тройной сплит, независимый DnD по вкладкам).
+// State of dragging files between panels — a single singleton with an explicit
+// interface instead of a module-level mutable variable. Safe for future
+// expansion (triple split, independent DnD per tab).
 let current = null; // { paths: string[], sourceSide: 'left' | 'right' } | null
 
 export function startDrag(paths, sourceSide) {

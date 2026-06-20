@@ -1,4 +1,4 @@
-//! Команды полнотекстового поиска по содержимому.
+//! Full-text content search commands.
 
 use tauri::{AppHandle, Manager};
 use walkdir::WalkDir;
@@ -61,7 +61,7 @@ pub async fn reindex_content(app: AppHandle, root: String) -> Result<usize> {
         Ok(n)
     })
     .await
-    .map_err(|e| Error::Operation(format!("reindex_content прерван: {e}")))?
+    .map_err(|e| Error::Operation(format!("reindex_content interrupted: {e}")))?
 }
 
 #[tauri::command]
@@ -88,5 +88,5 @@ pub async fn search_content(
         }
     })
     .await
-    .map_err(|e| Error::Operation(format!("search_content прерван: {e}")))?
+    .map_err(|e| Error::Operation(format!("search_content interrupted: {e}")))?
 }

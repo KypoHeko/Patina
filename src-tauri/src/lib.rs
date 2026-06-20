@@ -1,4 +1,4 @@
-//! Точка сборки приложения Patina.
+//! Patina application assembly point.
 
 mod commands;
 mod error;
@@ -73,5 +73,5 @@ pub fn run() {
             commands::dir_size::dir_sizes,
         ])
         .run(tauri::generate_context!())
-        .expect("ошибка запуска Patina");
+        .expect("failed to start Patina");
 }

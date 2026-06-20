@@ -7,6 +7,7 @@ import { onEvent } from '../api/events.js';
 import { getPane } from '../state/panes.js';
 import { getActiveSide } from '../state/tabs.js';
 import { pathToColor } from '../lib/path-color.js';
+import { t } from '../lib/i18n.js';
 
 const NODE_H = 28; // высота панели узла
 const NODE_PAD_X = 12; // горизонтальный паддинг внутри панели
@@ -111,7 +112,6 @@ function measureLabelWidth(ctx, name, fullPath) {
 // показать файл в панели; двойной по пустому месту — сбросить вид.
 export class RelationshipGraph extends Component {
   init() {
-    console.log('%c[RelationshipGraph]', 'color:#10b981;font-weight:700', 'build: empty-load-guard (если этой строки нет в консоли — у тебя старый файл)');
     this._open = false;
     this._side = 'left';
     this._root = '';
@@ -362,7 +362,7 @@ export class RelationshipGraph extends Component {
   rebuild() {
     if (this._indexing) return;
     if (!this._root) {
-      this.bus.emit('shortcut:hint', 'Граф: сначала откройте папку');
+      this.bus.emit('shortcut:hint', t('graph.error.noFolder'));
       return;
     }
     this._indexing = true;
@@ -385,7 +385,7 @@ export class RelationshipGraph extends Component {
   updateRebuildButton() {
     if (!this._rebuildBtn) return;
     this._rebuildBtn.disabled = this._indexing;
-    this._rebuildBtn.textContent = this._indexing ? 'Строю…' : 'Обновить';
+    this._rebuildBtn.textContent = this._indexing ? '…' : t('graph.rebuild');
   }
 
   async fetch(seeds, hops, { silent = false } = {}) {
@@ -406,7 +406,7 @@ export class RelationshipGraph extends Component {
       if (seq === this._fetchSeq) {
         this._loading = false;
         this.updateLoadingState();
-        this.bus.emit('shortcut:hint', `Граф: ${err.message}`);
+        this.bus.emit('shortcut:hint', t('graph.error', { msg: err.message }));
       }
       return;
     }
@@ -680,7 +680,7 @@ export class RelationshipGraph extends Component {
       c.fillStyle = this._colors.labelDim;
       c.font = '14px sans-serif';
       c.textAlign = 'center';
-      c.fillText('Связей не найдено', this._w / 2, this._h / 2);
+      c.fillText(t('graph.noRelations'), this._w / 2, this._h / 2);
       return;
     }
 
@@ -887,7 +887,7 @@ export class RelationshipGraph extends Component {
     if (!this.aside) return;
     const focus = this._focus;
     if (!focus) {
-      this.aside.innerHTML = `<div class="graph__empty">Кликните узел, чтобы увидеть его зависимости и обратные ссылки.</div>`;
+      this.aside.innerHTML = `<div class="graph__empty">${escapeHtml(t('graph.emptyHint'))}</div>`;
       return;
     }
     const fnode = this._nodes.get(focus);
@@ -906,9 +906,9 @@ export class RelationshipGraph extends Component {
     const title = fnode ? shortLabel(fnode.name, fnode.path) : focus.split(/[\\/]/).pop();
     this.aside.innerHTML = `
       <div class="graph__focus" title="${escapeHtml(focus)}">${escapeHtml(title)}</div>
-      ${this.listBlock('Зависимости', deps, 'dep')}
-      ${this.listBlock('Обратные ссылки', backs, 'back')}
-      ${manual.length ? this.listBlock('Ручные связи', manual, 'manual') : ''}
+      ${this.listBlock(t('graph.aside.deps'), deps, 'dep')}
+      ${this.listBlock(t('graph.aside.backs'), backs, 'back')}
+      ${manual.length ? this.listBlock(t('graph.aside.manual'), manual, 'manual') : ''}
     `;
     this.aside.querySelectorAll('[data-reveal]').forEach((el) =>
       el.addEventListener('click', () => this.bus.emit('graph:reveal', { path: el.dataset.reveal })),
@@ -936,24 +936,24 @@ export class RelationshipGraph extends Component {
     this.mount.innerHTML = `
       <div class="graph graph--window">
         <div class="graph__head" data-drag>
-          <div class="graph__title">Граф связей</div>
+          <div class="graph__title">${escapeHtml(t('graph.title'))}</div>
           <div class="graph__legend">
-            <span class="graph__dot" style="background:${C_DEP}"></span>зависимости
-            <span class="graph__dot" style="background:${C_BACK}"></span>обратные ссылки
+            <span class="graph__dot" style="background:${C_DEP}"></span>${escapeHtml(t('graph.legend.deps'))}
+            <span class="graph__dot" style="background:${C_BACK}"></span>${escapeHtml(t('graph.legend.backs'))}
           </div>
-          <button class="graph__rebuild" data-rebuild title="Построить / обновить граф связей">Обновить</button>
-          <button class="graph__close" data-close title="Закрыть">×</button>
+          <button class="graph__rebuild" data-rebuild title="${escapeHtml(t('graph.rebuild.title'))}">${escapeHtml(t('graph.rebuild'))}</button>
+          <button class="graph__close" data-close title="${escapeHtml(t('common.close'))}">×</button>
         </div>
         <div class="graph__body">
           <div class="graph__canvas-wrap">
             <canvas class="graph__canvas"></canvas>
             <div class="graph__loading" hidden>
               <div class="graph__spinner"></div>
-              <span class="graph__loading-text">Загрузка…</span>
+              <span class="graph__loading-text">${escapeHtml(t('graph.loading'))}</span>
             </div>
             <button class="graph__hash-btn" hidden data-hash-btn>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5l3 3"/></svg>
-              <span class="graph__hash-btn-text">Хешировать</span>
+              <span class="graph__hash-btn-text">${escapeHtml(t('graph.hash'))}</span>
             </button>
           </div>
           <aside class="graph__aside"></aside>
@@ -992,6 +992,8 @@ export class RelationshipGraph extends Component {
       this._ro = new ResizeObserver(() => this.resizeCanvas());
       this._ro.observe(this.canvas.parentElement);
     }
+    // Рисуем боковые списки — иначе при смене языка aside пуст до клика.
+    this.renderAside();
   }
 
   centerWindow() {
@@ -1069,14 +1071,8 @@ export class RelationshipGraph extends Component {
     if (this._loadingEl) {
       this._loadingEl.hidden = !show;
       const done = !busyVisible && this._loaded;
-      // Состояние «готово»: текст акцентный + галочка (CSS). Спиннер прячем
-      // прямо здесь, из JS, чтобы не зависеть от того, обновлён ли CSS-файл.
       this._loadingEl.classList.toggle('is-done', done);
       const spin = this._loadingEl.querySelector('.graph__spinner');
-      // Спиннер скрыт в двух случаях: «готово» (done=true, видна галочка) И
-      // «простой» (!show, плашка целиком скрыта). При !done && show показываем
-      // спиннер (идёт загрузка). Раньше при done→false спиннер всегда получал
-      // display='', что вызывало его появление даже когда плашка была hidden.
       if (spin) spin.style.display = (done || !show) ? 'none' : '';
     }
     const txt = this.mount && this.mount.querySelector('.graph__loading-text');
@@ -1084,15 +1080,15 @@ export class RelationshipGraph extends Component {
       if (busyVisible && this._indexing) {
         if (this._indexPhase === 'relations') {
           txt.textContent = this._indexTotal
-            ? `Строю связи… ${this._indexCount}/${this._indexTotal}`
-            : 'Строю связи…';
+            ? t('graph.buildingRelations.count', { done: this._indexCount, total: this._indexTotal })
+            : t('graph.buildingRelations');
         } else {
-          txt.textContent = `Индексирую… ${this._indexCount} файлов`;
+          txt.textContent = t('graph.indexing', { n: this._indexCount });
         }
       } else if (loadingVisible) {
-        txt.textContent = 'Загрузка…';
+        txt.textContent = t('graph.loading');
       } else if (this._loaded) {
-        txt.textContent = 'Загружено!';
+        txt.textContent = t('graph.loaded');
       }
     }
   }
@@ -1103,7 +1099,7 @@ export class RelationshipGraph extends Component {
     if (this._hashing) {
       this._hashBtn.hidden = false;
       this._hashBtn.classList.add('is-hashing');
-      this._hashBtn.querySelector('.graph__hash-btn-text').textContent = 'Хеширование…';
+      this._hashBtn.querySelector('.graph__hash-btn-text').textContent = t('graph.hash.progress');
       this._hashBtn.disabled = true;
     } else {
       const paths = [...this._nodes.keys()];
@@ -1113,7 +1109,7 @@ export class RelationshipGraph extends Component {
       } else {
         this._hashBtn.hidden = false;
         this._hashBtn.classList.remove('is-hashing');
-        this._hashBtn.querySelector('.graph__hash-btn-text').textContent = `Хешировать (${unhashed.length})`;
+        this._hashBtn.querySelector('.graph__hash-btn-text').textContent = t('graph.hash.count', { n: unhashed.length });
         this._hashBtn.disabled = false;
       }
     }
@@ -1132,6 +1128,45 @@ export class RelationshipGraph extends Component {
       if (this._open) this.fetch(seeds, 1);
     });
   }
+  
+    /** Перерисовка при смене языка. Сохраняет узлы, рёбра, фокус, позицию окна. */
+    applyLang() {
+      if (!this._open) return;
+      // Точечно обновляем только тексты в шапке, легенде, кнопках — canvas не трогаем.
+      const titleEl = this.mount.querySelector('.graph__title');
+      if (titleEl) titleEl.textContent = t('graph.title');
+      const dots = this.mount.querySelectorAll('.graph__legend .graph__dot');
+      if (dots.length >= 2) {
+        // Текстовые соседи точек легенды — это text nodes между ними.
+        const legend = this.mount.querySelector('.graph__legend');
+        if (legend) {
+          // Пересобираем legend целиком: 2 точки + 2 подписи.
+          legend.innerHTML = '';
+          legend.append(
+            document.createElement('span'),
+          );
+          const dot1 = document.createElement('span');
+          dot1.className = 'graph__dot';
+          dot1.style.background = C_DEP;
+          legend.append(dot1, t('graph.legend.deps'));
+          const dot2 = document.createElement('span');
+          dot2.className = 'graph__dot';
+          dot2.style.background = C_BACK;
+          legend.append(dot2, t('graph.legend.backs'));
+        }
+      }
+      if (this._rebuildBtn) {
+        this._rebuildBtn.title = t('graph.rebuild.title');
+        this._rebuildBtn.textContent = this._indexing ? '…' : t('graph.rebuild');
+      }
+      const closeBtn = this.mount.querySelector('.graph__close');
+      if (closeBtn) closeBtn.title = t('common.close');
+      if (this._hashBtn) this._hashBtn.title = t('graph.hash');
+      this.updateHashButton();
+      this.updateLoadingState();
+      this.renderAside();
+      this.draw(); // canvas: текст «Связей не найдено» зависит от языка.
+    }
 
   /* ── Перетаскивание окна / панорамирование / зум ── */
 

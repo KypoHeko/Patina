@@ -70,6 +70,12 @@ export class Breadcrumbs extends Component {
     }
   }
 
+  /** Перерисовка при смене языка (обновляет title кнопки «Назад» и подпись тега). */
+  applyLang() {
+    if (this._editing) return;
+    this.render();
+  }
+
   render() {
     this.mount.innerHTML = '';
 

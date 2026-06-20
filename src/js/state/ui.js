@@ -1,10 +1,10 @@
-// Срез состояния интерфейса (не привязан к конкретной панели/вкладке).
+// UI state slice (not tied to a specific panel/tab).
 
 export function initialUiState() {
   return {
-    splitRatio: 0.5, // доля ширины левой панели при расколе (0..1) — для 4b-2
-    homePath: '', // домашняя папка; подставляется в boot, нужна новым вкладкам
-    searchQuery: '', // строка фильтра из верхнего поиска
+    splitRatio: 0.5, // left panel's width fraction when split (0..1) — for 4b-2
+    homePath: '', // home folder; filled in at boot, needed by new tabs
+    searchQuery: '', // filter string from the top search
   };
 }
 

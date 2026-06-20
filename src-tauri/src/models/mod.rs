@@ -1,3 +1,3 @@
-//! Доменные структуры, пересекающие IPC-границу (serde).
+//! Domain structures that cross the IPC boundary (serde).
 
 pub mod file;

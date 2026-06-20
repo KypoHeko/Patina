@@ -1,10 +1,10 @@
-// Менеджер горячих клавиш. Один глобальный обработчик keydown.
-// Сами комбинации описаны декларативно в config/keymap.js,
-// а обработчики действий регистрируются через register(action, fn).
+// Keyboard shortcut manager. One global keydown handler.
+// The combinations themselves are declared in config/keymap.js,
+// and action handlers are registered via register(action, fn).
 
 const MODIFIERS = ['ctrl', 'shift', 'alt'];
 
-/** Привести комбинацию к каноничному виду: ctrl+shift+key. */
+/** Bring a combination to canonical form: ctrl+shift+key. */
 function normalize(combo) {
   const parts = combo.toLowerCase().split('+').map((s) => s.trim());
   const mods = MODIFIERS.filter((m) => parts.includes(m));
@@ -12,10 +12,10 @@ function normalize(combo) {
   return [...mods, key].join('+');
 }
 
-/** Построить комбинацию из события клавиатуры. */
+/** Build a combination from a keyboard event. */
 function comboFromEvent(e) {
   const parts = [];
-  if (e.ctrlKey || e.metaKey) parts.push('ctrl'); // metaKey — для Cmd на macOS
+  if (e.ctrlKey || e.metaKey) parts.push('ctrl'); // metaKey — for Cmd on macOS
   if (e.shiftKey) parts.push('shift');
   if (e.altKey) parts.push('alt');
   const key = e.key.toLowerCase();
@@ -23,14 +23,14 @@ function comboFromEvent(e) {
   return parts.join('+');
 }
 
-/** Не перехватывать клавиши, когда пользователь печатает в поле ввода. */
+/** Do not intercept keys while the user is typing in an input field. */
 function isTyping(e) {
   const t = e.target;
   return t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable);
 }
 
 /**
- * @param {Array<{combo:string, action:string}>} bindings  из keymap.js
+ * @param {Array<{combo:string, action:string}>} bindings  from keymap.js
  */
 export function createShortcuts(bindings) {
   const comboToAction = new Map(bindings.map((b) => [normalize(b.combo), b.action]));

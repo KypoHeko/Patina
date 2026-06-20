@@ -1,18 +1,20 @@
-// Словари перевода. Плоские ключи вида 'группа.имя'.
-// Подстановки — фигурные скобки: '{n}', '{msg}', '{done}', '{total}', '{size}'.
+// Translation dictionaries. Flat keys of the form 'group.name'.
+// Substitutions use curly braces: '{n}', '{msg}', '{done}', '{total}', '{size}',
+// '{count}', '{shown}', '{all}', '{phase}', '{version}'.
 //
-// Покрыто: топбар, статус-бар, вкладки, хлебные крошки, диалог подтверждения,
-// панель файлов, панель дубликатов, меню палитры, названия тем и тегов.
-// Остальные компоненты (палитра команд, сайдбар, превью, граф связей,
-// сообщения regex) переводятся по тому же шаблону t('ключ').
+// Covered: topbar, status bar, tabs, breadcrumbs, context menu, confirm dialog,
+// file panel, duplicates panel, command palette, sidebar, preview panel,
+// relationship graph, theme and tag names.
 
 export const STRINGS = {
   ru: {
-    // Общее
+    // Common
     'common.error': 'Ошибка: {msg}',
     'common.trashed': 'В корзину: {n}',
+    'common.loading': 'Загрузка…',
+    'common.close': 'Закрыть',
 
-    // Топбар
+    // Topbar
     'topbar.search.placeholder': 'Поиск… (текст или regex)',
     'topbar.search.title': 'Фильтр активной панели: текст или регулярное выражение',
     'topbar.dirsize': 'Посчитать размеры папок',
@@ -24,7 +26,7 @@ export const STRINGS = {
     'topbar.tabcolors': 'Цветовая индикация вкладок',
     'topbar.lang': 'Язык интерфейса',
 
-    // Статус-бар
+    // Status bar
     'status.selected': '{n} выделено',
     'status.folders': '{n} папок',
     'status.files': '{n} файлов',
@@ -32,19 +34,19 @@ export const STRINGS = {
     'status.duplicates': 'Дубликаты',
     'status.links': 'Связи',
 
-    // Диалог подтверждения
+    // Confirm dialog
     'confirm.title': 'Подтверждение',
     'confirm.cancel': 'Отмена',
     'confirm.ok': 'OK',
 
-    // Вкладки
+    // Tabs
     'tab.close': 'Закрыть',
     'tab.new': 'Новая вкладка',
 
-    // Хлебные крошки
+    // Breadcrumbs
     'crumbs.back': 'Назад',
 
-    // Контекстное меню
+    // Context menu
     'ctx.open': 'Открыть',
     'ctx.newFolder': 'Создать папку',
     'ctx.reveal': 'Показать в проводнике',
@@ -52,7 +54,7 @@ export const STRINGS = {
     'ctx.duplicates': 'Найти дубликаты',
     'ctx.delete': 'Удалить в корзину',
 
-    // Панель файлов
+    // File panel
     'panel.split': 'Разделить',
     'panel.closePanel': 'Закрыть панель',
     'panel.empty': 'Папка пуста',
@@ -80,7 +82,7 @@ export const STRINGS = {
     'panel.copied': 'Скопировано: {n}',
     'panel.moved': 'Перемещено: {n}',
 
-    // Панель дубликатов
+    // Duplicates panel
     'dup.title': 'Дубликаты',
     'dup.none': 'Дубликаты не найдены',
     'dup.scanning': 'Сканирование…',
@@ -92,13 +94,83 @@ export const STRINGS = {
     'dup.copies': '{n} копий',
     'dup.keepFirst': 'Оставить первый',
 
-    // Темы (палитра)
+    // Sidebar
+    'sidebar.quick': 'Быстрый доступ',
+    'sidebar.storage': 'Хранилище',
+    'sidebar.tags': 'Теги',
+    'sidebar.alreadyInQuick': 'Уже в быстром доступе',
+
+    // Preview panel
+    'pv.title': 'Превью',
+    'pv.selectFile': 'Выберите один файл',
+    'pv.noPreview': 'Нет превью',
+    'pv.infoSection': 'ИНФОРМАЦИЯ',
+    'pv.info.name': 'Имя',
+    'pv.info.size': 'Размер',
+    'pv.info.modified': 'Изменён',
+    'pv.info.created': 'Создан',
+    'pv.info.tags': 'Теги',
+    'pv.info.version': 'Версия',
+    'pv.info.current': 'текущая',
+    'pv.versionsSection': 'ИСТОРИЯ ВЕРСИЙ',
+    'pv.versions.empty': 'Снимков пока нет',
+    'pv.snapshotCreated': 'Снимок создан',
+    'pv.snapshotError': 'Ошибка создания снимка',
+    'pv.versionRestored': 'Версия восстановлена',
+    'pv.restoreError': 'Ошибка восстановления',
+    'pv.versionDeleted': 'Версия удалена',
+    'pv.deleteError': 'Ошибка удаления',
+    'pv.btn.add': '＋ Добавить',
+    'pv.btn.restore': 'Сменить',
+    'pv.btn.delete': 'Удалить',
+
+    // Command palette
+    'palette.placeholder.folder': 'Поиск в текущей папке…',
+    'palette.placeholder.tree': 'Поиск по всему поддереву…',
+    'palette.placeholder.content': 'Поиск по содержимому файлов…',
+    'palette.regex.title': 'Режим регулярного выражения',
+    'palette.scope.folder': 'Эта папка',
+    'palette.scope.tree': 'Всё поддерево',
+    'palette.scope.content': 'Содержимое',
+    'palette.scope.treeHint': 'Искать во всех вложенных папках',
+    'palette.scope.contentHint': 'Поиск по содержимому файлов',
+    'palette.scope.disabledTag': 'Недоступно для тег-папки',
+    'palette.reindex.title': 'Переиндексировать поддерево',
+    'palette.indexing': 'Индексирование…',
+    'palette.empty': 'Ничего не найдено',
+    'palette.more': 'Показаны первые {shown} из {all}',
+    'palette.hint.tree': 'Введите запрос для поиска по поддереву',
+    'palette.hint.content': 'Введите запрос для поиска по содержимому',
+
+    // Relationship graph
+    'graph.title': 'Граф связей',
+    'graph.legend.deps': 'зависимости',
+    'graph.legend.backs': 'обратные ссылки',
+    'graph.rebuild': 'Обновить',
+    'graph.rebuild.title': 'Построить / обновить граф связей',
+    'graph.hash': 'Хешировать',
+    'graph.hash.progress': 'Хеширование…',
+    'graph.hash.count': 'Хешировать ({n})',
+    'graph.loading': 'Загрузка…',
+    'graph.loaded': 'Загружено!',
+    'graph.indexing': 'Индексирую… {n} файлов',
+    'graph.buildingRelations': 'Строю связи…',
+    'graph.buildingRelations.count': 'Строю связи… {done}/{total}',
+    'graph.emptyHint': 'Кликните узел, чтобы увидеть его зависимости и обратные ссылки.',
+    'graph.aside.deps': 'Зависимости',
+    'graph.aside.backs': 'Обратные ссылки',
+    'graph.aside.manual': 'Ручные связи',
+    'graph.error.noFolder': 'Граф: сначала откройте папку',
+    'graph.error': 'Граф: {msg}',
+    'graph.noRelations': 'Связей не найдено',
+
+    // Themes (palette)
     'theme.title': 'Палитра',
     'theme.emerald': 'Тёмно-изумрудный',
     'theme.gold': 'Тёпло-золотой',
     'theme.light': 'Светло-голубая',
 
-    // Теги
+    // Tags
     'tag.urgent': 'Срочно',
     'tag.in-progress': 'В работе',
     'tag.done': 'Готово',
@@ -110,6 +182,8 @@ export const STRINGS = {
     // Common
     'common.error': 'Error: {msg}',
     'common.trashed': 'Moved to Trash: {n}',
+    'common.loading': 'Loading…',
+    'common.close': 'Close',
 
     // Topbar
     'topbar.search.placeholder': 'Search… (text or regex)',
@@ -190,6 +264,76 @@ export const STRINGS = {
     'dup.delTitle': 'Move to Trash',
     'dup.copies': '{n} copies',
     'dup.keepFirst': 'Keep first',
+
+    // Sidebar
+    'sidebar.quick': 'Quick access',
+    'sidebar.storage': 'Storage',
+    'sidebar.tags': 'Tags',
+    'sidebar.alreadyInQuick': 'Already in Quick access',
+
+    // Preview panel
+    'pv.title': 'Preview',
+    'pv.selectFile': 'Select a single file',
+    'pv.noPreview': 'No preview',
+    'pv.infoSection': 'INFORMATION',
+    'pv.info.name': 'Name',
+    'pv.info.size': 'Size',
+    'pv.info.modified': 'Modified',
+    'pv.info.created': 'Created',
+    'pv.info.tags': 'Tags',
+    'pv.info.version': 'Version',
+    'pv.info.current': 'current',
+    'pv.versionsSection': 'VERSION HISTORY',
+    'pv.versions.empty': 'No snapshots yet',
+    'pv.snapshotCreated': 'Snapshot created',
+    'pv.snapshotError': 'Snapshot error',
+    'pv.versionRestored': 'Version restored',
+    'pv.restoreError': 'Restore error',
+    'pv.versionDeleted': 'Version deleted',
+    'pv.deleteError': 'Delete error',
+    'pv.btn.add': '＋ Add',
+    'pv.btn.restore': 'Switch',
+    'pv.btn.delete': 'Delete',
+
+    // Command palette
+    'palette.placeholder.folder': 'Search in current folder…',
+    'palette.placeholder.tree': 'Search the whole subtree…',
+    'palette.placeholder.content': 'Search file contents…',
+    'palette.regex.title': 'Regular expression mode',
+    'palette.scope.folder': 'This folder',
+    'palette.scope.tree': 'Whole subtree',
+    'palette.scope.content': 'Content',
+    'palette.scope.treeHint': 'Search in all nested folders',
+    'palette.scope.contentHint': 'Search inside file contents',
+    'palette.scope.disabledTag': 'Not available for a tag folder',
+    'palette.reindex.title': 'Re-index subtree',
+    'palette.indexing': 'Indexing…',
+    'palette.empty': 'Nothing found',
+    'palette.more': 'Showing first {shown} of {all}',
+    'palette.hint.tree': 'Type a query to search the subtree',
+    'palette.hint.content': 'Type a query to search file contents',
+
+    // Relationship graph
+    'graph.title': 'Relationship graph',
+    'graph.legend.deps': 'dependencies',
+    'graph.legend.backs': 'back-references',
+    'graph.rebuild': 'Refresh',
+    'graph.rebuild.title': 'Build / refresh the relationship graph',
+    'graph.hash': 'Hash',
+    'graph.hash.progress': 'Hashing…',
+    'graph.hash.count': 'Hash ({n})',
+    'graph.loading': 'Loading…',
+    'graph.loaded': 'Loaded!',
+    'graph.indexing': 'Indexing… {n} files',
+    'graph.buildingRelations': 'Building relations…',
+    'graph.buildingRelations.count': 'Building relations… {done}/{total}',
+    'graph.emptyHint': 'Click a node to see its dependencies and back-references.',
+    'graph.aside.deps': 'Dependencies',
+    'graph.aside.backs': 'Back-references',
+    'graph.aside.manual': 'Manual links',
+    'graph.error.noFolder': 'Graph: open a folder first',
+    'graph.error': 'Graph: {msg}',
+    'graph.noRelations': 'No relations found',
 
     // Themes
     'theme.title': 'Theme',

@@ -1,4 +1,4 @@
-//! Слежение за папками (нативно: ReadDirectoryChangesW на Windows через notify).
+//! Folder watching (natively: ReadDirectoryChangesW on Windows via notify).
 
 use std::collections::HashSet;
 use std::path::Path;
@@ -9,12 +9,12 @@ use tauri::{AppHandle, Emitter, Manager};
 use crate::error::{Error, Result};
 use crate::state::AppState;
 
-/// Следить за указанными папками (нерекурсивно). При изменениях извне
-/// эмитит событие `fs:external-change` со списком затронутых каталогов.
+/// Watch the given folders (non-recursively). On external changes it emits an
+/// `fs:external-change` event with the list of affected directories.
 #[tauri::command]
 pub async fn set_watch(app: AppHandle, paths: Vec<String>) -> Result<()> {
-    // Создание нативного вотчера — системные вызовы; уводим с главного потока,
-    // т.к. set_watch дёргается при каждой смене папки.
+    // Creating the native watcher involves system calls; move it off the main
+    // thread, since set_watch is called on every folder change.
     tauri::async_runtime::spawn_blocking(move || -> Result<()> {
     let state = app.state::<AppState>();
     let app2 = app.clone();
@@ -36,11 +36,11 @@ pub async fn set_watch(app: AppHandle, paths: Vec<String>) -> Result<()> {
     for path in &paths {
         let _ = watcher.watch(Path::new(path), RecursiveMode::NonRecursive);
     }
-    // Сохраняем вотчер в состоянии — иначе он будет сброшен и слежение остановится.
-    // Замена Option останавливает прежние наблюдения.
+    // Keep the watcher in state — otherwise it is dropped and watching stops.
+    // Replacing the Option stops the previous observations.
     *state.watcher()? = Some(watcher);
     Ok(())
     })
     .await
-    .map_err(|e| Error::Operation(format!("вотчер прерван: {e}")))?
+    .map_err(|e| Error::Operation(format!("watcher interrupted: {e}")))?
 }

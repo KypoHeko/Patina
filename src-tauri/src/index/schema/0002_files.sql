@@ -1,5 +1,5 @@
--- Индекс файлов. Используется как кэш хешей для поиска дубликатов
--- (hash вычисляется лениво и инвалидируется при изменении mtime).
+-- File index. Used as a hash cache for duplicate detection
+-- (hash is computed lazily and invalidated when mtime changes).
 CREATE TABLE IF NOT EXISTS files (
     path  TEXT PRIMARY KEY,
     size  INTEGER NOT NULL,

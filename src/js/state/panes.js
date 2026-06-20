@@ -1,25 +1,25 @@
-// Операции над панелями АКТИВНОЙ вкладки. Сигнатуры селекторов/действий
-// те же, что и раньше (getPane(state, side), updatePane(store, side, ...)),
-// но теперь под ними — панели активной вкладки. Поэтому компоненты почти
-// не изменились: поменялся только источник данных, не API.
+// Operations on the panes of the ACTIVE tab. Selector/action signatures are
+// the same as before (getPane(state, side), updatePane(store, side, ...)),
+// but they now operate on the active tab's panes. So components barely changed:
+// only the data source changed, not the API.
 
 import { getActiveTab } from './tabs.js';
 
-// Иммутабельно обновить активную вкладку (остальные вкладки не трогаем —
-// их объекты сохраняют ссылки, оптимизация перерисовки продолжает работать).
+// Immutably update the active tab (we leave the other tabs alone — their
+// objects keep their references, so the re-render optimization keeps working).
 function updateActiveTab(store, updater) {
   store.setState((state) => ({
     tabs: state.tabs.map((t) => (t.id === state.activeTabId ? updater(t) : t)),
   }));
 }
 
-/* ── Селекторы ─────────────────────────────── */
+/* ── Selectors ─────────────────────────────── */
 
 export function getPane(state, side) {
   return getActiveTab(state).panes[side];
 }
 
-/* ── Действия ──────────────────────────────── */
+/* ── Actions ───────────────────────────────── */
 
 export function updatePane(store, side, patch) {
   updateActiveTab(store, (tab) => ({
@@ -38,11 +38,11 @@ export function selectInPane(store, side, paths) {
   updatePane(store, side, { selected: paths });
 }
 
-/** Записать посещённый путь; хвост «вперёд» обрезается (как в браузере). */
+/** Record a visited path; the "forward" tail is truncated (as in a browser). */
 export function recordHistory(store, side, path) {
   updateActiveTab(store, (tab) => {
     const pane = tab.panes[side];
-    if (pane.history[pane.historyIndex] === path) return tab; // уже здесь
+    if (pane.history[pane.historyIndex] === path) return tab; // already here
     const history = pane.history.slice(0, pane.historyIndex + 1);
     history.push(path);
     return {
@@ -55,7 +55,7 @@ export function recordHistory(store, side, path) {
   });
 }
 
-/** Сдвинуть позицию в истории; вернуть путь назначения либо null. */
+/** Shift the position in history; return the destination path or null. */
 export function stepHistory(store, side, delta) {
   const pane = getActiveTab(store.getState()).panes[side];
   const next = pane.historyIndex + delta;

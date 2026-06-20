@@ -1,10 +1,10 @@
-// Интернационализация. Аналог lib/theme.js, но язык требует перерисовки
-// компонентов (текст живёт в DOM, а не в CSS) — за это отвечает main.js.
+// Internationalization. Analogous to lib/theme.js, but language requires
+// re-rendering components (text lives in the DOM, not in CSS) — main.js handles that.
 //
-// Использование:
+// Usage:
 //   import { t } from '../lib/i18n.js';
-//   t('panel.empty')                       -> «Папка пуста» / «Folder is empty»
-//   t('status.selected', { n: 3 })         -> подстановка {n}
+//   t('panel.empty')                       -> "Папка пуста" / "Folder is empty"
+//   t('status.selected', { n: 3 })         -> substitutes {n}
 
 import { STRINGS } from '../config/locales.js';
 
@@ -14,13 +14,13 @@ const DEFAULT = 'ru';
 
 let _lang = DEFAULT;
 
-/** Определить стартовый язык: сохранённый выбор → язык браузера → дефолт. */
+/** Determine the starting language: saved choice → browser language → default. */
 function detect() {
   try {
     const saved = localStorage.getItem(KEY);
     if (LANGS.includes(saved)) return saved;
   } catch {
-    /* приватный режим — идём дальше */
+    /* private mode — carry on */
   }
   try {
     if ((navigator.language || '').toLowerCase().startsWith('ru')) return 'ru';
@@ -34,7 +34,7 @@ export function getLang() {
   return _lang;
 }
 
-/** Список поддерживаемых языков (для переключателя). */
+/** List of supported languages (for the switcher). */
 export function languages() {
   return LANGS.slice();
 }
@@ -45,20 +45,20 @@ export function setLang(lang) {
   try {
     localStorage.setItem(KEY, _lang);
   } catch {
-    /* язык применится без сохранения */
+    /* the language applies without being saved */
   }
 }
 
-/** Применить сохранённый язык как можно раньше (до монтажа компонентов). */
+/** Apply the saved language as early as possible (before components mount). */
 export function initLang() {
   setLang(detect());
 }
 
 /**
- * Перевести ключ. Если ключа нет в активном языке — откат на русский,
- * затем на сам ключ (чтобы пропуск был заметен, а не пустым).
+ * Translate a key. If the key is missing in the active language — fall back to
+ * Russian, then to the key itself (so a gap is visible, not empty).
  * @param {string} key
- * @param {Object<string, string|number>} [vars] подстановки вида {name}
+ * @param {Object<string, string|number>} [vars] substitutions of the form {name}
  */
 export function t(key, vars) {
   const table = STRINGS[_lang] || STRINGS[DEFAULT];
@@ -71,7 +71,7 @@ export function t(key, vars) {
   return s;
 }
 
-/** Локализованная подпись предопределённого тега по его id. */
+/** Localized label of a predefined tag by its id. */
 export function tagLabel(id) {
   return t(`tag.${id}`);
 }

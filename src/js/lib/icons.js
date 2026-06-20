@@ -1,7 +1,7 @@
-// Иконки файлов на основе Lucide (инлайновые SVG — проект без бандлера).
-// Каждому расширению сопоставлены иконка Lucide и цвет (hex).
+// File icons based on Lucide (inline SVG — the project has no bundler).
+// Each extension is mapped to a Lucide icon and a color (hex).
 
-// Внутреннее содержимое SVG нужных иконок Lucide (viewBox 0 0 24 24).
+// The inner SVG contents of the needed Lucide icons (viewBox 0 0 24 24).
 const GLYPHS = {
   file: '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/>',
   folder:
@@ -23,9 +23,9 @@ const GLYPHS = {
   type: '<polyline points="4 7 4 4 20 4 20 7"/><line x1="9" x2="15" y1="20" y2="20"/><line x1="12" x2="12" y1="4" y2="20"/>',
 };
 
-// Расширение -> [иконка, цвет hex]
+// Extension -> [icon, color hex]
 const EXT = {
-  // код
+  // code
   ts: ['fileCode2', '#3b82f6'],
   tsx: ['fileCode2', '#3b82f6'],
   js: ['fileCode2', '#f7df1e'],
@@ -54,7 +54,7 @@ const EXT = {
   // JSON
   json: ['braces', '#f59e0b'],
 
-  // документы
+  // documents
   md: ['fileText', '#64748b'],
   markdown: ['fileText', '#64748b'],
   pdf: ['fileText', '#ef4444'],
@@ -65,7 +65,7 @@ const EXT = {
   log: ['fileText', '#94a3b8'],
   rtf: ['fileText', '#94a3b8'],
 
-  // изображения
+  // images
   svg: ['image', '#f97316'],
   png: ['image', '#a855f7'],
   jpg: ['image', '#a855f7'],
@@ -78,26 +78,26 @@ const EXT = {
   heic: ['image', '#a855f7'],
   tiff: ['image', '#a855f7'],
 
-  // дизайн
+  // design
   psd: ['palette', '#0ea5e9'],
   ai: ['penTool', '#f97316'],
   fig: ['palette', '#a259ff'],
   sketch: ['palette', '#fdb300'],
 
-  // таблицы
+  // spreadsheets
   xlsx: ['table', '#22c55e'],
   xls: ['table', '#22c55e'],
   ods: ['table', '#22c55e'],
   csv: ['table', '#22c55e'],
   tsv: ['table', '#22c55e'],
 
-  // шрифты
+  // fonts
   ttf: ['type', '#8b5cf6'],
   otf: ['type', '#8b5cf6'],
   woff: ['type', '#8b5cf6'],
   woff2: ['type', '#8b5cf6'],
 
-  // прочее с цветом, иконка — универсальный File
+  // misc with color, icon — the generic File
   zip: ['file', '#eab308'],
   rar: ['file', '#eab308'],
   '7z': ['file', '#eab308'],

@@ -105,21 +105,21 @@ function syncTopbar() {
   if (langBtn) langBtn.textContent = getLang().toUpperCase();
 }
 
-// Смена языка: повторно переводим топбар, пере-инициализируем все компоненты
-// (destroy() снимает слушатели без утечек, init() рисует заново на новом языке),
-// затем «пинаем» store — и завязанные на него панели/статус-бар перерисовываются.
-// Состояние навигации живёт в store и переживает перезапуск компонентов.
+// Смена языка: переводим топбар, затем вызываем applyLang() у каждого
+// компонента. applyLang() точечно обновляет только тексты в DOM, сохраняя
+// состояние (открытые диалоги, выделение, фокус графа, инпуты и т.д.) —
+// в отличие от destroy()+init(), который сносил панели и transient-состояние.
+// Если у компонента нет applyLang — пропускаем (он не нуждается в перерисовке).
 function applyLanguage() {
   syncTopbar();
   for (const c of components) {
     try {
-      c.destroy();
-      c.init();
+      if (typeof c.applyLang === 'function') c.applyLang();
     } catch (err) {
       console.error('[patina] ошибка перерисовки при смене языка:', err);
     }
   }
-  store.setState({});
+  store.setState({}); // на случай, если кто-то из подписчиков store считает тексты
 }
 
 document.getElementById('lang-btn').addEventListener('click', () => {

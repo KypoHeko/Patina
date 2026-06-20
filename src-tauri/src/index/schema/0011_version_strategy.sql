@@ -1,5 +1,5 @@
--- Стратегия хранения версии: 'full' (старый формат, полный блоб),
--- 'zstd' (сжатие zstd-словарём, < 15 MB), 'chunked' (чанковое разбиение, >= 15 MB).
+-- Version storage strategy: 'full' (old format, full blob),
+-- 'zstd' (zstd dictionary compression, < 15 MB), 'chunked' (chunk splitting, >= 15 MB).
 ALTER TABLE versions ADD COLUMN strategy TEXT NOT NULL DEFAULT 'full';
--- Идентификатор словаря zstd, которым была сжата версия (NULL для full/chunked).
+-- Id of the zstd dictionary the version was compressed with (NULL for full/chunked).
 ALTER TABLE versions ADD COLUMN dict_id INTEGER;

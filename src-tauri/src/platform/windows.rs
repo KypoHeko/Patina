@@ -1,30 +1,30 @@
-//! Windows-нативный слой: WinAPI через crate `windows`.
+//! Windows native layer: WinAPI via the `windows` crate.
 //!
-//! Реализует:
-//! - `delete_to_recycle_bin` — IFileOperation с FO_DELETE + FOF_ALLOWUNDO
-//! - `list_drives_native` — GetVolumeInformation + GetDriveType для меток и типов томов
-//! - `get_native_icon` — SHGetFileInfo для извлечения иконок файлов
-//! - `read_usn_journal` — FSCTL_READ_USN_JOURNAL для инкрементальной синхронизации
+//! Implements:
+//! - `delete_to_recycle_bin` — IFileOperation with FO_DELETE + FOF_ALLOWUNDO
+//! - `list_drives_native` — GetVolumeInformation + GetDriveType for volume labels and types
+//! - `get_native_icon` — SHGetFileInfo for extracting file icons
+//! - `read_usn_journal` — FSCTL_READ_USN_JOURNAL for incremental sync
 
 use crate::error::{Error, Result};
 
 use super::{DriveInfo, NativeIcon, UsnChanges};
 
-/// UTF-16 c завершающим нулём — формат строк для WinAPI-функций (`*W`).
+/// NUL-terminated UTF-16 — the string format for WinAPI functions (`*W`).
 fn to_wide(s: &str) -> Vec<u16> {
     use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;
     OsStr::new(s).encode_wide().chain(std::iter::once(0)).collect()
 }
 
-// ─── Удаление в Корзину через IFileOperation ──────────────────────
+// ─── Delete to Trash via IFileOperation ───────────────────────────
 
-// Удаление файлов/папок в Корзину через IFileOperation.
+// Delete files/folders to the Trash via IFileOperation.
 //
-// Преимущества перед crate `trash`:
-// Нативный COM-вызов, корректно работает с UAC и длинными путями
-// Единый прогресс-диалог проводника (если нужен)
-// Поддержка UNC-путей и символических ссылок
+// Advantages over the `trash` crate:
+// Native COM call, works correctly with UAC and long paths
+// A single Explorer progress dialog (if needed)
+// Support for UNC paths and symbolic links
 pub fn delete_to_recycle_bin(paths: &[String]) -> Result<()> {
     use windows::Win32::System::Com::{
         CoInitializeEx, CoUninitialize, CLSCTX_ALL,
@@ -45,11 +45,11 @@ pub fn delete_to_recycle_bin(paths: &[String]) -> Result<()> {
                     .map_err(|e| Error::Operation(format!("CoCreateInstance IFileOperation: {e}")))?;
 
             op.SetOperationFlags(
-                FOF_ALLOWUNDO       // В Корзину, а не безвозвратно
-                | FOF_NOCONFIRMATION // Не спрашивать подтверждение
-                | FOF_NOERRORUI      // Не показывать диалоги ошибок
-                | FOF_SILENT         // Без прогресс-бара
-                | FOF_WANTNUKEWARNING, // Предупредить, если файл слишком велик для Корзины
+                FOF_ALLOWUNDO       // To the Trash, not permanently
+                | FOF_NOCONFIRMATION // Do not ask for confirmation
+                | FOF_NOERRORUI      // Do not show error dialogs
+                | FOF_SILENT         // No progress bar
+                | FOF_WANTNUKEWARNING, // Warn if the file is too big for the Trash
             )
             .map_err(|e| Error::Operation(format!("SetOperationFlags: {e}")))?;
 
@@ -76,17 +76,17 @@ pub fn delete_to_recycle_bin(paths: &[String]) -> Result<()> {
     }
 }
 
-// Импорт для CoCreateInstance, SHCreateItemFromParsingName
+// Imports for CoCreateInstance, SHCreateItemFromParsingName
 use windows::Win32::System::Com::CoCreateInstance;
 use windows::Win32::UI::Shell::SHCreateItemFromParsingName;
 
-// ─── Список дисков с метками и типами ────────────────────────────
+// ─── Drive list with labels and types ─────────────────────────────
 
-/// Определяет тип носителя по букве диска через GetDriveType и
-/// оценке rotational speed через DeviceIoControl (IOCTL_STORAGE_QUERY).
+/// Determines the media type by drive letter via GetDriveType and a
+/// rotational-speed estimate via DeviceIoControl (IOCTL_STORAGE_QUERY).
 ///
-/// Возвращает список дисков с метками томов, типами (SSD/HDD/Removable/Network)
-/// и информацией о месте.
+/// Returns a list of drives with volume labels, types
+/// (SSD/HDD/Removable/Network) and space information.
 pub fn list_drives_native() -> Vec<DriveInfo> {
     let mut out = Vec::new();
 
@@ -115,7 +115,7 @@ pub fn list_drives_native() -> Vec<DriveInfo> {
     out
 }
 
-/// Получить метку тома через GetVolumeInformationW.
+/// Get the volume label via GetVolumeInformationW.
 fn get_volume_label(root: &str) -> String {
     use windows::Win32::Storage::FileSystem::GetVolumeInformationW;
 
@@ -133,7 +133,7 @@ fn get_volume_label(root: &str) -> String {
         );
     }
 
-    // Преобразуем wide-строку в Rust String
+    // Convert the wide string into a Rust String
     let len = label_buf.iter().position(|&c| c == 0).unwrap_or(0);
     if len == 0 {
         return String::new();
@@ -141,48 +141,48 @@ fn get_volume_label(root: &str) -> String {
     String::from_utf16_lossy(&label_buf[..len])
 }
 
-/// Определяет тип диска: SSD, HDD, Removable, Network, Cloud, Unknown.
+/// Determines the disk type: SSD, HDD, Removable, Network, Cloud, Unknown.
 ///
-/// Стратегия:
+/// Strategy:
 /// 1. GetDriveTypeW → Removable / Network / RAM
-/// 2. Для фиксированного диска — detect_fixed_media (TRIM + seek penalty)
-/// 3. Неопределимо → "SSD" (см. detect_fixed_media)
+/// 2. For a fixed disk — detect_fixed_media (TRIM + seek penalty)
+/// 3. Indeterminate → "SSD" (see detect_fixed_media)
 fn get_drive_kind(root: &str) -> String {
     use windows::Win32::Storage::FileSystem::GetDriveTypeW;
 
     let wide = to_wide(root);
     let drive_type = unsafe { GetDriveTypeW(windows::core::PCWSTR(wide.as_ptr())) };
 
-    // Числовые значения GetDriveType (winbase.h) стабильны и не зависят от
-    // версии крейта — именованные константы в windows 0.58 здесь не достаются.
+    // The numeric GetDriveType values (winbase.h) are stable and do not depend
+    // on the crate version — the named constants are not reachable here in windows 0.58.
     match drive_type {
         2 => return "Removable".into(), // DRIVE_REMOVABLE
         4 => return "Network".into(),   // DRIVE_REMOTE
         5 => return "Removable".into(), // DRIVE_CDROM
         6 => return "RAM".into(),       // DRIVE_RAMDISK
-        _ => {}                         // 3 = DRIVE_FIXED → проверяем SSD ниже
+        _ => {}                         // 3 = DRIVE_FIXED → check for SSD below
     }
 
-    // FIXED или UNKNOWN → определяем носитель через IOCTL.
+    // FIXED or UNKNOWN → determine the media via IOCTL.
     detect_fixed_media(root).into()
 }
 
-/// SSD/HDD для фиксированного диска. Комбинируем ДВА сигнала
-/// IOCTL_STORAGE_QUERY_PROPERTY, потому что одного seek-penalty мало: на части
-/// SSD (особенно NVMe) запрос неинформативен или падает, и прежняя реализация в
-/// таком случае всегда отдавала «HDD» — отсюда ложный HDD на реальном SSD.
+/// SSD/HDD for a fixed disk. We combine TWO IOCTL_STORAGE_QUERY_PROPERTY
+/// signals, because seek-penalty alone is not enough: on some SSDs (especially
+/// NVMe) the query is uninformative or fails, and the previous implementation
+/// then always returned "HDD" — hence a false HDD on a real SSD.
 ///
-/// 1. TRIM включён → SSD (механические HDD его не поддерживают) — надёжнее всего.
-/// 2. Иначе seek penalty: FALSE → SSD, TRUE → HDD.
-/// 3. Оба запроса неинформативны → считаем SSD: на современных фиксированных
-///    дисках это куда вероятнее, а HDD надёжно сообщает seek penalty (поэтому
-///    ложного «SSD вместо HDD» этот дефолт на практике не даёт).
+/// 1. TRIM enabled → SSD (mechanical HDDs do not support it) — most reliable.
+/// 2. Otherwise seek penalty: FALSE → SSD, TRUE → HDD.
+/// 3. Both queries uninformative → assume SSD: on modern fixed disks this is far
+///    more likely, and an HDD reliably reports seek penalty (so in practice this
+///    default does not produce a false "SSD instead of HDD").
 fn detect_fixed_media(root: &str) -> &'static str {
     // StorageDeviceTrimProperty = 8
     if query_storage_property_bool(root, 8) == Some(true) {
         return "SSD";
     }
-    // StorageDeviceSeekPenaltyProperty = 7: true = есть seek penalty (HDD).
+    // StorageDeviceSeekPenaltyProperty = 7: true = has a seek penalty (HDD).
     match query_storage_property_bool(root, 7) {
         Some(false) => "SSD",
         Some(true) => "HDD",
@@ -190,16 +190,17 @@ fn detect_fixed_media(root: &str) -> &'static str {
     }
 }
 
-/// Запрос булева дескриптора устройства через DeviceIoControl
-/// (IOCTL_STORAGE_QUERY_PROPERTY). Подходит свойствам, чей дескриптор имеет вид
-/// { Version: u32, Size: u32, Value: BOOLEAN } — это SeekPenalty (7) и Trim (8).
+/// Query a boolean device descriptor via DeviceIoControl
+/// (IOCTL_STORAGE_QUERY_PROPERTY). Suitable for properties whose descriptor has
+/// the form { Version: u32, Size: u32, Value: BOOLEAN } — i.e. SeekPenalty (7)
+/// and Trim (8).
 ///
-/// Возвращает Some(true)/Some(false) по значению поля, либо None, если запрос
-/// неинформативен (устройство не открылось / IOCTL не поддержан / короткий ответ).
-/// Различие None и Some(false) важно: вызывающая сторона трактует «неизвестно»
-/// иначе, чем достоверное «нет».
+/// Returns Some(true)/Some(false) by the field value, or None if the query is
+/// uninformative (device did not open / IOCTL unsupported / short reply).
+/// The difference between None and Some(false) matters: the caller treats
+/// "unknown" differently from a confident "no".
 fn query_storage_property_bool(root: &str, property_id: u32) -> Option<bool> {
-    // Открываем устройство \\.\C: для корня C:\
+    // Open the device \\.\C: for the root C:\
     let drive_letter = root.chars().next().unwrap_or('C');
     let device_path = format!("\\\\.\\{}:", drive_letter);
     let wide = to_wide(&device_path);
@@ -234,9 +235,9 @@ fn query_storage_property_bool(root: &str, property_id: u32) -> Option<bool> {
             query_type: u32,
         }
 
-        // Дескриптор: Version (u32) + Size (u32) + Value (BOOLEAN = 1 байт).
-        // Заголовок (Version/Size) обязателен — без него мы читали бы Version
-        // (он ненулевой) и всегда получали бы «true».
+        // Descriptor: Version (u32) + Size (u32) + Value (BOOLEAN = 1 byte).
+        // The header (Version/Size) is mandatory — without it we would read
+        // Version (which is non-zero) and always get "true".
         #[repr(C)]
         #[derive(Default)]
         struct BoolDescriptor {
@@ -268,15 +269,15 @@ fn query_storage_property_bool(root: &str, property_id: u32) -> Option<bool> {
         let _ = windows::Win32::Foundation::CloseHandle(handle);
 
         match ok {
-            // Достоверно только если устройство реально вернуло поле значения
-            // (заголовок 8 байт + 1 байт = ≥ 9). Иначе — «неизвестно».
+            // Reliable only if the device actually returned the value field
+            // (8-byte header + 1 byte = ≥ 9). Otherwise — "unknown".
             Ok(_) if bytes_returned >= 9 => Some(result.value != 0),
             _ => None,
         }
     }
 }
 
-/// Свободное и полное пространство диска через GetDiskFreeSpaceExW.
+/// Free and total disk space via GetDiskFreeSpaceExW.
 fn get_disk_space(root: &str) -> (u64, u64) {
     use windows::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
 
@@ -302,14 +303,14 @@ fn get_disk_space(root: &str) -> (u64, u64) {
     }
 }
 
-// ─── Нативные иконки файлов через SHGetFileInfo ──────────────────
+// ─── Native file icons via SHGetFileInfo ──────────────────────────
 
-/// Извлечь иконку файла/папки через SHGetFileInfo и конвертировать в PNG.
+/// Extract a file/folder icon via SHGetFileInfo and convert it to PNG.
 ///
-/// `size` — желаемый размер (16 или 32). Возвращается PNG-байты иконки.
+/// `size` — the desired size (16 or 32). Returns the icon's PNG bytes.
 ///
-/// Использует SHGetFileInfoW с SHGFI_ICON | SHGFI_SMALLICON/LARGEICON,
-/// затем конвертирует HICON → PNG через вспомогательную функцию.
+/// Uses SHGetFileInfoW with SHGFI_ICON | SHGFI_SMALLICON/LARGEICON,
+/// then converts HICON → PNG via a helper function.
 #[allow(dead_code)]
 pub fn get_native_icon(path: &str, size: u32) -> Option<NativeIcon> {
     use windows::Win32::Storage::FileSystem::FILE_FLAGS_AND_ATTRIBUTES;
@@ -355,10 +356,10 @@ pub fn get_native_icon(path: &str, size: u32) -> Option<NativeIcon> {
     })
 }
 
-/// Конвертирует HICON в PNG-байты заданного размера.
+/// Converts an HICON into PNG bytes of the given size.
 ///
-/// Стратегия: получаем BITMAP из иконки, читаем пиксели, кодируем в PNG
-/// через crate `image`.
+/// Strategy: get the BITMAP from the icon, read the pixels, encode to PNG
+/// via the `image` crate.
 #[allow(dead_code)]
 unsafe fn icon_to_png(
     icon: windows::Win32::UI::WindowsAndMessaging::HICON,
@@ -376,10 +377,10 @@ unsafe fn icon_to_png(
         return None;
     }
 
-    // GetIconInfo создаёт два битмапа (hbmColor и hbmMask); по контракту WinAPI
-    // их обязан удалить вызывающий, иначе на каждый вызов течёт GDI-объект.
-    // hbmMask не используется — удаляем сразу; hbmColor нужен для GetDIBits,
-    // его освобождаем после DC (а на раннем выходе — прямо здесь).
+    // GetIconInfo creates two bitmaps (hbmColor and hbmMask); per the WinAPI
+    // contract the caller must delete them, otherwise a GDI object leaks per call.
+    // hbmMask is unused — delete it right away; hbmColor is needed for GetDIBits,
+    // freed after the DC (or, on an early exit, right here).
     if !icon_info.hbmMask.is_invalid() {
         let _ = DeleteObject(icon_info.hbmMask);
     }
@@ -429,12 +430,12 @@ unsafe fn icon_to_png(
         return None;
     }
 
-    // Конвертируем BGRA → RGBA для crate image
+    // Convert BGRA → RGBA for the image crate
     for chunk in pixels.chunks_exact_mut(4) {
         chunk.swap(0, 2); // B <-> R
     }
 
-    // Кодируем в PNG
+    // Encode to PNG
     let img = image::RgbaImage::from_raw(size, size, pixels);
     img.and_then(|img| {
         let mut buf = Vec::new();
@@ -445,20 +446,20 @@ unsafe fn icon_to_png(
     }
 }
 
-// ─── USN Journal: инкрементальная синхронизация индекса ──────────
+// ─── USN Journal: incremental index sync ──────────────────────────
 
-/// Прочитать изменения из USN Journal NTFS-тома с момента `last_usn`.
+/// Read changes from an NTFS volume's USN Journal since `last_usn`.
 ///
-/// USN Journal — это лог изменений файловой системы NTFS, который ведёт
-/// сама ОС. Позволяет обнаружить создания/удаления/переименования файлов
-/// без полного перескана каталога — за O(изменения), а не O(все файлы).
+/// The USN Journal is a log of NTFS filesystem changes maintained by the OS
+/// itself. It lets you detect file creations/deletions/renames without a full
+/// directory rescan — in O(changes), not O(all files).
 ///
-/// Возвращает:
-/// - `Some(UsnChanges)` — если журнал прочитан успешно
-/// - `None` — если том не NTFS или USN Journal недоступен
+/// Returns:
+/// - `Some(UsnChanges)` — if the journal was read successfully
+/// - `None` — if the volume is not NTFS or the USN Journal is unavailable
 ///
-/// `last_usn` — позиция в журнале с прошлого чтения (0 = сначала).
-/// После обработки нужно сохранить новый USN для следующего вызова.
+/// `last_usn` — the journal position from the previous read (0 = from the start).
+/// After processing, save the new USN for the next call.
 pub fn read_usn_journal(root: &str, last_usn: i64) -> Result<Option<UsnChanges>> {
     use windows::Win32::Foundation::HANDLE;
     use windows::Win32::Storage::FileSystem::{
@@ -466,10 +467,10 @@ pub fn read_usn_journal(root: &str, last_usn: i64) -> Result<Option<UsnChanges>>
         FILE_ATTRIBUTE_NORMAL, FILE_READ_ATTRIBUTES,
     };
 
-    // Определяем букву диска из корня
+    // Determine the drive letter from the root
     let drive_letter = match root.chars().next() {
         Some(c) if c.is_ascii_alphabetic() => c,
-        _ => return Ok(None), // Не NTFS-путь
+        _ => return Ok(None), // Not an NTFS path
     };
 
     let device_path = format!("\\\\.\\{}:", drive_letter);
@@ -488,7 +489,7 @@ pub fn read_usn_journal(root: &str, last_usn: i64) -> Result<Option<UsnChanges>>
 
         let handle = match handle {
             Ok(h) if !h.is_invalid() => h,
-            _ => return Ok(None), // Не удалось открыть устройство
+            _ => return Ok(None), // Could not open the device
         };
 
         let result = read_usn_with_handle(handle, root, last_usn);
@@ -499,7 +500,7 @@ pub fn read_usn_journal(root: &str, last_usn: i64) -> Result<Option<UsnChanges>>
     }
 }
 
-/// Внутренняя реализация чтения USN Journal через DeviceIoControl.
+/// Internal implementation of reading the USN Journal via DeviceIoControl.
 unsafe fn read_usn_with_handle(
     handle: windows::Win32::Foundation::HANDLE,
     root: &str,
@@ -510,7 +511,7 @@ unsafe fn read_usn_with_handle(
     // FSCTL_READ_USN_JOURNAL = 0x000900EB
     const FSCTL_READ_USN_JOURNAL: u32 = 0x000900EB;
 
-    // USN_REASON коды, которые нас интересуют
+    // The USN_REASON codes we care about
     const USN_REASON_FILE_CREATE: u32 = 0x00000100;
     const USN_REASON_FILE_DELETE: u32 = 0x00000200;
     const USN_REASON_DATA_OVERWRITE: u32 = 0x00000001;
@@ -521,12 +522,12 @@ unsafe fn read_usn_with_handle(
 
     #[repr(C)]
     struct ReadUsnJournalData {
-        start_usn: i64,        // USN, с которого начинаем чтение
-        reason_mask: u32,      // Маска причин (0 = все)
-        return_only_on_close: u32, // 0 = все записи
-        timeout: u64,          // 0 = без ожидания
+        start_usn: i64,        // USN to start reading from
+        reason_mask: u32,      // Reason mask (0 = all)
+        return_only_on_close: u32, // 0 = all records
+        timeout: u64,          // 0 = no waiting
         bytes_to_wait_for: u64, // 0
-        usn_journal_id: i64,   // ID журнала (0 = автоопределение)
+        usn_journal_id: i64,   // Journal ID (0 = autodetect)
         min_major_version: u16, // 2
         max_major_version: u16, // 3
     }
@@ -543,7 +544,7 @@ unsafe fn read_usn_with_handle(
         return_only_on_close: 0,
         timeout: 0,
         bytes_to_wait_for: 0,
-        usn_journal_id: 0, // Автоопределение
+        usn_journal_id: 0, // Autodetect
         min_major_version: 2,
         max_major_version: 3,
     };
@@ -565,21 +566,21 @@ unsafe fn read_usn_with_handle(
     };
 
     if ok.is_err() || bytes_returned < 8 {
-        // USN Journal недоступна (не NTFS, нет прав и т.п.)
+        // The USN Journal is unavailable (not NTFS, no permissions, etc.)
         return Ok(None);
     }
 
-    // Первые 8 байт — следующий USN для чтения
+    // The first 8 bytes are the next USN to read from
     let _next_usn = i64::from_ne_bytes(out_buf[0..8].try_into().unwrap_or([0; 8]));
 
     let drive_prefix = format!("{}:\\", root.chars().next().unwrap_or('C'));
     let mut modified = Vec::new();
     let mut deleted = Vec::new();
 
-    // Парсим USN-записи
+    // Parse the USN records
     let mut offset = 8usize;
     while offset + 8 < bytes_returned as usize {
-        // USN_RECORD_V2 заголовок:
+        // USN_RECORD_V2 header:
         // offset 0: RecordLength (u32)
         // offset 4: MajorVersion (u16)
         // offset 6: MinorVersion (u16)
@@ -617,7 +618,7 @@ unsafe fn read_usn_with_handle(
                 )
             });
 
-            // Формируем полный путь
+            // Build the full path
             let full_path = if name.starts_with(&drive_prefix) || name.starts_with('\\') {
                 name
             } else {
@@ -633,25 +634,25 @@ unsafe fn read_usn_with_handle(
 
         offset += record_len;
         if record_len == 0 {
-            break; // Защита от бесконечного цикла
+            break; // Guard against an infinite loop
         }
     }
 
     Ok(Some(UsnChanges { modified, deleted }))
 }
 
-// ─── Known Folders через FOLDERID ─────────────────────────────────
+// ─── Known Folders via FOLDERID ───────────────────────────────────
 
-/// Получить путь к известной папке Windows через SHGetKnownFolderPath.
+/// Get the path to a Windows known folder via SHGetKnownFolderPath.
 ///
-/// Заменяет tauri::path() для Windows, предоставляя нативные пути
-/// к системным папкам (Desktop, Documents, Downloads и т.д.)
+/// Replaces tauri::path() on Windows, providing native paths to system folders
+/// (Desktop, Documents, Downloads, etc.)
 #[allow(dead_code)]
 pub fn get_known_folder(folder_id: windows::core::GUID) -> Option<String> {
     use windows::Win32::UI::Shell::{SHGetKnownFolderPath, KF_FLAG_DEFAULT};
 
     unsafe {
-        // Возвращает PWSTR, выделенный COM; освобождаем через CoTaskMemFree.
+        // Returns a COM-allocated PWSTR; we free it via CoTaskMemFree.
         let ptr = SHGetKnownFolderPath(&folder_id, KF_FLAG_DEFAULT, None).ok()?;
         let s = ptr.to_string().ok();
         windows::Win32::System::Com::CoTaskMemFree(Some(ptr.0 as *const _));

@@ -1,7 +1,7 @@
-// Детерминированный цвет из строки пути + подбор цвета текста по яркости.
+// Deterministic color from a path string + text color chosen by brightness.
 
 export function pathToColor(path) {
-  // djb2-подобный хеш — детерминированный, быстрый
+  // djb2-like hash — deterministic, fast
   let hash = 0;
   for (let i = 0; i < path.length; i++) {
     hash = (Math.imul(31, hash) + path.charCodeAt(i)) | 0;
@@ -9,7 +9,7 @@ export function pathToColor(path) {
   const r = (hash >> 16) & 0xff;
   const g = (hash >> 8) & 0xff;
   const b = hash & 0xff;
-  // микс с серым [60..225] — без слишком тёмных и слепящих
+  // mix with gray [60..225] — avoids too-dark and blinding colors
   const mix = (c) => Math.floor(c * 0.65 + 60);
   return (
     '#' +
@@ -24,7 +24,7 @@ function luminance(hex) {
   return 0.299 * r + 0.587 * g + 0.114 * b;
 }
 
-// Чёрный или белый текст по средней яркости фона (одного или нескольких цветов).
+// Black or white text based on the average background brightness (one or more colors).
 export function textColorFor(...colors) {
   const avg = colors.reduce((s, c) => s + luminance(c), 0) / colors.length;
   return avg > 150 ? '#0a0a0f' : '#f5f5f5';

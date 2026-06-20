@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { createEventBus } from './event-bus.js';
+import { createEventBus } from '../core/event-bus.js';
 
 describe('createEventBus', () => {
   it('emit вызывает подписчика с payload', () => {

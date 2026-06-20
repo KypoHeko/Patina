@@ -1,4 +1,4 @@
-//! Поиск дубликатов: группировка по размеру -> хеш кандидатов -> группы.
+//! Duplicate detection: group by size -> hash candidates -> groups.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -7,7 +7,7 @@ use rusqlite::Connection;
 use serde::Serialize;
 
 use crate::error::{Error, Result};
-use crate::index::files_repo;
+use crate::index::files;
 use crate::indexer::{hasher, scanner};
 
 pub const SCAN_CAP: usize = 20_000;
@@ -20,6 +20,10 @@ pub struct DupGroup {
     pub paths: Vec<String>,
 }
 
+/// Find duplicate groups in `dir`: first a cheap grouping by size, then hashing
+/// only the candidates (reusing the hash cache from the DB).
+/// `on_progress(done, total)` is called during hashing. Groups are sorted by
+/// descending size.
 pub fn find<F>(db: &Mutex<Connection>, dir: &str, on_progress: F) -> Result<Vec<DupGroup>>
 where
     F: Fn(usize, usize),
@@ -43,9 +47,9 @@ where
 
     let mut hashes: HashMap<String, String> = HashMap::new();
     {
-        let conn = db.lock().map_err(|_| Error::Operation("БД заблокирована (poisoned)".into()))?;
+        let conn = db.lock().map_err(|_| Error::Operation("DB lock poisoned".into()))?;
         for f in &candidates {
-            if let Some(h) = files_repo::cached_hash(&conn, &f.path, f.mtime)? {
+            if let Some(h) = files::cached_hash(&conn, &f.path, f.mtime)? {
                 hashes.insert(f.path.clone(), h);
             }
         }
@@ -75,9 +79,9 @@ where
     }
 
     if !fresh.is_empty() {
-        let conn = db.lock().map_err(|_| Error::Operation("БД заблокирована (poisoned)".into()))?;
+        let conn = db.lock().map_err(|_| Error::Operation("DB lock poisoned".into()))?;
         for (path, size, mtime, h) in &fresh {
-            files_repo::store_hash(&conn, path, *size, *mtime, h)?;
+            files::store_hash(&conn, path, *size, *mtime, h)?;
         }
     }
 

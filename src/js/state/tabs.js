@@ -1,22 +1,22 @@
-// Срез вкладок. Каждая вкладка — рабочее пространство со своей парой
-// панелей (left + right) и собственной историей навигации в каждой.
-// Раскол (split) — свойство вкладки: разные вкладки могут быть в разном
-// состоянии.
+// Tabs slice. Each tab is a workspace with its own pair of panes
+// (left + right) and its own navigation history in each.
+// Split is a property of the tab: different tabs can be in different states.
 
 import { folderName } from '../lib/paths.js';
 import { TAGS } from '../config/tags.js';
+import { tagLabel } from '../lib/i18n.js';
 
 function sideName(path) {
   const p = path || '';
   if (p.startsWith('tag:')) {
-    const t = TAGS.find((x) => x.id === p.slice(4));
-    return t ? t.label : p.slice(4);
+  const id = p.slice(4);
+  return TAGS.some((x) => x.id === id) ? tagLabel(id) : id;
   }
   return folderName(p) || '—';
 }
 
 let _seq = 0;
-const _closed = []; // снимки закрытых вкладок для повторного открытия
+const _closed = []; // snapshots of closed tabs for reopening
 
 function makePane(path = '') {
   return {
@@ -36,17 +36,17 @@ function makeTab(homePath = '') {
     id: `tab-${_seq}`,
     split: false,
     activeSide: 'left',
-    color: null, // {from, to} — градиент слева направо (на будущее)
+    color: null, // {from, to} — left-to-right gradient (for the future)
     panes: { left: makePane(homePath), right: makePane('') },
   };
 }
 
 export function initialTabsState() {
-  const tab = makeTab(''); // путь подставим в boot, после homeDir()
+  const tab = makeTab(''); // path is filled in at boot, after homeDir()
   return { tabs: [tab], activeTabId: tab.id };
 }
 
-/* ── Селекторы ─────────────────────────────── */
+/* ── Selectors ─────────────────────────────── */
 
 export function getActiveTab(state) {
   return state.tabs.find((t) => t.id === state.activeTabId);
@@ -62,7 +62,7 @@ export function tabTitle(tab) {
   return `${left} / ${sideName(tab.panes.right.path)}`;
 }
 
-/* ── Действия: вкладки ─────────────────────── */
+/* ── Actions: tabs ─────────────────────────── */
 
 export function createTab(store) {
   store.setState((state) => {
@@ -104,7 +104,7 @@ export function closeTab(store, id) {
   });
 }
 
-/** Открыть последнюю закрытую вкладку (с её панелями). */
+/** Reopen the last closed tab (with its panes). */
 export function reopenTab(store) {
   store.setState((state) => {
     const snap = _closed.pop();
@@ -120,7 +120,7 @@ export function reopenTab(store) {
   });
 }
 
-/** Переставить вкладку в конец. */
+/** Move a tab to the end. */
 export function moveTabEnd(store, id) {
   store.setState((state) => {
     const tabs = [...state.tabs];
@@ -138,10 +138,10 @@ export function setTabColor(store, id, color) {
   }));
 }
 
-/* ── Действия: раскол активной вкладки ─────── */
+/* ── Actions: split the active tab ─────────── */
 
-// Разделить: включить вторую панель с той же папкой, что слева
-// (historyIndex == -1 → правая панель сама догрузит её).
+// Split: enable the second panel with the same folder as the left one
+// (historyIndex == -1 → the right panel loads it itself).
 export function splitTab(store) {
   store.setState((state) => ({
     tabs: state.tabs.map((t) => {
@@ -151,14 +151,14 @@ export function splitTab(store) {
   }));
 }
 
-// Закрыть правую половину: вернуть вкладку к одной панели, сбросить правую,
-// активной сделать левую.
+// Close the right half: return the tab to a single panel, reset the right one,
+// make the left one active.
 export function closeSplit(store, side = 'right') {
   store.setState((state) => ({
     tabs: state.tabs.map((t) => {
       if (t.id !== state.activeTabId || !t.split) return t;
       if (side === 'left') {
-        // закрываем левую — правая остаётся и становится единственной
+        // closing the left — the right remains and becomes the only one
         return { ...t, split: false, activeSide: 'left', panes: { left: t.panes.right, right: makePane('') } };
       }
       return { ...t, split: false, activeSide: 'left', panes: { ...t.panes, right: makePane('') } };
@@ -166,7 +166,7 @@ export function closeSplit(store, side = 'right') {
   }));
 }
 
-/** Переставить вкладку fromId непосредственно перед toId. */
+/** Move tab fromId to immediately before toId. */
 export function moveTab(store, fromId, toId) {
   if (fromId === toId) return;
   store.setState((state) => {

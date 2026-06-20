@@ -32,6 +32,11 @@ export class StatusBar extends Component {
     this._cleanups.push(() => clearTimeout(this._hintTimer));
   }
 
+  /** Перерисовка при смене языка (если не показана вспышка-подсказка). */
+  applyLang() {
+    if (!this._hintTimer) this.render();
+  }
+
   async loadStorage() {
     try {
       const disks = (await listStorage()) || [];

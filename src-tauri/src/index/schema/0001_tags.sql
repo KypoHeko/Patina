@@ -1,5 +1,5 @@
--- Привязка тегов к файлам по пути. Набор тегов фиксированный и описан
--- на фронте (config/tags.js); здесь храним только назначения.
+-- Tag-to-file assignments keyed by path. The tag set is fixed and described
+-- on the front end (config/tags.js); here we store only the assignments.
 CREATE TABLE IF NOT EXISTS file_tags (
     path   TEXT NOT NULL,
     tag_id TEXT NOT NULL,

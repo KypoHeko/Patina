@@ -1,4 +1,4 @@
-//! Доступ к таблице file_tags.
+//! Access to the file_tags table.
 
 use std::collections::HashMap;
 
@@ -28,10 +28,11 @@ pub fn remove(conn: &Connection, path: &str, tag_id: &str) -> Result<()> {
     Ok(())
 }
 
-/// Теги для набора путей одним запросом `IN` (батчами, т.к. SQLite по умолчанию
-/// ограничивает число bound-параметров 999). Возвращаются только помеченные пути.
+/// Tags for a set of paths in a single `IN` query (in batches, since SQLite by
+/// default limits the number of bound parameters to 999). Only tagged paths are
+/// returned.
 pub fn for_paths(conn: &Connection, paths: &[String]) -> Result<HashMap<String, Vec<String>>> {
-    // нормализованный_ключ -> исходная строка вызывающего
+    // normalized_key -> the caller's original string
     let mut origin: HashMap<String, String> = HashMap::new();
     for p in paths {
         origin.entry(normalize(p)).or_insert_with(|| p.clone());
@@ -71,8 +72,8 @@ pub fn paths_for(conn: &Connection, tag_id: &str) -> Result<Vec<String>> {
 }
 
 
-/// Перенести теги при переименовании/перемещении: old -> new, включая
-/// вложенные пути (для папок). Затрагиваются только релевантные строки.
+/// Remap tags on rename/move: old -> new, including nested paths (for folders).
+/// Only the relevant rows are affected.
 pub fn relink(conn: &Connection, old: &str, new: &str) -> Result<()> {
     let old = normalize(old);
     let new = normalize(new);
@@ -94,7 +95,7 @@ pub fn relink(conn: &Connection, old: &str, new: &str) -> Result<()> {
         return Ok(());
     }
 
-    // Один burst вместо N autocommit-записей в WAL. На ошибке — откат.
+    // A single burst instead of N autocommit writes to the WAL. Roll back on error.
     conn.execute_batch("BEGIN")?;
     let res: Result<()> = (|| {
         let mut stmt = conn
@@ -121,7 +122,7 @@ pub fn relink(conn: &Connection, old: &str, new: &str) -> Result<()> {
     }
 }
 
-/// Удалить теги пути и всех вложенных (при удалении в Корзину) — одним запросом.
+/// Delete tags of a path and all nested ones (on move to Trash) — in one query.
 pub fn purge(conn: &Connection, path: &str) -> Result<()> {
     let path = normalize(path);
     let path = path.as_str();
@@ -133,7 +134,7 @@ pub fn purge(conn: &Connection, path: &str) -> Result<()> {
     Ok(())
 }
 
-/// Кол-во файлов на каждый тег.
+/// Number of files per tag.
 pub fn counts(conn: &Connection) -> Result<HashMap<String, i64>> {
     let mut stmt = conn.prepare("SELECT tag_id, COUNT(*) FROM file_tags GROUP BY tag_id")?;
     let mut map: HashMap<String, i64> = HashMap::new();
@@ -199,16 +200,18 @@ mod tests {
     #[test]
     fn relink_moves_exact_and_nested_keeps_sibling() {
         let conn = mem();
-        assign(&conn, "C:\\proj\\b", "urgent").unwrap(); // сама папка
-        assign(&conn, "C:\\proj\\b\\x.txt", "done").unwrap(); // вложенный
-        assign(&conn, "C:\\proj\\bb\\y.txt", "reference").unwrap(); // СОСЕД — не трогать
+        assign(&conn, "C:\\proj\\b", "urgent").unwrap(); // the folder itself
+        assign(&conn, "C:\\proj\\b\\x.txt", "done").unwrap(); // nested
+        assign(&conn, "C:\\proj\\bb\\y.txt", "reference").unwrap(); // SIBLING — leave alone
         relink(&conn, "C:\\proj\\b", "C:\\proj\\renamed").unwrap();
+        // Paths are stored canonicalized (path_key::normalize) — we run the
+        // expectations through the same normalization so the test is OS-independent.
         assert_eq!(
             rows(&conn),
             vec![
-                ("C:\\proj\\bb\\y.txt".to_string(), "reference".to_string()),
-                ("C:\\proj\\renamed".to_string(), "urgent".to_string()),
-                ("C:\\proj\\renamed\\x.txt".to_string(), "done".to_string()),
+                (normalize("C:\\proj\\bb\\y.txt"), "reference".to_string()),
+                (normalize("C:\\proj\\renamed"), "urgent".to_string()),
+                (normalize("C:\\proj\\renamed\\x.txt"), "done".to_string()),
             ]
         );
     }
@@ -222,7 +225,7 @@ mod tests {
         purge(&conn, "C:\\proj\\b").unwrap();
         assert_eq!(
             rows(&conn),
-            vec![("C:\\proj\\bb\\y.txt".to_string(), "reference".to_string())]
+            vec![(normalize("C:\\proj\\bb\\y.txt"), "reference".to_string())]
         );
     }
 
@@ -232,11 +235,13 @@ mod tests {
         assign(&conn, "/home/u/b/x", "done").unwrap();
         assign(&conn, "/home/u/bb/y", "urgent").unwrap();
         relink(&conn, "/home/u/b", "/home/u/c").unwrap();
+        // Forward slashes on input are canonicalized too (on Windows → '\'),
+        // so we build the expectations through normalize.
         assert_eq!(
             rows(&conn),
             vec![
-                ("/home/u/bb/y".to_string(), "urgent".to_string()),
-                ("/home/u/c/x".to_string(), "done".to_string()),
+                (normalize("/home/u/bb/y"), "urgent".to_string()),
+                (normalize("/home/u/c/x"), "done".to_string()),
             ]
         );
     }

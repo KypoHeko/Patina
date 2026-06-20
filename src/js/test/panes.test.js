@@ -6,9 +6,9 @@ import {
   selectInPane,
   recordHistory,
   stepHistory,
-} from './panes.js';
+} from '../state/panes.js';
 import { createStore } from '../core/store.js';
-import { initialTabsState } from './tabs.js';
+import { initialTabsState } from '../state/tabs.js';
 
 function makeStore() {
   return createStore({ ...initialTabsState(), homePath: '/home' });

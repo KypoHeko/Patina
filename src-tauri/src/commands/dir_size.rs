@@ -1,14 +1,15 @@
-//! Команды размеров папок (Фаза 1).
+//! Folder size commands (Phase 1).
 //!
-//! `compute_dir_sizes` — авторитетный обход поддерева по кнопке: считает
-//! рекурсивный размер КАЖДОГО каталога и сохраняет в `dir_agg`. Обход
-//! post-order (`contents_first`): когда мы выходим из каталога, суммы всех его
-//! потомков уже накоплены, поэтому всё считается за один проход со стеком
-//! аккумуляторов (память O(глубины), не O(числа файлов)). Берём только
-//! метаданные — без чтения содержимого, поэтому это на порядок дешевле
-//! контент-индексации. Поддержание свежести (вотчер/дельты) — отдельная фаза.
+//! `compute_dir_sizes` is the authoritative on-demand subtree walk: it computes
+//! the recursive size of EVERY directory and stores it in `dir_agg`. The walk is
+//! post-order (`contents_first`): by the time we leave a directory, the sums of
+//! all its descendants are already accumulated, so everything is computed in a
+//! single pass with a stack of accumulators (memory O(depth), not O(file count)).
+//! We take only metadata — no content reads — so this is an order of magnitude
+//! cheaper than content indexing. Keeping it fresh (watcher/deltas) is a
+//! separate phase.
 //!
-//! `dir_sizes` — точечное чтение готовых значений для показа в панели.
+//! `dir_sizes` reads the ready values for specific paths for display in the panel.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -18,11 +19,11 @@ use tauri::{AppHandle, Emitter, Manager};
 use walkdir::WalkDir;
 
 use crate::error::{Error, Result};
-use crate::index::dir_agg_repo::{self, DirAgg};
+use crate::index::dir_agg::{self, DirAgg};
 use crate::index::path_key;
 use crate::state::AppState;
 
-/// Через сколько записанных каталогов коммитим батч и шлём прогресс.
+/// After how many written directories we commit a batch and emit progress.
 const COMMIT_BATCH: usize = 2000;
 
 fn max_opt(a: Option<i64>, b: Option<i64>) -> Option<i64> {
@@ -38,21 +39,22 @@ pub async fn compute_dir_sizes(app: AppHandle, root: String) -> Result<usize> {
     tauri::async_runtime::spawn_blocking(move || -> Result<usize> {
         let state = app.state::<AppState>();
 
-        // Свежий пересчёт: убираем прежние агрегаты поддерева, чтобы не оставались
-        // строки для каталогов, которых уже нет.
+        // Fresh recompute: drop the previous subtree aggregates so no rows remain
+        // for directories that no longer exist.
         {
             let conn = state.db()?;
-            dir_agg_repo::clear_subtree(&conn, &path_key::normalize(&root))?;
+            dir_agg::clear_subtree(&conn, &path_key::normalize(&root))?;
         }
 
-        // path -> (накопленный размер, число файлов, максимальный mtime).
+        // path -> (accumulated size, file count, maximum mtime).
         let mut acc: HashMap<PathBuf, (i64, i64, Option<i64>)> = HashMap::new();
         let mut batch: Vec<DirAgg> = Vec::with_capacity(COMMIT_BATCH);
         let mut done_dirs = 0usize;
 
-        // follow_links(false) + отсечение симлинков: не разворачиваем ссылки,
-        // иначе циклы и двойной счёт. (Junction'ы Windows — известное ограничение
-        // Фазы 1.) contents_first(true) — каталог выдаётся ПОСЛЕ его содержимого.
+        // follow_links(false) + skipping symlinks: we do not follow links,
+        // otherwise cycles and double counting. (Windows junctions are a known
+        // Phase 1 limitation.) contents_first(true) — a directory is yielded
+        // AFTER its contents.
         let walker = WalkDir::new(&root)
             .follow_links(false)
             .contents_first(true)
@@ -72,7 +74,7 @@ pub async fn compute_dir_sizes(app: AppHandle, root: String) -> Result<usize> {
             let path = entry.path();
 
             if meta.is_dir() {
-                // Все потомки уже обработаны (contents_first) — берём накопленное.
+                // All descendants are already processed (contents_first) — take the accumulated value.
                 let (size, count, mmax) = acc.remove(path).unwrap_or((0, 0, None));
                 let mmax = max_opt(mmax, mtime);
                 batch.push(DirAgg {
@@ -83,7 +85,7 @@ pub async fn compute_dir_sizes(app: AppHandle, root: String) -> Result<usize> {
                 });
                 done_dirs += 1;
 
-                // Вклад каталога в его родителя.
+                // The directory's contribution to its parent.
                 if let Some(parent) = path.parent() {
                     let e = acc.entry(parent.to_path_buf()).or_insert((0, 0, None));
                     e.0 += size;
@@ -94,7 +96,7 @@ pub async fn compute_dir_sizes(app: AppHandle, root: String) -> Result<usize> {
                 if batch.len() >= COMMIT_BATCH {
                     {
                         let conn = state.db()?;
-                        dir_agg_repo::upsert_many(&conn, &batch)?;
+                        dir_agg::upsert_many(&conn, &batch)?;
                     }
                     batch.clear();
                     let _ = app.emit(
@@ -103,7 +105,7 @@ pub async fn compute_dir_sizes(app: AppHandle, root: String) -> Result<usize> {
                     );
                 }
             } else {
-                // Файл: его размер идёт в накопитель родителя.
+                // File: its size goes into the parent's accumulator.
                 let size = meta.len() as i64;
                 if let Some(parent) = path.parent() {
                     let e = acc.entry(parent.to_path_buf()).or_insert((0, 0, None));
@@ -116,7 +118,7 @@ pub async fn compute_dir_sizes(app: AppHandle, root: String) -> Result<usize> {
 
         if !batch.is_empty() {
             let conn = state.db()?;
-            dir_agg_repo::upsert_many(&conn, &batch)?;
+            dir_agg::upsert_many(&conn, &batch)?;
         }
 
         let _ = app.emit(
@@ -126,7 +128,7 @@ pub async fn compute_dir_sizes(app: AppHandle, root: String) -> Result<usize> {
         Ok(done_dirs)
     })
     .await
-    .map_err(|e| Error::Operation(format!("compute_dir_sizes прервана: {e}")))?
+    .map_err(|e| Error::Operation(format!("compute_dir_sizes interrupted: {e}")))?
 }
 
 #[tauri::command]
@@ -134,8 +136,8 @@ pub async fn dir_sizes(app: AppHandle, paths: Vec<String>) -> Result<HashMap<Str
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<AppState>();
         let conn = state.db_read()?;
-        dir_agg_repo::sizes_for(&conn, &paths)
+        dir_agg::sizes_for(&conn, &paths)
     })
     .await
-    .map_err(|e| Error::Operation(format!("dir_sizes прервана: {e}")))?
+    .map_err(|e| Error::Operation(format!("dir_sizes interrupted: {e}")))?
 }

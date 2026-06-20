@@ -1,7 +1,7 @@
-//! Хранилище агрегатов по каталогам (`dir_agg`): рекурсивный размер и число
-//! файлов поддерева. Размеры заполняются обходом по кнопке и читаются панелью
-//! точечно. Поля hash/hash_dirty этот репозиторий не трогает — хеши (будущий
-//! меркловский роллап) живут отдельным механизмом.
+//! Per-directory aggregate store (`dir_agg`): recursive subtree size and file
+//! count. Sizes are filled by an on-demand traversal and read by the panel for
+//! specific paths. This repository does not touch the hash/hash_dirty fields —
+//! hashes (a future Merkle rollup) live in a separate mechanism.
 
 use std::collections::HashMap;
 
@@ -11,7 +11,7 @@ use crate::error::Result;
 use crate::index::path_bounds::subtree_bounds;
 use crate::index::path_key;
 
-/// Строка агрегата. `path` — уже канонический ключ (path_key::normalize).
+/// An aggregate row. `path` is already a canonical key (path_key::normalize).
 pub struct DirAgg {
     pub path: String,
     pub total_size: i64,
@@ -19,7 +19,7 @@ pub struct DirAgg {
     pub mtime_max: Option<i64>,
 }
 
-/// Батч-upsert агрегатов в одной транзакции. hash/hash_dirty не затрагиваются.
+/// Batch upsert of aggregates in a single transaction. hash/hash_dirty untouched.
 pub fn upsert_many(conn: &Connection, rows: &[DirAgg]) -> Result<()> {
     let tx = conn.unchecked_transaction()?;
     {
@@ -39,9 +39,10 @@ pub fn upsert_many(conn: &Connection, rows: &[DirAgg]) -> Result<()> {
     Ok(())
 }
 
-/// Удалить агрегаты всего поддерева `root_key` (включая сам корень) перед
-/// свежим пересчётом — чтобы не оставались строки для исчезнувших каталогов.
-/// Полуинтервал [prefix, upper) — тот же приём, что и в остальных репозиториях.
+/// Delete aggregates for the whole `root_key` subtree (including the root
+/// itself) before a fresh recompute — so no rows remain for vanished
+/// directories. The half-open interval [prefix, upper) is the same trick used
+/// across the other repositories.
 pub fn clear_subtree(conn: &Connection, root_key: &str) -> Result<()> {
     let (_sep, prefix, upper) = subtree_bounds(root_key);
     conn.execute(
@@ -51,9 +52,9 @@ pub fn clear_subtree(conn: &Connection, root_key: &str) -> Result<()> {
     Ok(())
 }
 
-/// Размеры для конкретных путей (для показа в панели). Ключ результата — это
-/// ИСХОДНЫЙ путь из запроса (как его знает фронт), значение — total_size.
-/// Каталоги, для которых агрегат ещё не посчитан, в результат не попадают.
+/// Sizes for specific paths (for display in the panel). The result key is the
+/// ORIGINAL path from the query (as the frontend knows it), the value is
+/// total_size. Directories whose aggregate is not computed yet are omitted.
 pub fn sizes_for(conn: &Connection, paths: &[String]) -> Result<HashMap<String, i64>> {
     let mut out = HashMap::with_capacity(paths.len());
     let mut stmt = conn.prepare("SELECT total_size FROM dir_agg WHERE path = ?1")?;

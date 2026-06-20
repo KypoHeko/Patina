@@ -1,4 +1,4 @@
-//! Открытие соединения и применение миграций (версия — PRAGMA user_version).
+//! Open the connection and apply migrations (version tracked via PRAGMA user_version).
 
 use std::fs;
 

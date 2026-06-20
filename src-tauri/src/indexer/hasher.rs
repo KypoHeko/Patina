@@ -1,4 +1,4 @@
-//! Потоковое хеширование файла (BLAKE3).
+//! Streaming file hashing (BLAKE3).
 
 use std::fs::File;
 use std::io::{self, Read};
@@ -10,20 +10,20 @@ pub fn hash_file(path: &str) -> io::Result<String> {
     Ok(hasher.finalize().to_hex().to_string())
 }
 
-/// Хеширует файл и одновременно собирает его байты в память — один проход
-/// по диску вместо двух (hash_file + std::fs::read).
+/// Hashes a file and collects its bytes into memory at the same time — one disk
+/// pass instead of two (hash_file + std::fs::read).
 ///
-/// Используется в `versions::do_snapshot` для zstd-ветки, где нам нужны и
-/// BLAKE3-хеш (для CAS-адресации блоба), и содержимое (для сжатия).
+/// Used in `versions::do_snapshot` for the zstd branch, where we need both the
+/// BLAKE3 hash (for CAS addressing of the blob) and the contents (for compression).
 ///
-/// Размер файла заранее не известен функции, но вызывающая сторона должна
-/// ограничить вызов файлами < CHUNK_THRESHOLD (15 MB), чтобы не выкачать
-/// в память крупный файл — для больших применяется чанковая стратегия,
-/// которая читает файл потоково через `chunker::chunk_file`.
+/// The function does not know the file size in advance, but the caller must
+/// limit the call to files < CHUNK_THRESHOLD (15 MB) so as not to pull a large
+/// file into memory — for big ones the chunked strategy applies, reading the
+/// file as a stream via `chunker::chunk_file`.
 pub fn hash_and_read(path: &str) -> io::Result<(String, Vec<u8>)> {
     let mut hasher = blake3::Hasher::new();
     let mut file = File::open(path)?;
-    // 64 KB на итерацию — достаточно для эффективности и не сильно давит на кэш.
+    // 64 KB per iteration — enough for efficiency and not too hard on the cache.
     let mut buf = vec![0u8; 64 * 1024];
     let mut data = Vec::new();
     loop {
@@ -54,8 +54,8 @@ mod tests {
 
         let (h, data) = hash_and_read(tmp.to_str().unwrap()).unwrap();
         let h_only = hash_file(tmp.to_str().unwrap()).unwrap();
-        assert_eq!(h, h_only, "хеши должны совпадать");
-        assert_eq!(data, payload, "байты должны совпадать с оригиналом");
+        assert_eq!(h, h_only, "hashes must match");
+        assert_eq!(data, payload, "bytes must match the original");
 
         let _ = std::fs::remove_file(&tmp);
     }

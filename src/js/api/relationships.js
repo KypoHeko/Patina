@@ -1,7 +1,7 @@
 import { invoke } from './invoke.js';
 
-// Ручная (неориентированная) связь между двумя файлами. Хранится с kind='manual'
-// и не перетирается переиндексацией.
+// A manual (undirected) link between two files. Stored with kind='manual'
+// and not overwritten by reindexing.
 export function addRelationship(a, b) {
   return invoke('add_relationship', { a, b });
 }
@@ -9,16 +9,16 @@ export function removeRelationship(a, b) {
   return invoke('remove_relationship', { a, b });
 }
 
-/** Граф вокруг seed-путей.
- *  Возвращает { nodes: [{ path, name, isDir }], edges: [{ src, dst, kind }] }.
- *  Исходящие рёбра (src=seed) — зависимости, входящие (dst=seed) — обратные
- *  ссылки. hops — глубина обхода (1 = только прямые соседи). */
+/** Graph around the seed paths.
+ *  Returns { nodes: [{ path, name, isDir }], edges: [{ src, dst, kind }] }.
+ *  Outgoing edges (src=seed) are dependencies, incoming (dst=seed) are
+ *  back-references. hops — traversal depth (1 = direct neighbors only). */
 export function fileGraph(seeds, hops = 1) {
   return invoke('file_graph', { seeds, hops });
 }
 
-/** Хеширование файлов графа (BLAKE3). Возвращает [{ path, hash, cached }].
- *  Кэширует результат в таблице files (инвалидируется по mtime). */
+/** Hash the graph's files (BLAKE3). Returns [{ path, hash, cached }].
+ *  Caches the result in the files table (invalidated by mtime). */
 export function hashGraphFiles(paths) {
   return invoke('hash_graph_files', { paths });
 }

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { createStore } from './store.js';
+import { createStore } from '../core/store.js';
 
 describe('createStore', () => {
   it('возвращает начальное состояние через getState', () => {

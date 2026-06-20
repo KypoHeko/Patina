@@ -1,6 +1,6 @@
-// Палитры приложения. Тема — это атрибут data-theme на <html>; CSS-токены
-// (styles/tokens.css) делают всю работу. Выбор сохраняется в localStorage.
-// Подписи палитр локализуются по id через i18n: t('theme.<id>').
+// Application palettes. The theme is the data-theme attribute on <html>; CSS
+// tokens (styles/tokens.css) do all the work. The choice is saved in localStorage.
+// Palette labels are localized by id via i18n: t('theme.<id>').
 
 const KEY = 'patina:theme';
 
@@ -34,11 +34,11 @@ export function setTheme(id) {
   try {
     localStorage.setItem(KEY, id);
   } catch {
-    /* приватный режим / запрет хранилища — тема применится без сохранения */
+    /* private mode / storage disabled — the theme applies without being saved */
   }
 }
 
-/** Применить сохранённую тему как можно раньше (до отрисовки компонентов). */
+/** Apply the saved theme as early as possible (before components render). */
 export function initTheme() {
   applyTheme(getTheme());
 }

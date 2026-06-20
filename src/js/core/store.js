@@ -1,5 +1,5 @@
-// Центральное хранилище состояния. Заменяет нам стейт фреймворка.
-// Три операции: прочитать, изменить, подписаться на изменения.
+// Central state store. Our replacement for a framework's state.
+// Three operations: read, change, subscribe to changes.
 
 /**
  * @param {object} initialState
@@ -14,8 +14,8 @@ export function createStore(initialState) {
   }
 
   /**
-   * Изменить состояние. patch — либо объект (поверхностно сливается),
-   * либо функция (state) => partial для вычисления изменений от текущего.
+   * Change the state. patch is either an object (shallow-merged),
+   * or a function (state) => partial to compute changes from the current state.
    */
   function setState(patch) {
     const partial = typeof patch === 'function' ? patch(state) : patch;
@@ -23,7 +23,7 @@ export function createStore(initialState) {
     subscribers.forEach((fn) => fn(state));
   }
 
-  /** Подписаться. Возвращает функцию отписки. */
+  /** Subscribe. Returns an unsubscribe function. */
   function subscribe(fn) {
     subscribers.add(fn);
     return () => subscribers.delete(fn);

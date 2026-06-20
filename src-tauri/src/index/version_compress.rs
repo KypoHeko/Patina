@@ -1,8 +1,8 @@
-//! Сжатие версий zstd с обучаемым словарём.
+//! zstd version compression with a trainable dictionary.
 //!
-//! Для файлов < 15 MB: сжимаем с зоновым словарём (если он уже обучен),
-//! иначе — обычное zstd-сжатие. Словарь обучается по накопленным блобам
-//! после каждых N новых сжатых версий.
+//! For files < 15 MB: compress with a shared dictionary (if one is already
+//! trained), otherwise plain zstd compression. The dictionary is trained from
+//! accumulated blobs after every N new compressed versions.
 
 use std::fs;
 use std::io::Read;
@@ -10,17 +10,22 @@ use std::path::{Path, PathBuf};
 
 use crate::error::{Error, Result};
 
-/// Уровень сжатия zstd (1–22). 3 — быстрый и хороший компромисс.
+/// zstd compression level (1–22). 3 is a fast, good compromise.
 const ZSTD_LEVEL: i32 = 3;
 
-/// Минимальное число сжатых блобов для обучения словаря.
+/// Minimum number of compressed blobs required to train a dictionary.
 const DICT_MIN_SAMPLES: usize = 4;
 
-/// Обучать словарь заново после каждых N новых сжатых версий.
+/// Retrain the dictionary after every N new compressed versions.
 const DICT_RETRAIN_INTERVAL: usize = 8;
 
-/// Сжать данные с zstd-словарём (если доступен) или без него.
-/// Возвращает сжатые байты и id использованного словаря (None = без словаря).
+/// Maximum size of a trained dictionary. This is also the output buffer
+/// capacity in `zstd::dict::from_samples`: at 0 the buffer is empty and training
+/// always fails with "Destination buffer too small". 110 KiB is the zstd default.
+const DICT_MAX_SIZE: usize = 112_640;
+
+/// Compress data with a zstd dictionary (if available) or without one.
+/// Returns the compressed bytes and the id of the dictionary used (None = no dict).
 pub fn compress(
     data: &[u8],
     dicts_dir: &Path,
@@ -45,14 +50,14 @@ pub fn compress(
         }
     }
 
-    // Без словаря — обычное сжатие
+    // No dictionary — plain compression
     let compressed = zstd::encode_all(data, ZSTD_LEVEL)
         .map_err(|e| Error::Operation(format!("zstd encode: {e}")))?;
     Ok((compressed, None))
 }
 
-/// Распаковать данные, сжатые zstd. Если версия сжата со словарём —
-/// загружаем нужный словарь и используем его.
+/// Decompress zstd-compressed data. If the version was compressed with a
+/// dictionary, load that dictionary and use it.
 pub fn decompress(data: &[u8], dicts_dir: &Path, dict_id: Option<i64>) -> Result<Vec<u8>> {
     if let Some(id) = dict_id {
         let dict_path = dict_file(dicts_dir, id);
@@ -67,21 +72,21 @@ pub fn decompress(data: &[u8], dicts_dir: &Path, dict_id: Option<i64>) -> Result
         }
     }
 
-    // Без словаря
+    // No dictionary
     let decompressed =
         zstd::decode_all(data).map_err(|e| Error::Operation(format!("zstd decode: {e}")))?;
     Ok(decompressed)
 }
 
-/// Обучить новый словарь из существующих сжатых блобов.
-/// `samples` — пути к файлам-образцам (несжатые оригиналы или уже сжатые блобы).
-/// zstd dict::from_samples работает на несжатых данных — передаём сэмплы из кэша.
+/// Train a new dictionary from existing compressed blobs.
+/// `samples` — sample data (uncompressed originals or already-compressed blobs).
+/// zstd dict::from_samples works on uncompressed data — we pass samples from cache.
 ///
-/// Возвращает id нового словаря (он же записывается в БД).
+/// Returns the id of the new dictionary (also written to the DB).
 pub fn train_dict(dicts_dir: &Path, samples: &[Vec<u8>], new_dict_id: i64) -> Result<PathBuf> {
     if samples.len() < DICT_MIN_SAMPLES {
         return Err(Error::Operation(format!(
-            "нужно минимум {} сэмплов для обучения словаря, есть {}",
+            "need at least {} samples to train a dictionary, have {}",
             DICT_MIN_SAMPLES,
             samples.len()
         )));
@@ -89,9 +94,9 @@ pub fn train_dict(dicts_dir: &Path, samples: &[Vec<u8>], new_dict_id: i64) -> Re
 
     fs::create_dir_all(dicts_dir).map_err(Error::Io)?;
 
-    // zstd::dict::from_samples обучает словарь на наборе сэмплов.
-    // Каждый сэмпл — несжатые данные одного файла.
-    let dict_data = zstd::dict::from_samples(samples, 0)
+    // zstd::dict::from_samples trains a dictionary from a set of samples.
+    // Each sample is the uncompressed data of one file.
+    let dict_data = zstd::dict::from_samples(samples, DICT_MAX_SIZE)
         .map_err(|e| Error::Operation(format!("zstd dict train: {e}")))?;
 
     let path = dict_file(dicts_dir, new_dict_id);
@@ -99,26 +104,26 @@ pub fn train_dict(dicts_dir: &Path, samples: &[Vec<u8>], new_dict_id: i64) -> Re
     Ok(path)
 }
 
-/// Путь к файлу словаря по id.
+/// Path to a dictionary file by id.
 pub fn dict_file(dicts_dir: &Path, id: i64) -> PathBuf {
     dicts_dir.join(format!("dict-{id}.zstd"))
 }
 
-/// Каталог словарей внутри versions_dir.
+/// The dictionaries directory inside versions_dir.
 pub fn dicts_dir(versions_dir: &Path) -> PathBuf {
     versions_dir.join("dicts")
 }
 
-/// Нужно ли переобучить словарь?
+/// Should the dictionary be retrained?
 ///
-/// `zstd_count` — сколько версий со strategy='zstd' уже хранится сейчас.
-/// `trained_at` — сколько zstd-версий было на момент обучения текущего словаря
-/// (None, если словаря ещё нет).
+/// `zstd_count` — how many versions with strategy='zstd' are stored right now.
+/// `trained_at` — how many zstd versions existed when the current dictionary was
+/// trained (None if there is no dictionary yet).
 ///
-/// Переобучение запускается, если:
-/// - словаря ещё нет и накопилось минимум DICT_MIN_SAMPLES сэмплов;
-/// - словарь есть, но с момента обучения появилось DICT_RETRAIN_INTERVAL
-///   новых zstd-версий.
+/// Retraining is triggered if:
+/// - there is no dictionary yet and at least DICT_MIN_SAMPLES samples accumulated;
+/// - a dictionary exists but DICT_RETRAIN_INTERVAL new zstd versions have
+///   appeared since it was trained.
 pub fn should_retrain(zstd_count: usize, trained_at: Option<usize>) -> bool {
     match trained_at {
         None => zstd_count >= DICT_MIN_SAMPLES,
@@ -152,11 +157,13 @@ mod tests {
         let dicts = dir.path().join("dicts");
         fs::create_dir_all(&dicts).unwrap();
 
-        // Генерируем сэмплы для обучения
-        let samples: Vec<Vec<u8>> = (0..5)
+        // Generate training samples. Their total size must comfortably exceed
+        // DICT_MAX_SIZE (110 KiB), otherwise zstd has nothing to train on:
+        // 64 documents of ~6 KiB of varied text ≈ 380 KiB.
+        let samples: Vec<Vec<u8>> = (0..64)
             .map(|i| {
-                format!("Sample document content #{i} with some common text pattern. ")
-                    .repeat(50)
+                format!("Sample document #{i}: common text pattern, shared words {i}. ")
+                    .repeat(100)
                     .into_bytes()
             })
             .collect();
@@ -174,17 +181,17 @@ mod tests {
 
     #[test]
     fn should_retrain_logic() {
-        // Словаря ещё нет
-        assert!(!should_retrain(3, None)); // ещё мало сэмплов
-        assert!(should_retrain(4, None)); // минимум достигнут
+        // No dictionary yet
+        assert!(!should_retrain(3, None)); // still too few samples
+        assert!(should_retrain(4, None)); // minimum reached
 
-        // Словарь обучен при 4 zstd-версиях
-        assert!(!should_retrain(5, Some(4))); // прошло 1 — рано
-        assert!(!should_retrain(11, Some(4))); // прошло 7 — ещё не достигли интервала (8)
-        assert!(should_retrain(12, Some(4))); // прошло 8 — переобучаем
+        // Dictionary trained at 4 zstd versions
+        assert!(!should_retrain(5, Some(4))); // 1 elapsed — too early
+        assert!(!should_retrain(11, Some(4))); // 7 elapsed — interval (8) not reached yet
+        assert!(should_retrain(12, Some(4))); // 8 elapsed — retrain
 
-        // Словарь обучен при 0 zstd-версиях (граничный случай)
+        // Dictionary trained at 0 zstd versions (edge case)
         assert!(!should_retrain(7, Some(0))); // 7 < 8
-        assert!(should_retrain(8, Some(0))); // 8 == интервал
+        assert!(should_retrain(8, Some(0))); // 8 == interval
     }
 }

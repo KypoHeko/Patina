@@ -1,6 +1,6 @@
-// Шина событий: «опубликовать / подписаться».
-// В отличие от стора (хранит ДАННЫЕ — что рисовать), шина передаёт
-// РАЗОВЫЕ события (что произошло). Так компоненты не знают друг о друге.
+// Event bus: "publish / subscribe".
+// Unlike the store (which holds DATA — what to render), the bus carries
+// ONE-OFF events (what happened). This way components do not know about each other.
 
 /**
  * @returns {{ on: function, off: function, emit: function }}
@@ -9,7 +9,7 @@ export function createEventBus() {
   /** @type {Map<string, Set<function>>} */
   const handlers = new Map();
 
-  /** Подписаться на событие. Возвращает функцию отписки. */
+  /** Subscribe to an event. Returns an unsubscribe function. */
   function on(event, fn) {
     if (!handlers.has(event)) handlers.set(event, new Set());
     handlers.get(event).add(fn);
@@ -20,7 +20,7 @@ export function createEventBus() {
     handlers.get(event)?.delete(fn);
   }
 
-  /** Опубликовать событие с произвольными данными. */
+  /** Publish an event with arbitrary data. */
   function emit(event, payload) {
     handlers.get(event)?.forEach((fn) => fn(payload));
   }

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parentPath, folderName, isRoot, pathCrumbs } from './paths.js';
+import { parentPath, folderName, isRoot, pathCrumbs } from '../lib/paths.js';
 
 describe('parentPath', () => {
   it('POSIX: возвращает родительский каталог', () => {

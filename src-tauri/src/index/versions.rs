@@ -1,4 +1,4 @@
-//! Таблица versions + version_chunks + zstd_dicts.
+//! The versions + version_chunks + zstd_dicts tables.
 
 use rusqlite::{Connection, OptionalExtension};
 use serde::Serialize;
@@ -21,6 +21,14 @@ pub struct Version {
     pub dict_id: Option<i64>,
 }
 
+/// Hash of the most recent version for a given path.
+///
+/// Not used in production code right now: `do_snapshot` checks for the hash
+/// among ALL versions via `has_hash_for_path`, which is stricter and correct
+/// for the case where the file already matches some older version.
+/// Kept as a utility for future needs (e.g. for UI that wants to show the
+/// "last saved hash").
+#[allow(dead_code)]
 pub fn latest_hash(conn: &Connection, path: &str) -> Result<Option<String>> {
     let path = normalize(path);
     let path = path.as_str();
@@ -34,7 +42,7 @@ pub fn latest_hash(conn: &Connection, path: &str) -> Result<Option<String>> {
     Ok(h)
 }
 
-/// Количество версий для данного пути.
+/// Number of versions for a given path.
 pub fn count_for(conn: &Connection, path: &str) -> Result<i64> {
     let path = normalize(path);
     let path = path.as_str();
@@ -46,7 +54,7 @@ pub fn count_for(conn: &Connection, path: &str) -> Result<i64> {
     Ok(count)
 }
 
-/// Количество версий со strategy='zstd' (для принятия решения об обучении словаря).
+/// Number of versions with strategy='zstd' (used to decide on dictionary training).
 pub fn zstd_count(conn: &Connection) -> Result<i64> {
     let count = conn.query_row(
         "SELECT COUNT(*) FROM versions WHERE strategy = 'zstd'",
@@ -56,7 +64,7 @@ pub fn zstd_count(conn: &Connection) -> Result<i64> {
     Ok(count)
 }
 
-/// Id текущего (последнего обученного) словаря.
+/// Id of the current (most recently trained) dictionary.
 pub fn current_dict_id(conn: &Connection) -> Result<Option<i64>> {
     let id = conn
         .query_row(
@@ -68,8 +76,8 @@ pub fn current_dict_id(conn: &Connection) -> Result<Option<i64>> {
     Ok(id)
 }
 
-/// Следующая метка: v1, v2, v3… Ищет максимальный числовой суффикс
-/// среди существующих меток формата vN и прибавляет 1.
+/// The next label: v1, v2, v3… Finds the maximum numeric suffix among existing
+/// labels of the form vN and adds 1.
 pub fn next_label(conn: &Connection, path: &str) -> Result<String> {
     let path = normalize(path);
     let path = path.as_str();
@@ -154,8 +162,8 @@ pub fn get(conn: &Connection, id: i64) -> Result<Option<Version>> {
     Ok(v)
 }
 
-/// Удалить версию по id. Возвращает (path, hash, strategy) удалённой записи —
-/// чтобы вызывающая сторона могла решить, удалять ли блоб/чанки.
+/// Delete a version by id. Returns (path, hash, strategy) of the removed row —
+/// so the caller can decide whether to delete the blob/chunks.
 pub fn delete(conn: &Connection, id: i64) -> Result<Option<(String, String, String)>> {
     let removed = conn
         .query_row(
@@ -165,15 +173,15 @@ pub fn delete(conn: &Connection, id: i64) -> Result<Option<(String, String, Stri
         )
         .optional()?;
     if let Some((..)) = &removed {
-        // Удаляем также чанки версии (если strategy='chunked')
+        // Also delete the version's chunks (if strategy='chunked')
         conn.execute("DELETE FROM version_chunks WHERE version_id = ?1", [id])?;
         conn.execute("DELETE FROM versions WHERE id = ?1", [id])?;
     }
     Ok(removed)
 }
 
-/// Проверить, ссылается ли ещё кто-нибудь на данный хеш блоба.
-/// Используется для безопасного удаления блоба/сжатого блоба.
+/// Check whether anyone still references this blob hash.
+/// Used for safe deletion of a blob/compressed blob.
 pub fn hash_refcount(conn: &Connection, hash: &str) -> Result<i64> {
     let count = conn.query_row(
         "SELECT COUNT(*) FROM versions WHERE hash = ?1",
@@ -183,7 +191,26 @@ pub fn hash_refcount(conn: &Connection, hash: &str) -> Result<i64> {
     Ok(count)
 }
 
-/// Проверить, ссылается ли ещё кто-нибудь на данный чанк.
+/// Whether a version of the given path with the given hash already exists.
+///
+/// Unlike `latest_hash` (which compares only against the most recent version),
+/// this checks ALL versions of the path. Used by `do_snapshot` to skip a
+/// snapshot if the file's current state is already stored in some version — for
+/// example, after a restore the file matches the restored version and a
+/// separate snapshot would be a duplicate. Likewise `do_restore` (via
+/// `do_snapshot`) does not pile up extra rows on repeated version switching.
+pub fn has_hash_for_path(conn: &Connection, path: &str, hash: &str) -> Result<bool> {
+    let path = normalize(path);
+    let path = path.as_str();
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM versions WHERE path = ?1 AND hash = ?2",
+        (path, hash),
+        |r| r.get(0),
+    )?;
+    Ok(count > 0)
+}
+
+/// Check whether anyone still references this chunk.
 pub fn chunk_refcount(conn: &Connection, chunk_hash: &str) -> Result<i64> {
     let count = conn.query_row(
         "SELECT COUNT(*) FROM version_chunks WHERE chunk_hash = ?1",
@@ -193,7 +220,7 @@ pub fn chunk_refcount(conn: &Connection, chunk_hash: &str) -> Result<i64> {
     Ok(count)
 }
 
-/// Сохранить список чанков для версии (strategy='chunked').
+/// Store the list of chunks for a version (strategy='chunked').
 pub fn insert_chunks(conn: &Connection, version_id: i64, chunks: &[Chunk]) -> Result<()> {
     for (i, c) in chunks.iter().enumerate() {
         conn.execute(
@@ -204,7 +231,7 @@ pub fn insert_chunks(conn: &Connection, version_id: i64, chunks: &[Chunk]) -> Re
     Ok(())
 }
 
-/// Получить список чанков версии в порядке.
+/// Get the version's chunks in order.
 pub fn get_chunks(conn: &Connection, version_id: i64) -> Result<Vec<(String, i64)>> {
     let mut stmt = conn.prepare(
         "SELECT chunk_hash, chunk_size FROM version_chunks WHERE version_id = ?1 ORDER BY chunk_order",
@@ -215,9 +242,9 @@ pub fn get_chunks(conn: &Connection, version_id: i64) -> Result<Vec<(String, i64
     Ok(rows)
 }
 
-/// Записать новый словарь zstd в БД. Возвращает его id.
-/// `zstd_count_at_train` — сколько zstd-версий было на момент обучения
-/// (используется should_retrain для принятия решения о переобучении).
+/// Write a new zstd dictionary into the DB. Returns its id.
+/// `zstd_count_at_train` — how many zstd versions existed at training time
+/// (used by should_retrain to decide on retraining).
 pub fn insert_dict(conn: &Connection, ts: i64, size: i64, zstd_count_at_train: i64) -> Result<i64> {
     conn.execute(
         "INSERT INTO zstd_dicts (ts, size, zstd_count_at_train) VALUES (?1, ?2, ?3)",
@@ -226,8 +253,8 @@ pub fn insert_dict(conn: &Connection, ts: i64, size: i64, zstd_count_at_train: i
     Ok(conn.last_insert_rowid())
 }
 
-/// Сколько zstd-версий было на момент обучения текущего словаря.
-/// None, если словаря ещё нет. Используется should_retrain.
+/// How many zstd versions existed when the current dictionary was trained.
+/// None if there is no dictionary yet. Used by should_retrain.
 pub fn current_dict_zstd_count_at_train(conn: &Connection) -> Result<Option<i64>> {
     let v = conn
         .query_row(
@@ -239,7 +266,14 @@ pub fn current_dict_zstd_count_at_train(conn: &Connection) -> Result<Option<i64>
     Ok(v)
 }
 
-/// Проверить, используется ли ещё словарь (хотя бы одна версия ссылается на него).
+/// Check whether a dictionary is still in use (at least one version references it).
+///
+/// Not called in production code: zstd dictionaries are not GC'd separately
+/// (they grow monotonically, see `zstd_count_at_train` for the retraining
+/// logic). Kept as a utility for a future dictionary-GC implementation and used
+/// in the tests below. `#[cfg(test)]` suppresses the dead_code warning in a
+/// regular build.
+#[cfg(test)]
 pub fn dict_refcount(conn: &Connection, dict_id: i64) -> Result<i64> {
     let count = conn.query_row(
         "SELECT COUNT(*) FROM versions WHERE dict_id = ?1",
@@ -249,9 +283,9 @@ pub fn dict_refcount(conn: &Connection, dict_id: i64) -> Result<i64> {
     Ok(count)
 }
 
-/// Перенести историю версий при переименовании/перемещении: old -> new, включая
-/// вложенные пути (для папок). Контент-адресные блобы и чанки трогать
-/// не нужно — меняется только колонка `path`.
+/// Remap version history on rename/move: old -> new, including nested paths
+/// (for folders). Content-addressed blobs and chunks need not be touched —
+/// only the `path` column changes.
 pub fn relink(conn: &Connection, old: &str, new: &str) -> Result<()> {
     let old = normalize(old);
     let new = normalize(new);
@@ -290,15 +324,15 @@ pub fn relink(conn: &Connection, old: &str, new: &str) -> Result<()> {
     }
 }
 
-/// Удалить историю версий пути и всех вложенных (при удалении в Корзину).
-/// Блобы и чанки не удаляем: они контент-адресны и могут ссылаться другие пути;
-/// сбор мусора — отдельная задача.
+/// Delete version history of a path and all nested ones (on move to Trash).
+/// Blobs and chunks are not deleted: they are content-addressed and may be
+/// referenced by other paths; garbage collection is a separate task.
 pub fn purge(conn: &Connection, path: &str) -> Result<()> {
     let path = normalize(path);
     let path = path.as_str();
     let (_, prefix, upper) = subtree_bounds(path);
 
-    // Удаляем чанки для chunked-версий
+    // Delete chunks for chunked versions
     let version_ids: Vec<i64> = {
         let mut stmt = conn.prepare(
             "SELECT id FROM versions WHERE path = ?1 OR (path >= ?2 AND path < ?3)",
@@ -307,7 +341,7 @@ pub fn purge(conn: &Connection, path: &str) -> Result<()> {
             .collect::<rusqlite::Result<_>>()?
     };
     if !version_ids.is_empty() {
-        // Удаляем чанки партиями
+        // Delete chunks in batches
         for chunk_id in &version_ids {
             conn.execute("DELETE FROM version_chunks WHERE version_id = ?1", [chunk_id])?;
         }
@@ -350,12 +384,15 @@ mod tests {
         insert(&c, "C:\\proj\\b\\x.txt", 1, 20, "h2", "v1", "full", None).unwrap();
         insert(&c, "C:\\proj\\bb\\y.txt", 1, 30, "h3", "v1", "full", None).unwrap();
         relink(&c, "C:\\proj\\b", "C:\\proj\\renamed").unwrap();
+        // Paths in the DB are stored in canonical form (path_key::normalize), so
+        // we run expectations through the same normalization — keeps the test
+        // portable across OSes.
         assert_eq!(
             paths(&c),
             vec![
-                "C:\\proj\\bb\\y.txt".to_string(),
-                "C:\\proj\\renamed".to_string(),
-                "C:\\proj\\renamed\\x.txt".to_string(),
+                normalize("C:\\proj\\bb\\y.txt"),
+                normalize("C:\\proj\\renamed"),
+                normalize("C:\\proj\\renamed\\x.txt"),
             ]
         );
     }
@@ -367,7 +404,7 @@ mod tests {
         insert(&c, "C:\\proj\\b\\x.txt", 1, 20, "h2", "v1", "full", None).unwrap();
         insert(&c, "C:\\proj\\bb\\y.txt", 1, 30, "h3", "v1", "full", None).unwrap();
         purge(&c, "C:\\proj\\b").unwrap();
-        assert_eq!(paths(&c), vec!["C:\\proj\\bb\\y.txt".to_string()]);
+        assert_eq!(paths(&c), vec![normalize("C:\\proj\\bb\\y.txt")]);
     }
 
     #[test]
@@ -395,7 +432,7 @@ mod tests {
         let c = mem();
         insert(&c, "C:\\file.txt", 1, 10, "h1", "v1", "zstd", None).unwrap();
         let removed = delete(&c, 1).unwrap();
-        assert_eq!(removed, Some(("C:\\file.txt".to_string(), "h1".to_string(), "zstd".to_string())));
+        assert_eq!(removed, Some((normalize("C:\\file.txt"), "h1".to_string(), "zstd".to_string())));
         assert_eq!(count_for(&c, "C:\\file.txt").unwrap(), 0);
     }
 
@@ -418,7 +455,7 @@ mod tests {
         assert_eq!(chunk_refcount(&c, "ca").unwrap(), 1);
         assert_eq!(chunk_refcount(&c, "cx").unwrap(), 0);
 
-        // Удаление версии удаляет чанки
+        // Deleting a version deletes its chunks
         delete(&c, vid).unwrap();
         assert_eq!(chunk_refcount(&c, "ca").unwrap(), 0);
         assert!(get_chunks(&c, vid).unwrap().is_empty());
@@ -427,7 +464,7 @@ mod tests {
     #[test]
     fn dict_crud() {
         let c = mem();
-        // Обучили словарь при 4 zstd-версиях
+        // Trained the dictionary at 4 zstd versions
         let did = insert_dict(&c, 1000, 4096, 4).unwrap();
         assert_eq!(current_dict_id(&c).unwrap(), Some(did));
         assert_eq!(dict_refcount(&c, did).unwrap(), 0);

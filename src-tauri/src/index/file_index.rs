@@ -1,4 +1,4 @@
-//! Персистентный индекс файлов: быстрый поиск без обхода диска при каждом запросе.
+//! Persistent file index: fast search without walking the disk on every query.
 
 use rusqlite::Connection;
 
@@ -7,7 +7,7 @@ use crate::index::path_bounds::subtree_bounds;
 use crate::models::file::{EntryKind, FileEntry};
 use crate::index::path_key::normalize;
 
-/// Запись индекса (готовится при обходе ВНЕ блокировки БД).
+/// An index row (prepared during the walk, OUTSIDE the DB lock).
 pub struct IndexRow {
     pub path: String,
     pub name: String,
@@ -18,7 +18,7 @@ pub struct IndexRow {
 }
 
 
-/// Полностью заменить поддерево `root` в индексе (одной транзакцией).
+/// Fully replace the `root` subtree in the index (in a single transaction).
 pub fn replace_subtree(conn: &mut Connection, root: &str, rows: &[IndexRow]) -> Result<()> {
     let root = normalize(root);
     let root = root.as_str();
@@ -66,7 +66,7 @@ fn row_to_entry(r: &rusqlite::Row) -> rusqlite::Result<FileEntry> {
     })
 }
 
-/// Экранирование спецсимволов LIKE (% _ и сам escape-символ) для ESCAPE '\\'.
+/// Escape LIKE special characters (% _ and the escape character itself) for ESCAPE '\\'.
 fn escape_like(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 4);
     for c in s.chars() {
@@ -78,9 +78,10 @@ fn escape_like(s: &str) -> String {
     out
 }
 
-/// До `limit` записей поддерева. Фильтрация по подстроке имени — на стороне SQL
-/// (не переливаем всё дерево через IPC). Пустой `query` => базовый набор (для
-/// regex-режима фронта, где фильтрация идёт там). Regex/теги — на фронте.
+/// Up to `limit` rows of the subtree. Substring name filtering is done on the
+/// SQL side (we do not stream the whole tree over IPC). An empty `query` => the
+/// base set (for the front-end regex mode, where filtering happens there).
+/// Regex/tags are handled on the front end.
 pub fn search(conn: &Connection, root: &str, query: &str, limit: usize) -> Result<Vec<FileEntry>> {
     let root = normalize(root);
     let root = root.as_str();
@@ -110,7 +111,7 @@ pub fn search(conn: &Connection, root: &str, query: &str, limit: usize) -> Resul
     Ok(out)
 }
 
-/// Точечно обновить одну запись индекса (инкрементальное сопровождение).
+/// Update a single index row in place (incremental maintenance).
 pub fn upsert_one(conn: &Connection, row: &IndexRow) -> Result<()> {
     conn.execute(
         "INSERT OR REPLACE INTO file_index (path, name, name_lower, is_dir, size, mtime, ext)
@@ -128,7 +129,7 @@ pub fn upsert_one(conn: &Connection, row: &IndexRow) -> Result<()> {
     Ok(())
 }
 
-/// Удалить путь и его поддерево (если это была папка) из индекса.
+/// Delete a path and its subtree (if it was a folder) from the index.
 pub fn delete_path(conn: &Connection, path: &str) -> Result<()> {
     let path = normalize(path);
     let path = path.as_str();
@@ -153,11 +154,14 @@ mod tests {
         c
     }
 
+    // Write the path canonicalized — exactly like production (replace_subtree/
+    // upsert_one). Otherwise search() normalizes the root and a "raw" path in
+    // the table falls outside the subtree range (BINARY collation) and is not found.
     fn ins(c: &Connection, path: &str, name: &str) {
         c.execute(
             "INSERT INTO file_index (path, name, name_lower, is_dir, size, mtime, ext)
              VALUES (?1, ?2, ?3, 0, 0, NULL, NULL)",
-            (path, name, name.to_lowercase()),
+            (normalize(path), name, name.to_lowercase()),
         )
         .unwrap();
     }
@@ -173,10 +177,10 @@ mod tests {
         let c = mem();
         ins(&c, "C:\\p\\report.txt", "report.txt");
         ins(&c, "C:\\p\\sub\\budget.xlsx", "budget.xlsx");
-        ins(&c, "C:\\other\\report.txt", "report.txt"); // вне поддерева
+        ins(&c, "C:\\other\\report.txt", "report.txt"); // outside the subtree
         let hits = search(&c, "C:\\p", "report", 10).unwrap();
         let paths: Vec<String> = hits.iter().map(|e| e.path.clone()).collect();
-        assert_eq!(paths, vec!["C:\\p\\report.txt".to_string()]);
+        assert_eq!(paths, vec![normalize("C:\\p\\report.txt")]);
     }
 
     #[test]
@@ -184,7 +188,7 @@ mod tests {
         let c = mem();
         ins(&c, "C:\\p\\50%off.txt", "50%off.txt");
         ins(&c, "C:\\p\\50abcoff.txt", "50abcoff.txt");
-        // "50%" ищет литеральный '%', а не как LIKE-wildcard
+        // "50%" searches for a literal '%', not a LIKE wildcard
         let hits = search(&c, "C:\\p", "50%", 10).unwrap();
         let names: Vec<String> = hits.iter().map(|e| e.name.clone()).collect();
         assert_eq!(names, vec!["50%off.txt".to_string()]);

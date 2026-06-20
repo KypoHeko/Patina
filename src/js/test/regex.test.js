@@ -4,7 +4,7 @@ import {
   hasNestedQuantifier,
   makeMatcher,
   MAX_PATTERN_LENGTH,
-} from './regex.js';
+} from '../lib/regex.js';
 
 describe('safeRegExp', () => {
   it('простой паттерн компилируется', () => {

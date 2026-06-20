@@ -1,4 +1,4 @@
-//! Таблица files. Сейчас служит кэшем хешей для поиска дубликатов.
+//! The files table. Currently serves as a hash cache for duplicate detection.
 
 use rusqlite::{Connection, OptionalExtension};
 
@@ -6,7 +6,7 @@ use crate::error::Result;
 
 use crate::index::path_key::normalize;
 
-/// Закэшированный хеш, если он есть и mtime совпадает.
+/// The cached hash, if present and the mtime matches.
 pub fn cached_hash(conn: &Connection, path: &str, mtime: i64) -> Result<Option<String>> {
     let path = normalize(path);
     let path = path.as_str();

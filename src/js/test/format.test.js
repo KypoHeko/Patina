@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { formatSize, formatDate } from './format.js';
+import { formatSize, formatDate } from '../lib/format.js';
 
 describe('formatSize', () => {
   it('байты', () => {

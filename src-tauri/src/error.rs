@@ -1,22 +1,22 @@
-//! Единый тип ошибки приложения. Сериализуется в строку для фронта.
+//! The single application error type. Serialized to a string for the front end.
 
 use serde::{Serialize, Serializer};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    #[error("ошибка ввода-вывода: {0}")]
+    #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 
-    #[error("ошибка БД: {0}")]
+    #[error("database error: {0}")]
     Db(#[from] rusqlite::Error),
 
-    #[error("путь не является директорией: {0}")]
+    #[error("path is not a directory: {0}")]
     NotADirectory(String),
 
-    #[error("некорректный путь: {0}")]
+    #[error("invalid path: {0}")]
     InvalidPath(String),
 
-    #[error("операция не удалась: {0}")]
+    #[error("operation failed: {0}")]
     Operation(String),
 }
 

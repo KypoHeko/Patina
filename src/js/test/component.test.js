@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { Component } from './component.js';
-import { createStore } from './store.js';
-import { createEventBus } from './event-bus.js';
+import { Component } from '../core/component.js';
+import { createStore } from '../core/store.js';
+import { createEventBus } from '../core/event-bus.js';
 
 function makeCtx() {
   const mount = document.createElement('div');

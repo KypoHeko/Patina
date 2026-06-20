@@ -1,8 +1,8 @@
--- Агрегаты по каталогам: рекурсивный размер поддерева и число файлов.
--- Заполняется обходом по кнопке (Фаза 1). `path` — канонический ключ (path_key:
--- нижний регистр + '\' на Windows), чтобы лукап из панели совпадал с file_index.
--- Поля hash/hash_dirty зарезервированы под будущий меркловский роллап (дедуп):
--- размеры живут на метаданных, хеши — отдельная opt-in фича.
+-- Per-directory aggregates: recursive subtree size and file count.
+-- Filled by an on-demand traversal (Phase 1). `path` is a canonical key
+-- (path_key: lowercase + '\' on Windows) so panel lookups match file_index.
+-- The hash/hash_dirty fields are reserved for a future Merkle rollup (dedup):
+-- sizes live on metadata, hashes are a separate opt-in feature.
 CREATE TABLE IF NOT EXISTS dir_agg (
   path       TEXT PRIMARY KEY,
   total_size INTEGER NOT NULL,

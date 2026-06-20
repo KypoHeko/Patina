@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { startDrag, getDrag, clearDrag } from './drag.js';
+import { startDrag, getDrag, clearDrag } from '../state/drag.js';
 
 describe('drag state', () => {
   beforeEach(() => {

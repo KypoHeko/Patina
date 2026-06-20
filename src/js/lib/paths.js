@@ -1,6 +1,6 @@
-// Работа с путями. Учитывает Windows (C:\...) и POSIX (/...).
-// "C:" — это «текущая папка на диске C», а корень диска — "C:\" со слешем,
-// поэтому подъём до буквы диска добавляет слеш.
+// Path handling. Accounts for Windows (C:\...) and POSIX (/...).
+// "C:" means "the current folder on drive C", while the drive root is "C:\"
+// with a slash, so going up to the drive letter adds a slash.
 
 export function parentPath(path) {
   const trimmed = String(path).replace(/[\\/]+$/, '');
@@ -15,19 +15,19 @@ export function isRoot(path) {
   return /^[A-Za-z]:[\\/]?$/.test(path) || path === '/';
 }
 
-/** Отображаемое имя папки: последний сегмент; для корня диска — «C:». */
+/** Display name of a folder: the last segment; for a drive root — "C:". */
 export function folderName(path) {
   const raw = String(path);
-  if (/^[\\/]+$/.test(raw)) return '/'; // POSIX-корень
+  if (/^[\\/]+$/.test(raw)) return '/'; // POSIX root
   const trimmed = raw.replace(/[\\/]+$/, '');
   if (!trimmed) return '';
   const drive = trimmed.match(/^[A-Za-z]:$/);
-  if (drive) return drive[0]; // C:\ -> (после trim) C:
+  if (drive) return drive[0]; // C:\ -> (after trim) C:
   const seg = trimmed.split(/[\\/]+/).filter(Boolean).pop();
   return seg || trimmed;
 }
 
-/** Разбить путь на хлебные крошки: [{ label, path }, ...]. */
+/** Split a path into breadcrumbs: [{ label, path }, ...]. */
 export function pathCrumbs(path) {
   const trimmed = String(path).replace(/[\\/]+$/, '');
   if (!trimmed) return [];

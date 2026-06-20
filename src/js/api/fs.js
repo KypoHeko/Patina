@@ -25,17 +25,17 @@ export function readPreview(path) {
   return invoke('read_preview', { path });
 }
 
-/** Переиндексировать поддерево в персистентном индексе. Возвращает число записей. */
+/** Reindex a subtree in the persistent index. Returns the number of rows. */
 export function reindexTree(root) {
   return invoke('reindex_tree', { root });
 }
 
-/** Поиск по персистентному индексу: до limit записей поддерева. */
+/** Search the persistent index: up to limit subtree rows. */
 export function searchFiles(root, query, limit = 20000) {
   return invoke('search_files', { root, query, limit });
 }
 
-/** Создать папку в parent; возвращает путь созданной папки. */
+/** Create a folder in parent; returns the path of the created folder. */
 export function createFolder(parent, name) {
   return invoke('create_folder', { parent, name });
 }

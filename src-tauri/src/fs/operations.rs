@@ -1,5 +1,4 @@
-//! Файловые операции: копирование, перемещение, удаление в Корзину,
-//! переименование.
+//! File operations: copy, move, delete to Trash, rename.
 
 use fs_extra::dir::CopyOptions;
 
@@ -24,14 +23,14 @@ pub fn move_entries(sources: &[String], dest_dir: &str, overwrite: bool) -> Resu
 }
 
 pub fn delete_entries(paths: &[String]) -> Result<()> {
-    // Windows — нативный IFileOperation (UAC, длинные и UNC-пути);
-    // прочие ОС — crate `trash` (fallback внутри platform).
+    // Windows — native IFileOperation (UAC, long and UNC paths);
+    // other OSes — the `trash` crate (fallback inside platform).
     crate::platform::delete_to_recycle_bin(paths)
 }
 
 pub fn rename_entry(path: &str, new_name: &str) -> Result<String> {
     if new_name.is_empty() || new_name.contains('/') || new_name.contains('\\') {
-        return Err(Error::InvalidPath(format!("недопустимое имя: {new_name}")));
+        return Err(Error::InvalidPath(format!("invalid name: {new_name}")));
     }
     let src = std::path::Path::new(path);
     let parent = src
@@ -39,7 +38,7 @@ pub fn rename_entry(path: &str, new_name: &str) -> Result<String> {
         .ok_or_else(|| Error::InvalidPath(path.to_string()))?;
     let dest = parent.join(new_name);
     if dest.exists() {
-        return Err(Error::Operation(format!("уже существует: {new_name}")));
+        return Err(Error::Operation(format!("already exists: {new_name}")));
     }
     std::fs::rename(src, &dest)?;
     Ok(dest.to_string_lossy().into_owned())

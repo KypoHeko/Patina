@@ -1,4 +1,4 @@
-//! Команды связей между файлами: ручные связи + построение графа.
+//! File relationship commands: manual links + graph construction.
 
 use std::collections::HashMap;
 use std::time::UNIX_EPOCH;
@@ -8,8 +8,8 @@ use serde::Serialize;
 use tauri::{AppHandle, Manager};
 
 use crate::error::{Error, Result};
-use crate::index::edges_repo::{self, Edge};
-use crate::index::files_repo;
+use crate::index::edges::{self, Edge};
+use crate::index::files;
 use crate::index::path_key::normalize;
 use crate::indexer::hasher;
 use crate::state::AppState;
@@ -19,10 +19,10 @@ pub async fn add_relationship(app: AppHandle, a: String, b: String) -> Result<()
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<AppState>();
         let conn = state.db()?;
-        edges_repo::add_manual(&conn, &a, &b)
+        edges::add_manual(&conn, &a, &b)
     })
     .await
-    .map_err(|e| Error::Operation(format!("add_relationship прерван: {e}")))?
+    .map_err(|e| Error::Operation(format!("add_relationship interrupted: {e}")))?
 }
 
 #[tauri::command]
@@ -30,10 +30,10 @@ pub async fn remove_relationship(app: AppHandle, a: String, b: String) -> Result
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<AppState>();
         let conn = state.db()?;
-        edges_repo::remove_manual(&conn, &a, &b)
+        edges::remove_manual(&conn, &a, &b)
     })
     .await
-    .map_err(|e| Error::Operation(format!("remove_relationship прерван: {e}")))?
+    .map_err(|e| Error::Operation(format!("remove_relationship interrupted: {e}")))?
 }
 
 #[derive(Serialize)]
@@ -79,16 +79,16 @@ pub async fn file_graph(app: AppHandle, seeds: Vec<String>, hops: usize) -> Resu
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<AppState>();
         let conn = state.db_read()?;
-        let edges = edges_repo::neighborhood(&conn, &seeds, hops)?;
+        let edges = edges::neighborhood(&conn, &seeds, hops)?;
 
-        // Рёбра возвращаются в КАНОНИЧЕСКИХ ключах (path_key::normalize: на
-        // Windows — нижний регистр, '\'), а seed-пути приходят с фронта в
-        // ИСХОДНОМ регистре. Без сведения к одному ключу один и тот же файл
-        // попадал в граф ДВАЖДЫ: как seed (исходный регистр, без рёбер) и как
-        // конец ребра (канонический, со связями) — это и есть «те же файлы со
-        // связями и без». Сводим по каноническому ключу, но ОТОБРАЖАЕМ под
-        // исходным путём seed (чтобы reveal/выделение и регистр имени совпадали
-        // с файловой панелью).
+        // Edges come back in CANONICAL keys (path_key::normalize: on Windows —
+        // lowercase, '\'), while seed paths arrive from the front end in their
+        // ORIGINAL case. Without reducing to one key, the same file ended up in
+        // the graph TWICE: as a seed (original case, no edges) and as an edge
+        // endpoint (canonical, with links) — that is the "same files with and
+        // without links". We reduce by the canonical key but DISPLAY under the
+        // seed's original path (so reveal/selection and name case match the
+        // file panel).
         let mut display: HashMap<String, String> = HashMap::new();
         for s in &seeds {
             display.entry(normalize(s)).or_insert_with(|| s.clone());
@@ -101,15 +101,15 @@ pub async fn file_graph(app: AppHandle, seeds: Vec<String>, hops: usize) -> Resu
         let nodes: Vec<GraphNode> = display
             .iter()
             .map(|(canon, disp)| {
-                // метаданные — по каноническому ключу (так хранит file_index),
-                // путь узла — отображаемый (исходный регистр для seed).
+                // metadata by the canonical key (as file_index stores it),
+                // node path is the displayed one (original case for a seed).
                 let (name, is_dir) = node_meta(&conn, canon.as_str());
                 GraphNode { path: disp.clone(), name, is_dir }
             })
             .collect();
 
-        // Рёбра переводим из канонических ключей в отображаемые пути, иначе на
-        // фронте они не «прицепятся» к узлам (узлы теперь под путями seed).
+        // Translate edges from canonical keys to displayed paths, otherwise on
+        // the front end they will not "attach" to nodes (nodes are now under seed paths).
         let edges: Vec<Edge> = edges
             .into_iter()
             .map(|e| Edge {
@@ -122,7 +122,7 @@ pub async fn file_graph(app: AppHandle, seeds: Vec<String>, hops: usize) -> Resu
         Ok(GraphData { nodes, edges })
     })
     .await
-    .map_err(|e| Error::Operation(format!("file_graph прерван: {e}")))?
+    .map_err(|e| Error::Operation(format!("file_graph interrupted: {e}")))?
 }
 
 #[derive(Serialize)]
@@ -150,7 +150,7 @@ pub async fn hash_graph_files(app: AppHandle, paths: Vec<String>) -> Result<Vec<
                     .map(|d| d.as_secs() as i64);
                 let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
                 let hash = if let Some(mt) = mtime {
-                    files_repo::cached_hash(&conn, path, mt).ok().flatten()
+                    files::cached_hash(&conn, path, mt).ok().flatten()
                 } else {
                     None
                 };
@@ -179,12 +179,12 @@ pub async fn hash_graph_files(app: AppHandle, paths: Vec<String>) -> Result<Vec<
         if !fresh.is_empty() {
             let conn = state.db()?;
             for (path, mtime, size, hash) in &fresh {
-                let _ = files_repo::store_hash(&conn, path, *size, *mtime, hash);
+                let _ = files::store_hash(&conn, path, *size, *mtime, hash);
             }
         }
 
         Ok(results)
     })
     .await
-    .map_err(|e| Error::Operation(format!("hash_graph_files прерван: {e}")))?
+    .map_err(|e| Error::Operation(format!("hash_graph_files interrupted: {e}")))?
 }

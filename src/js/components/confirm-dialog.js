@@ -46,6 +46,15 @@ export class ConfirmDialog extends Component {
     if (req && typeof req[key] === 'function') req[key]();
   }
 
+  /** Перерисовка при смене языка (если диалог открыт). */
+  applyLang() {
+    if (!this._req) return;
+    // Перерисовываем с тем же запросом, но кнопка «Отмена» / дефолт-тексты
+    // подтянут новые переводы. Если вызывающий передал confirmLabel/altLabel,
+    // они сохранятся — это caller-provided строки, не наши ключи.
+    this.open(this._req);
+  }
+
   close() {
     this._req = null;
     this.mount.innerHTML = '';

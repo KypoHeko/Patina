@@ -1,10 +1,10 @@
-//! Извлечение ссылок/зависимостей из содержимого файлов и резолв их в пути.
-//! Без regex (ручной разбор), чтобы не тащить зависимость. Цели резолвятся
-//! относительно папки файла и принимаются только если реально существуют.
+//! Extracting links/dependencies from file contents and resolving them to paths.
+//! No regex (manual parsing) to avoid pulling in a dependency. Targets are
+//! resolved relative to the file's folder and accepted only if they really exist.
 
 use std::path::{Component, Path, PathBuf};
 
-/// Тип производного ребра по расширению источника.
+/// The derived edge kind based on the source's extension.
 pub fn kind_for(ext: &str) -> &'static str {
     match ext {
         "md" | "markdown" | "html" | "htm" | "css" => "link",
@@ -12,7 +12,7 @@ pub fn kind_for(ext: &str) -> &'static str {
     }
 }
 
-/// Сырые цели ссылок (ещё не резолвленные) по расширению файла.
+/// Raw (not yet resolved) link targets, by file extension.
 pub fn extract_targets(ext: &str, body: &str) -> Vec<String> {
     match ext {
         "md" | "markdown" => md_targets(body),
@@ -22,7 +22,7 @@ pub fn extract_targets(ext: &str, body: &str) -> Vec<String> {
     }
 }
 
-/// Markdown: `](target)`, `![](target)` и вики-ссылки `[[target]]`.
+/// Markdown: `](target)`, `![](target)` and wiki-links `[[target]]`.
 fn md_targets(body: &str) -> Vec<String> {
     let mut out = Vec::new();
     let b = body.as_bytes();
@@ -61,7 +61,7 @@ fn md_targets(body: &str) -> Vec<String> {
     out
 }
 
-/// HTML: значения атрибутов src=/href= (в одинарных или двойных кавычках).
+/// HTML: src=/href= attribute values (in single or double quotes).
 fn attr_targets(body: &str) -> Vec<String> {
     let mut out = Vec::new();
     out.extend(quoted_following(body, "src="));
@@ -69,7 +69,7 @@ fn attr_targets(body: &str) -> Vec<String> {
     out
 }
 
-/// CSS: url(...) и `@import "..."`.
+/// CSS: url(...) and `@import "..."`.
 fn css_targets(body: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut from = 0;
@@ -91,8 +91,8 @@ fn css_targets(body: &str) -> Vec<String> {
     out
 }
 
-/// Код: строковые литералы (' " `), похожие на путь (есть '/' или начинается с '.').
-/// Так отсекаются имена npm-пакетов ('react') и прочий шум.
+/// Code: string literals (' " `) that look like a path (contain '/' or start with '.').
+/// This filters out npm package names ('react') and other noise.
 fn code_targets(body: &str) -> Vec<String> {
     let mut out = Vec::new();
     let b = body.as_bytes();
@@ -124,8 +124,8 @@ fn is_pathlike(s: &str) -> bool {
     s.starts_with("./") || s.starts_with("../") || s.starts_with('/') || s.contains('/')
 }
 
-/// Найти все вхождения `marker`, пропустить пробелы и снять следующий
-/// строковый литерал в кавычках. Используется для html-атрибутов и @import.
+/// Find all occurrences of `marker`, skip spaces, and take the next quoted
+/// string literal. Used for HTML attributes and @import.
 fn quoted_following(body: &str, marker: &str) -> Vec<String> {
     let mut out = Vec::new();
     let b = body.as_bytes();
@@ -152,7 +152,7 @@ fn quoted_following(body: &str, marker: &str) -> Vec<String> {
     out
 }
 
-/// Лексическая нормализация пути: сворачивает `.` и `..` без обращения к ФС.
+/// Lexical path normalization: collapses `.` and `..` without touching the FS.
 fn normalize(p: &Path) -> PathBuf {
     let mut out = PathBuf::new();
     for c in p.components() {
@@ -167,9 +167,9 @@ fn normalize(p: &Path) -> PathBuf {
     out
 }
 
-/// Резолв сырой цели в абсолютный путь относительно папки `src_path`.
-/// Внешние ссылки/протоколы и якоря отбрасываются. Путь принимается только
-/// если файл существует (для импортов без расширения пробуются типовые).
+/// Resolve a raw target to an absolute path relative to `src_path`'s folder.
+/// External links/protocols and anchors are dropped. A path is accepted only if
+/// the file exists (for extensionless imports, common extensions are tried).
 pub fn resolve(src_path: &str, raw: &str) -> Option<String> {
     let t = raw.trim();
     let t = t.split(|c| c == '#' || c == '?').next().unwrap_or("").trim();
@@ -189,7 +189,7 @@ pub fn resolve(src_path: &str, raw: &str) -> Option<String> {
         return Some(direct.to_string_lossy().into_owned());
     }
 
-    // Импорт без расширения: ./mod -> ./mod.ts, ./mod/index.ts и т.п.
+    // Extensionless import: ./mod -> ./mod.ts, ./mod/index.ts, etc.
     if Path::new(t).extension().is_none() {
         for ext in ["js", "ts", "jsx", "tsx", "mjs", "json", "css", "md"] {
             let cand = normalize(&base.join(format!("{t}.{ext}")));
@@ -239,10 +239,9 @@ mod tests {
 
     #[test]
     fn normalize_collapses_dot_dotdot() {
-        assert_eq!(
-            normalize(Path::new("/a/b/../c/./d")).to_string_lossy(),
-            "/a/c/d"
-        );
+        // Compare PathBufs (component-wise), not strings — otherwise the test
+        // depends on the OS separator (on Windows it would be '\').
+        assert_eq!(normalize(Path::new("/a/b/../c/./d")), PathBuf::from("/a/c/d"));
     }
 
     #[test]

@@ -10,6 +10,7 @@ import { fileIcon } from '../lib/icons.js';
 import { getPane } from '../state/panes.js';
 import { getActiveSide } from '../state/tabs.js';
 import { safeRegExp } from '../lib/regex.js';
+import { t, tagLabel } from '../lib/i18n.js';
 
 const TAG_COLOR = Object.fromEntries(TAGS.map((t) => [t.id, t.color]));
 const DISPLAY_CAP = 300; // сколько строк показываем разом
@@ -135,7 +136,7 @@ export class CommandPalette extends Component {
     this._loading = false;
     this._lastSig = '';
     if (this._resultsEl)
-      this._resultsEl.innerHTML = `<div class="palette__empty">${text}</div>`;
+      this._resultsEl.innerHTML = `<div class="palette__empty">${escapeHtml(text)}</div>`;
   }
 
   // Обычный режим — серверный подстрочный поиск (мало данных через IPC).
@@ -146,7 +147,7 @@ export class CommandPalette extends Component {
     const seq = ++this._scanSeq;
 
     if (!q) {
-      this.showHint('Введите запрос для поиска по поддереву');
+      this.showHint(t('palette.hint.tree'));
       return;
     }
 
@@ -230,7 +231,7 @@ export class CommandPalette extends Component {
     const q = this._query.trim();
     const seq = ++this._scanSeq;
     if (!q) {
-      this.showHint('Введите запрос для поиска по содержимому');
+      this.showHint(t('palette.hint.content'));
       return;
     }
     if (!silent) {
@@ -351,7 +352,7 @@ export class CommandPalette extends Component {
     this._input = el('input', {
       class: 'palette__input',
       type: 'text',
-      placeholder: 'Поиск в текущей папке…',
+      placeholder: t('palette.placeholder.folder'),
       spellcheck: 'false',
       onInput: (e) => {
         this._query = e.target.value;
@@ -365,7 +366,7 @@ export class CommandPalette extends Component {
       'button',
       {
         class: 'palette__regex',
-        title: 'Режим регулярного выражения',
+        title: t('palette.regex.title'),
         onClick: () => {
           this._regex = !this._regex;
           this._regexBtn.classList.toggle('is-on', this._regex);
@@ -383,22 +384,22 @@ export class CommandPalette extends Component {
     this._scopeFolderBtn = el(
       'button',
       { class: 'palette__scopebtn is-on', onClick: () => this.setScope('folder') },
-      'Эта папка',
+      t('palette.scope.folder'),
     );
     this._scopeTreeBtn = el(
       'button',
       {
         class: 'palette__scopebtn' + (this.treeAllowed ? '' : ' is-disabled'),
         onClick: () => this.setScope('tree'),
-        title: this.treeAllowed ? 'Искать во всех вложенных папках' : 'Недоступно для тег-папки',
+        title: this.treeAllowed ? t('palette.scope.treeHint') : t('palette.scope.disabledTag'),
       },
-      'Всё поддерево',
+      t('palette.scope.tree'),
     );
     this._reindexBtn = el(
       'button',
       {
         class: 'palette__scopebtn palette__reindex',
-        title: 'Переиндексировать поддерево',
+        title: t('palette.reindex.title'),
         onClick: () => this.forceReindex(),
       },
       '↻',
@@ -408,30 +409,30 @@ export class CommandPalette extends Component {
       {
         class: 'palette__scopebtn' + (this.treeAllowed ? '' : ' is-disabled'),
         onClick: () => this.setScope('content'),
-        title: this.treeAllowed ? 'Поиск по содержимому файлов' : 'Недоступно для тег-папки',
+        title: this.treeAllowed ? t('palette.scope.contentHint') : t('palette.scope.disabledTag'),
       },
-      'Содержимое',
+      t('palette.scope.content'),
     );
     scope.append(this._scopeFolderBtn, this._scopeTreeBtn, this._scopeContentBtn, this._reindexBtn);
 
     const chips = el('div', { class: 'palette__tags' });
-    for (const t of TAGS) {
+    for (const tag of TAGS) {
       chips.append(
         el(
           'button',
           {
             class: 'palette__chip',
-            dataset: { tag: t.id },
+            dataset: { tag: tag.id },
             onClick: (e) => {
-              if (this._activeTags.has(t.id)) this._activeTags.delete(t.id);
-              else this._activeTags.add(t.id);
+              if (this._activeTags.has(tag.id)) this._activeTags.delete(tag.id);
+              else this._activeTags.add(tag.id);
               e.currentTarget.classList.toggle('is-on');
               this._sel = 0;
               this.rebuildTagFilter();
             },
           },
-          el('span', { class: 'palette__dot', style: `background:${t.color}` }),
-          t.label,
+          el('span', { class: 'palette__dot', style: `background:${tag.color}` }),
+          tagLabel(tag.id),
         ),
       );
     }
@@ -446,19 +447,19 @@ export class CommandPalette extends Component {
     if (this._scopeFolderBtn) this._scopeFolderBtn.classList.toggle('is-on', this._scope === 'folder');
     if (this._scopeTreeBtn) this._scopeTreeBtn.classList.toggle('is-on', this._scope === 'tree');
     if (this._scopeContentBtn) this._scopeContentBtn.classList.toggle('is-on', this._scope === 'content');
-    const ph = {
-      folder: 'Поиск в текущей папке…',
-      tree: 'Поиск по всему поддереву…',
-      content: 'Поиск по содержимому файлов…',
-    };
-    if (this._input) this._input.placeholder = ph[this._scope] || ph.folder;
-  }
+    if (this._input) this._input.placeholder = t(`palette.placeholder.${this._scope}`);
+    // Обновляем titles у кнопок scope — они зависят от treeAllowed.
+    if (this._scopeTreeBtn) this._scopeTreeBtn.title = this.treeAllowed ? t('palette.scope.treeHint') : t('palette.scope.disabledTag');
+    if (this._scopeContentBtn) this._scopeContentBtn.title = this.treeAllowed ? t('palette.scope.contentHint') : t('palette.scope.disabledTag');
+    if (this._reindexBtn) this._reindexBtn.title = t('palette.reindex.title');
+    if (this._regexBtn) this._regexBtn.title = t('palette.regex.title');
+    }
 
   renderResults() {
     if (this._loading) {
       this._results = [];
       this._resultsCount = 0;
-      this._resultsEl.innerHTML = `<div class="palette__empty">${this._indexing ? 'Индексирование…' : 'Загрузка…'}</div>`;
+      this._resultsEl.innerHTML = `<div class="palette__empty">${escapeHtml(this._indexing ? t('palette.indexing') : t('common.loading'))}</div>`;
       return;
     }
     const all = this.filtered();
@@ -468,7 +469,7 @@ export class CommandPalette extends Component {
     if (this._sel >= shown.length) this._sel = Math.max(0, shown.length - 1);
 
     if (!shown.length) {
-      this._resultsEl.innerHTML = '<div class="palette__empty">Ничего не найдено</div>';
+      this._resultsEl.innerHTML = `<div class="palette__empty">${escapeHtml(t('palette.empty'))}</div>`;
       return;
     }
 
@@ -493,13 +494,28 @@ export class CommandPalette extends Component {
       })
       .join('');
     if (all.length > shown.length) {
-      html += `<div class="palette__more">Показаны первые ${shown.length} из ${all.length}</div>`;
+      html += `<div class="palette__more">${escapeHtml(t('palette.more', { shown: shown.length, all: all.length }))}</div>`;
     }
     this._resultsEl.innerHTML = html;
 
     this._resultsEl.querySelectorAll('.palette__item').forEach((it) => {
       it.addEventListener('click', () => this.activate(this._results[+it.dataset.i]));
     });
+  }
+  
+  /** Перерисовка при смене языка. Сохраняет открытую палитру, запрос, scope, теги. */
+  applyLang() {
+    if (!this._open) return;
+    this._syncScopeUI();
+    // Кнопки-чипы тегов: последний ребёнок — текстовая подпись, обновляем её.
+    const chips = this.mount.querySelectorAll('.palette__chip');
+    chips.forEach((chip, i) => {
+      const tag = TAGS[i];
+      if (!tag) return;
+      const last = chip.lastChild;
+      if (last && last.nodeType === 3) last.textContent = tagLabel(tag.id);
+    });
+    this.update();
   }
 
   onKey(e) {

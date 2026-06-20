@@ -1,25 +1,25 @@
-//! Команды истории версий.
+//! Version history commands.
 //!
-//! Гибридная стратегия хранения:
-//! - < 15 MB: zstd-сжатие с обучаемым словарём
-//! - >= 15 MB: чанковое разбиение (content-defined chunking)
-//! - 'full': старый формат (обратная совместимость)
+//! Hybrid storage strategy:
+//! - < 15 MB: zstd compression with a trainable dictionary
+//! - >= 15 MB: chunk splitting (content-defined chunking)
+//! - 'full': old format (backward compatibility)
 //!
-//! Согласованность контент-адресного хранилища (баг C4)
+//! Content-addressed storage consistency (bug C4)
 //! --------------------------------------------------------------------
-//! Блобы (`versions/<hash>.zst`) и чанки (`chunks/<hash>`) адресуются по
-//! содержимому и шарятся между версиями, поэтому удалять их можно только когда
-//! на хеш не осталось ссылок (refcount == 0). Чтобы сборка мусора не снесла
-//! живые данные, действует один инвариант:
+//! Blobs (`versions/<hash>.zst`) and chunks (`chunks/<hash>`) are addressed by
+//! content and shared between versions, so they can only be deleted when no
+//! references to the hash remain (refcount == 0). To keep garbage collection
+//! from wiping out live data, one invariant holds:
 //!
-//!   *Строка-ссылка в БД всегда появляется РАНЬШЕ, чем контент ложится на диск,
-//!    а сборщик мусора проверяет refcount и удаляет файл под одним и тем же
-//!    захватом `state.db()`.*
+//!   *The referencing row in the DB always appears BEFORE the content lands on
+//!    disk, and the garbage collector checks refcount and deletes the file under
+//!    the same `state.db()` acquisition.*
 //!
-//! Тогда к моменту, когда блоб/чанк материализуется на диске, refcount по его
-//! хешу уже ненулевой, и GC (`delete_version`), работающий под тем же локом,
-//! не может счесть его осиротевшим. Тяжёлая запись контента при этом идёт ВНЕ
-//! лока — держать БД заблокированной на время многомегабайтного IO нельзя.
+//! Then by the time a blob/chunk materializes on disk, the refcount for its hash
+//! is already non-zero, and GC (`delete_version`), running under the same lock,
+//! cannot consider it orphaned. The heavy content write meanwhile happens
+//! OUTSIDE the lock — holding the DB locked for multi-megabyte IO is not allowed.
 
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -27,31 +27,42 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Manager};
 
 use crate::error::{Error, Result};
-use crate::index::versions_repo::{self, Version};
+use crate::index::versions::{self, Version};
 use crate::index::chunker;
 use crate::index::version_compress;
 use crate::indexer::hasher;
 use crate::state::AppState;
 
-/// Порог: файлы >= этого размера чанкуются.
+/// Threshold: files >= this size are chunked.
 const CHUNK_THRESHOLD: u64 = 15 * 1024 * 1024; // 15 MB
 
-fn now_secs() -> i64 {
+/// Current time in milliseconds since the UNIX epoch.
+///
+/// Returns ms (not seconds) — this is the single standard for all timestamps in
+/// the project: `fs::lister`, `commands::fs::file_times`, `system::native_icon`,
+/// `indexer::build_row` all return mtime in ms. The front end, via
+/// `formatDate()`, treats numbers as ms (`new Date(ms)`); if versions returned
+/// seconds, `new Date(seconds)` would read them as ms → a date around 1970.
+/// `ORDER BY ts DESC` sorting is the same for both units, so old rows (if any)
+/// keep sorting correctly — only their displayed date is slightly off, which is
+/// acceptable for 0.1.
+fn now_millis() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
+        .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
 }
 
-/// Снимок, если содержимое изменилось.
-/// Выбирает стратегию по размеру файла:
-/// - < 15 MB: zstd-сжатие (со словарём, если обучен)
-/// - >= 15 MB: чанковое разбиение
+/// Take a snapshot if the contents changed.
+/// Picks a strategy by file size:
+/// - < 15 MB: zstd compression (with a dictionary, if trained)
+/// - >= 15 MB: chunk splitting
 ///
-/// Порядок операций задаётся инвариантом согласованности (см. заголовок модуля):
-/// сначала под локом вставляется строка версии (а для chunked — и её chunk-строки),
-/// и только потом контент пишется на диск вне лока. Если запись контента упала —
-/// строка откатывается, чтобы не осталось версии без блоба/чанков.
+/// The order of operations is dictated by the consistency invariant (see the
+/// module header): first the version row is inserted under the lock (and for
+/// chunked, its chunk rows too), and only then is the content written to disk
+/// outside the lock. If the content write fails, the row is rolled back so no
+/// version is left without its blob/chunks.
 fn do_snapshot(db: &std::sync::Mutex<rusqlite::Connection>, versions_dir: &Path, path: &str) -> Result<()> {
     let meta = std::fs::metadata(path).map_err(Error::Io)?;
     if !meta.is_file() {
@@ -63,87 +74,93 @@ fn do_snapshot(db: &std::sync::Mutex<rusqlite::Connection>, versions_dir: &Path,
     let dicts_dir = version_compress::dicts_dir(versions_dir);
 
     if file_size < CHUNK_THRESHOLD {
-        // ── Стратегия zstd ──
-        // Один проход по диску: получаем и хеш (для CAS-адресации и проверки
-        // «изменился ли файл»), и байты (для сжатия) за одно чтение.
+        // ── zstd strategy ──
+        // One disk pass: obtain both the hash (for CAS addressing and the
+        // "did the file change" check) and the bytes (for compression) in one read.
         let (hash, file_data) = hasher::hash_and_read(path).map_err(Error::Io)?;
 
-        // Короткий лок: проверка «не изменилось» + текущий словарь.
+        // Short lock: check "is this state already saved" + the current dictionary.
+        // has_hash_for_path (not latest_hash) — so we do not create duplicates
+        // when the file already matches some old version (e.g. after a restore).
         let dict_id = {
-            let conn = db.lock().map_err(|_| Error::Operation("БД заблокирована (poisoned)".into()))?;
-            if versions_repo::latest_hash(&conn, path)?.as_deref() == Some(hash.as_str()) {
+            let conn = db.lock().map_err(|_| Error::Operation("DB lock poisoned".into()))?;
+            if versions::has_hash_for_path(&conn, path, &hash)? {
                 return Ok(());
             }
-            versions_repo::current_dict_id(&conn)?
+            versions::current_dict_id(&conn)?
         };
 
-        // Сжатие — вне лока (это CPU-работа, не нужно держать БД).
+        // Compression — outside the lock (this is CPU work, no need to hold the DB).
         let (compressed, used_dict) = version_compress::compress(&file_data, &dicts_dir, dict_id)?;
 
         let blob = versions_dir.join(format!("{hash}.zst"));
 
-        // C4: строку-ссылку вставляем ДО записи блоба. Повторная проверка
-        // latest_hash под локом отсекает гонку с параллельным снимком той же
-        // версии, который мог вставиться, пока мы сжимали.
+        // C4: insert the referencing row BEFORE writing the blob. The repeated
+        // has_hash_for_path check under the lock rules out a race with a
+        // concurrent snapshot of the same version that may have inserted while we
+        // were compressing.
         let new_id = {
-            let conn = db.lock().map_err(|_| Error::Operation("БД заблокирована (poisoned)".into()))?;
-            if versions_repo::latest_hash(&conn, path)?.as_deref() == Some(hash.as_str()) {
+            let conn = db.lock().map_err(|_| Error::Operation("DB lock poisoned".into()))?;
+            if versions::has_hash_for_path(&conn, path, &hash)? {
                 return Ok(());
             }
-            let label = versions_repo::next_label(&conn, path)?;
-            versions_repo::insert(&conn, path, now_secs(), file_size as i64, &hash, &label, "zstd", used_dict)?
+            let label = versions::next_label(&conn, path)?;
+            versions::insert(&conn, path, now_millis(), file_size as i64, &hash, &label, "zstd", used_dict)?
         };
 
-        // Материализуем блоб вне лока. Если файла ещё нет — пишем; если запись
-        // упала, откатываем только что вставленную строку, чтобы не осталось
-        // версии, ссылающейся на несуществующий блоб.
+        // Materialize the blob outside the lock. If the file does not exist yet,
+        // write it; if the write fails, roll back the just-inserted row so no
+        // version is left referencing a non-existent blob.
         if !blob.exists() {
             if let Err(e) = std::fs::write(&blob, &compressed).map_err(Error::Io) {
-                let conn = db.lock().map_err(|_| Error::Operation("БД заблокирована (poisoned)".into()))?;
-                let _ = versions_repo::delete(&conn, new_id);
+                let conn = db.lock().map_err(|_| Error::Operation("DB lock poisoned".into()))?;
+                let _ = versions::delete(&conn, new_id);
                 return Err(e);
             }
         }
 
-        // NOTE: Обучение/переобучение словаря выполняется в одном месте —
-        // в `snapshot_version` после `do_snapshot`.
+        // NOTE: dictionary training/retraining happens in one place —
+        // in `snapshot_version` after `do_snapshot`.
     } else {
-        // ── Стратегия chunked ──
-        // Хеш нужен для проверки «изменился ли файл»; chunker стримит содержимое.
-        // Это второй проход по файлу (см. отложенные баги #5–#7 про chunker).
+        // ── chunked strategy ──
+        // The hash is needed for the "did the file change" check; the chunker
+        // streams the content. This is a second pass over the file (see the
+        // deferred bugs #5–#7 about the chunker).
         let hash = hasher::hash_file(path).map_err(Error::Io)?;
 
-        // Если содержимое не изменилось — пропускаем (короткий лок).
+        // If the state is already saved in some version — skip (short lock).
+        // has_hash_for_path, so we do not breed duplicates after a restore.
         {
-            let conn = db.lock().map_err(|_| Error::Operation("БД заблокирована (poisoned)".into()))?;
-            if versions_repo::latest_hash(&conn, path)?.as_deref() == Some(hash.as_str()) {
+            let conn = db.lock().map_err(|_| Error::Operation("DB lock poisoned".into()))?;
+            if versions::has_hash_for_path(&conn, path, &hash)? {
                 return Ok(());
             }
         }
 
-        // Границы чанков считаем вне лока (читает файл потоково).
+        // Compute chunk boundaries outside the lock (reads the file as a stream).
         let chunks = chunker::chunk_file(path)?;
 
-        // C4: версия и её chunk-строки вставляются ДО записи чанков на диск.
-        // Так refcount каждого чанка ненулевой к моменту, когда чанк появится
-        // на диске, и параллельный GC не удалит его как осиротевший. Сами чанки
-        // (потенциально гигабайты) пишутся ниже, ВНЕ лока.
+        // C4: the version and its chunk rows are inserted BEFORE chunks are
+        // written to disk. So each chunk's refcount is non-zero by the time the
+        // chunk appears on disk, and a concurrent GC will not delete it as
+        // orphaned. The chunks themselves (potentially gigabytes) are written
+        // below, OUTSIDE the lock.
         let new_id = {
-            let conn = db.lock().map_err(|_| Error::Operation("БД заблокирована (poisoned)".into()))?;
-            if versions_repo::latest_hash(&conn, path)?.as_deref() == Some(hash.as_str()) {
+            let conn = db.lock().map_err(|_| Error::Operation("DB lock poisoned".into()))?;
+            if versions::has_hash_for_path(&conn, path, &hash)? {
                 return Ok(());
             }
-            let label = versions_repo::next_label(&conn, path)?;
-            let vid = versions_repo::insert(&conn, path, now_secs(), file_size as i64, &hash, &label, "chunked", None)?;
-            versions_repo::insert_chunks(&conn, vid, &chunks)?;
+            let label = versions::next_label(&conn, path)?;
+            let vid = versions::insert(&conn, path, now_millis(), file_size as i64, &hash, &label, "chunked", None)?;
+            versions::insert_chunks(&conn, vid, &chunks)?;
             vid
         };
 
-        // Материализуем чанки вне лока. При ошибке откатываем строку версии
-        // (delete также удалит её version_chunks).
+        // Materialize the chunks outside the lock. On error, roll back the
+        // version row (delete also removes its version_chunks).
         if let Err(e) = chunker::store_chunks(&chunks_dir, path, &chunks) {
-            let conn = db.lock().map_err(|_| Error::Operation("БД заблокирована (poisoned)".into()))?;
-            let _ = versions_repo::delete(&conn, new_id);
+            let conn = db.lock().map_err(|_| Error::Operation("DB lock poisoned".into()))?;
+            let _ = versions::delete(&conn, new_id);
             return Err(e);
         }
     }
@@ -151,22 +168,22 @@ fn do_snapshot(db: &std::sync::Mutex<rusqlite::Connection>, versions_dir: &Path,
     Ok(())
 }
 
-/// Обучить или переобучить zstd-словарь (с путём к versions_dir).
+/// Train or retrain the zstd dictionary (given the versions_dir path).
 fn maybe_train_dict_with_dir(
     db: &std::sync::Mutex<rusqlite::Connection>,
     versions_dir: &Path,
 ) -> Result<()> {
     let dicts_dir = version_compress::dicts_dir(versions_dir);
 
-    // Текущее состояние: сколько zstd-версий накопилось, при каком их числе
-    // обучался последний словарь, и id этого словаря (для генерации имени файла
-    // нового словаря: dict-<id>.zstd).
+    // Current state: how many zstd versions accumulated, at what count the last
+    // dictionary was trained, and that dictionary's id (to generate the new
+    // dictionary's file name: dict-<id>.zstd).
     let (zstd_count, trained_at, current_dict_id) = {
-        let conn = db.lock().map_err(|_| Error::Operation("БД заблокирована (poisoned)".into()))?;
-        let count = versions_repo::zstd_count(&conn)? as usize;
-        let at = versions_repo::current_dict_zstd_count_at_train(&conn)?
+        let conn = db.lock().map_err(|_| Error::Operation("DB lock poisoned".into()))?;
+        let count = versions::zstd_count(&conn)? as usize;
+        let at = versions::current_dict_zstd_count_at_train(&conn)?
             .map(|v| v as usize);
-        let dict_id = versions_repo::current_dict_id(&conn)?;
+        let dict_id = versions::current_dict_id(&conn)?;
         (count, at, dict_id)
     };
 
@@ -178,7 +195,7 @@ fn maybe_train_dict_with_dir(
     let max_sample_size = 1 * 1024 * 1024;
 
     let rows: Vec<(String, Option<i64>)> = {
-        let conn = db.lock().map_err(|_| Error::Operation("БД заблокирована (poisoned)".into()))?;
+        let conn = db.lock().map_err(|_| Error::Operation("DB lock poisoned".into()))?;
         conn
             .prepare("SELECT hash, dict_id FROM versions WHERE strategy = 'zstd' ORDER BY ts DESC LIMIT ?1")?
             .query_map([max_samples as i64], |r| {
@@ -191,20 +208,20 @@ fn maybe_train_dict_with_dir(
     for (hash, dict_id) in &rows {
         let blob = versions_dir.join(format!("{hash}.zst"));
         if !blob.exists() {
-            // Блоб ещё не материализован (в т.ч. снимок «в полёте») — пропускаем.
+            // The blob is not materialized yet (incl. an in-flight snapshot) — skip.
             continue;
         }
         let compressed = std::fs::read(&blob).map_err(Error::Io)?;
         match version_compress::decompress(&compressed, &dicts_dir, *dict_id) {
             Ok(data) => {
-                // Ограничиваем размер сэмпла
+                // Cap the sample size
                 if data.len() <= max_sample_size {
                     samples.push(data);
                 } else {
                     samples.push(data[..max_sample_size].to_vec());
                 }
             }
-            Err(_) => continue, // не удалось распаковать — пропускаем
+            Err(_) => continue, // failed to decompress — skip
         }
         if samples.len() >= max_samples {
             break;
@@ -212,45 +229,45 @@ fn maybe_train_dict_with_dir(
     }
 
     if samples.len() < 4 {
-        return Ok(()); // слишком мало для обучения
+        return Ok(()); // too few to train
     }
 
-    // Новый id словаря = max существующий + 1 (или 1, если нет).
-    // id нужен только для имени файла dict-<id>.zstd; логику переобучения
-    // он больше не определяет — для этого есть zstd_count_at_train.
+    // New dictionary id = max existing + 1 (or 1 if none).
+    // The id is only used for the dict-<id>.zstd file name; it no longer
+    // determines the retraining logic — zstd_count_at_train does that.
     let new_id = current_dict_id.unwrap_or(0) + 1;
 
     let dict_path = version_compress::train_dict(&dicts_dir, &samples, new_id)?;
     let dict_data = std::fs::read(&dict_path).map_err(Error::Io)?;
 
     {
-        let conn = db.lock().map_err(|_| Error::Operation("БД заблокирована (poisoned)".into()))?;
-        // Запоминаем, при каком числе zstd-версий обучили словарь —
-        // от этого значения будущий should_retrain будет отсчитывать интервал.
-        versions_repo::insert_dict(&conn, now_secs(), dict_data.len() as i64, zstd_count as i64)?;
+        let conn = db.lock().map_err(|_| Error::Operation("DB lock poisoned".into()))?;
+        // Remember at what zstd-version count the dictionary was trained —
+        // a future should_retrain measures the interval from this value.
+        versions::insert_dict(&conn, now_millis(), dict_data.len() as i64, zstd_count as i64)?;
     }
 
     Ok(())
 }
 
-/// Восстановить версию: сделать снимок текущего состояния, затем
-/// заменить содержимое файла данными версии.
+/// Restore a version: snapshot the current state, then replace the file's
+/// contents with the version's data.
 fn do_restore(
     db: &std::sync::Mutex<rusqlite::Connection>,
     versions_dir: &Path,
     id: i64,
 ) -> Result<()> {
     let v = {
-        let conn = db.lock().map_err(|_| Error::Operation("БД заблокирована (poisoned)".into()))?;
-        versions_repo::get(&conn, id)?
-            .ok_or_else(|| Error::Operation("версия не найдена".into()))?
+        let conn = db.lock().map_err(|_| Error::Operation("DB lock poisoned".into()))?;
+        versions::get(&conn, id)?
+            .ok_or_else(|| Error::Operation("version not found".into()))?
     };
 
-    // C3: предохранительный снимок текущего состояния — иначе restore затрёт
-    // несохранённые изменения. Ошибку снимка глотать нельзя:
-    //   Ok           — снято (или снимок не требовался, т.к. файл не менялся) → продолжаем;
-    //   файла нет     — терять нечего, restore его воссоздаст → продолжаем;
-    //   любая другая  — текущее состояние НЕ сохранено → прерываем restore.
+    // C3: a safety snapshot of the current state — otherwise restore overwrites
+    // unsaved changes. The snapshot error must not be swallowed:
+    //   Ok            — snapshotted (or not needed, file unchanged) → continue;
+    //   file missing  — nothing to lose, restore recreates it → continue;
+    //   any other     — the current state is NOT saved → abort the restore.
     match do_snapshot(db, versions_dir, &v.path) {
         Ok(()) => {}
         Err(Error::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -272,15 +289,15 @@ fn do_restore(
         "chunked" => {
             let chunks_dir = versions_dir.join("chunks");
             let chunk_list = {
-                let conn = db.lock().map_err(|_| Error::Operation("БД заблокирована (poisoned)".into()))?;
-                versions_repo::get_chunks(&conn, id)?
+                let conn = db.lock().map_err(|_| Error::Operation("DB lock poisoned".into()))?;
+                versions::get_chunks(&conn, id)?
             };
             let hashes: Vec<String> = chunk_list.iter().map(|(h, _)| h.clone()).collect();
             let data = chunker::reassemble(&chunks_dir, &hashes)?;
             std::fs::write(&v.path, &data).map_err(Error::Io)?;
         }
         _ => {
-            return Err(Error::Operation(format!("неизвестная стратегия: {}", v.strategy)));
+            return Err(Error::Operation(format!("unknown strategy: {}", v.strategy)));
         }
     }
     Ok(())
@@ -291,13 +308,13 @@ pub async fn snapshot_version(app: AppHandle, path: String) -> Result<Vec<Versio
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<AppState>();
         do_snapshot(&state.db, &state.versions_dir, &path)?;
-        // Обучаем/переобучаем словарь (для zstd-стратегии)
+        // Train/retrain the dictionary (for the zstd strategy)
         let _ = maybe_train_dict_with_dir(&state.db, &state.versions_dir);
         let conn = state.db_read()?;
-        versions_repo::list_for(&conn, &path)
+        versions::list_for(&conn, &path)
     })
     .await
-    .map_err(|e| Error::Operation(format!("snapshot_version прерван: {e}")))?
+    .map_err(|e| Error::Operation(format!("snapshot_version interrupted: {e}")))?
 }
 
 #[tauri::command]
@@ -305,10 +322,10 @@ pub async fn list_versions(app: AppHandle, path: String) -> Result<Vec<Version>>
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<AppState>();
         let conn = state.db_read()?;
-        versions_repo::list_for(&conn, &path)
+        versions::list_for(&conn, &path)
     })
     .await
-    .map_err(|e| Error::Operation(format!("list_versions прерван: {e}")))?
+    .map_err(|e| Error::Operation(format!("list_versions interrupted: {e}")))?
 }
 
 #[tauri::command]
@@ -318,35 +335,35 @@ pub async fn restore_version(app: AppHandle, id: i64) -> Result<()> {
         do_restore(&state.db, &state.versions_dir, id)
     })
     .await
-    .map_err(|e| Error::Operation(format!("restore_version прерван: {e}")))?
+    .map_err(|e| Error::Operation(format!("restore_version interrupted: {e}")))?
 }
 
-/// Удалить версию файла по id. Если на блоб/чанк больше нет ссылок —
-/// они тоже удаляются с диска. Нельзя удалить единственную версию.
+/// Delete a file version by id. If a blob/chunk has no more references, it is
+/// also removed from disk. The only remaining version cannot be deleted.
 #[tauri::command]
 pub async fn delete_version(app: AppHandle, id: i64) -> Result<Vec<Version>> {
     tauri::async_runtime::spawn_blocking(move || -> Result<Vec<Version>> {
         let state = app.state::<AppState>();
 
-        // C4: весь критический участок — под одним захватом state.db().
-        // Тогда между проверкой refcount и физическим remove_file не может
-        // вклиниться параллельный снимок и сослаться на тот же контент-адресный
-        // объект. Держать мьютекс БД на время unlink здесь осознанно: операции
-        // версий и так сериализованы на одном соединении, а сам unlink короткий
-        // и в БД не реентрит.
+        // C4: the entire critical section is under a single state.db()
+        // acquisition. Then no concurrent snapshot can squeeze between the
+        // refcount check and the physical remove_file and reference the same
+        // content-addressed object. Holding the DB mutex across the unlink here
+        // is deliberate: version operations are serialized on one connection
+        // anyway, and the unlink itself is short and does not re-enter the DB.
         let versions = {
             let conn = state.db()?;
 
-            // Метаданные удаляемой версии + защита от удаления единственной.
-            let v = versions_repo::get(&conn, id)?
-                .ok_or_else(|| Error::Operation("версия не найдена".into()))?;
-            if versions_repo::count_for(&conn, &v.path)? <= 1 {
-                return Err(Error::Operation("нельзя удалить единственную версию".into()));
+            // Metadata of the version being deleted + protection against deleting the only one.
+            let v = versions::get(&conn, id)?
+                .ok_or_else(|| Error::Operation("version not found".into()))?;
+            if versions::count_for(&conn, &v.path)? <= 1 {
+                return Err(Error::Operation("cannot delete the only version".into()));
             }
 
-        // Хеши чанков собираем ДО delete (он удалит version_chunks).
+        // Collect chunk hashes BEFORE delete (it removes version_chunks).
         let chunk_hashes: Vec<String> = if v.strategy == "chunked" {
-            versions_repo::get_chunks(&conn, id)?
+            versions::get_chunks(&conn, id)?
                 .into_iter()
                 .map(|(h, _)| h)
                 .collect()
@@ -354,14 +371,14 @@ pub async fn delete_version(app: AppHandle, id: i64) -> Result<Vec<Version>> {
             Vec::new()
         };
 
-        // Удаляем строку версии (и её version_chunks).
-        versions_repo::delete(&conn, id)?
-                .ok_or_else(|| Error::Operation("версия не найдена".into()))?;
+        // Delete the version row (and its version_chunks).
+        versions::delete(&conn, id)?
+                .ok_or_else(|| Error::Operation("version not found".into()))?;
 
             let versions_dir = &state.versions_dir;
 
-            // Блоб (full/zstd) — только если на хеш больше нет ссылок.
-            if versions_repo::hash_refcount(&conn, &v.hash)? == 0 {
+            // Blob (full/zstd) — only if the hash has no more references.
+            if versions::hash_refcount(&conn, &v.hash)? == 0 {
             match v.strategy.as_str() {
                 "full" => {
                     let _ = std::fs::remove_file(versions_dir.join(&v.hash));
@@ -373,22 +390,22 @@ pub async fn delete_version(app: AppHandle, id: i64) -> Result<Vec<Version>> {
             }
         }
 
-        // Осиротевшие чанки.
+        // Orphaned chunks.
         if !chunk_hashes.is_empty() {
             let chunks_dir = versions_dir.join("chunks");
             for ch in &chunk_hashes {
-                if versions_repo::chunk_refcount(&conn, ch)? == 0 {
+                if versions::chunk_refcount(&conn, ch)? == 0 {
                     let _ = std::fs::remove_file(chunks_dir.join(ch));
                 }
             }
         }
 
-        // Обновлённый список — пока держим тот же conn.
-        versions_repo::list_for(&conn, &v.path)?
+        // The updated list — while we still hold the same conn.
+        versions::list_for(&conn, &v.path)?
         };
 
         Ok(versions)
     })
     .await
-    .map_err(|e| Error::Operation(format!("delete_version прерван: {e}")))?
+    .map_err(|e| Error::Operation(format!("delete_version interrupted: {e}")))?
 }

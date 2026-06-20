@@ -8,35 +8,35 @@ export function revealInExplorer(path) {
   return invoke('reveal_in_explorer', { path });
 }
 
-/** Быстрый доступ: домашняя/рабочий стол/документы/загрузки. */
+/** Quick access: home/desktop/documents/downloads. */
 export function quickAccess() {
   return invoke('quick_access');
 }
 
-/** Список доступных дисков. */
+/** List of available drives. */
 export function listDrives() {
   return invoke('list_drives');
 }
 
-/** Список хранилищ: точка монтирования, тип, занято/всего. */
+/** List of storage volumes: mount point, type, used/total. */
 export function listStorage() {
   return invoke('list_storage');
 }
 
-/** Следить за списком папок (нативно). Изменения придут событием fs:external-change. */
+/** Watch a list of folders (natively). Changes arrive via the fs:external-change event. */
 export function setWatch(paths) {
   return invoke('set_watch', { paths });
 }
 
-/** Сохранить пользовательский список быстрого доступа (полная замена). */
+/** Save the user's quick-access list (full replacement). */
 export function quickAccessSave(items) {
   return invoke('quick_access_save', { items });
 }
 
 /**
- * Получить нативную иконку файла/папки (WinAPI SHGetFileInfo).
- * Возвращает { dataUrl, width, height } или null на не-Windows.
- * Иконки кэшируются на диске, повторные вызовы мгновенны.
+ * Get a native file/folder icon (WinAPI SHGetFileInfo).
+ * Returns { dataUrl, width, height } or null on non-Windows.
+ * Icons are cached on disk, so repeat calls are instant.
  */
 export function nativeIcon(path, size = 16) {
   return invoke('native_icon', { path, size });

@@ -1,4 +1,4 @@
-//! Сканирование, хеширование, поиск дубликатов и извлечение связей.
+//! Scanning, hashing, duplicate detection, and link extraction.
 
 use std::path::Path;
 
@@ -10,9 +10,9 @@ pub mod links;
 pub mod scanner;
 pub mod usn_journal;
 
-/// Строит строку файлового индекса из пути файловой системы.
-/// Читает метаданные (размер, mtime, расширение) и возвращает `IndexRow`.
-/// Возвращает `None`, если не удалось прочитать метаданные или имя файла.
+/// Builds a file index row from a filesystem path.
+/// Reads metadata (size, mtime, extension) and returns an `IndexRow`.
+/// Returns `None` if the metadata or the file name could not be read.
 pub fn build_row(path: &Path) -> Option<IndexRow> {
     let meta = std::fs::metadata(path).ok()?;
     let is_dir = meta.is_dir();
@@ -37,8 +37,8 @@ pub fn build_row(path: &Path) -> Option<IndexRow> {
     })
 }
 
-/// Публичная обёртка над `build_row` для использования из `usn_journal`.
-/// Принимает строковый путь, возвращает Option<IndexRow>.
+/// Public wrapper over `build_row` for use from `usn_journal`.
+/// Takes a string path, returns Option<IndexRow>.
 pub fn build_row_from_path(path: &str) -> Option<IndexRow> {
     build_row(Path::new(path))
 }

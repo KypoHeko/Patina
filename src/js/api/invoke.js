@@ -1,26 +1,26 @@
-// Единственная точка соприкосновения с Tauri.
-// Ни один другой модуль не должен трогать window.__TAURI__ напрямую.
+// The single point of contact with Tauri.
+// No other module should touch window.__TAURI__ directly.
 
 const tauri = window.__TAURI__;
 
 if (!tauri) {
-  console.warn('[patina] window.__TAURI__ недоступен — страница открыта вне Tauri-окна.');
+  console.warn('[patina] window.__TAURI__ is unavailable — the page is open outside a Tauri window.');
 }
 
 /**
- * Вызов Rust-команды с единой обработкой ошибок.
- * @param {string} cmd  Имя команды (как в generate_handler!)
+ * Call a Rust command with unified error handling.
+ * @param {string} cmd  Command name (as in generate_handler!)
  * @param {Record<string, unknown>} [args]
  * @returns {Promise<*>}
  */
 export async function invoke(cmd, args = {}) {
   if (!tauri?.core?.invoke) {
-    throw new Error('Tauri API недоступен. Запусти приложение через `cargo tauri dev`.');
+    throw new Error('Tauri API unavailable. Run the app via `cargo tauri dev`.');
   }
   try {
     return await tauri.core.invoke(cmd, args);
   } catch (err) {
-    // Rust сериализует ошибку в строку (см. error.rs).
+    // Rust serializes the error into a string (see error.rs).
     const message = typeof err === 'string' ? err : err?.message ?? String(err);
     throw new Error(`[${cmd}] ${message}`);
   }

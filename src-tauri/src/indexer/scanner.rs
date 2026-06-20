@@ -1,6 +1,6 @@
-//! Обход каталога (только файлы). Для поиска дубликатов берём ТОЛЬКО текущую
-//! папку (без рекурсии) и ограничиваем число файлов — чтобы стоимость скана
-//! была предсказуемой и не упиралась в гигантские поддеревья.
+//! Directory walk (files only). For duplicate detection we take ONLY the
+//! current folder (no recursion) and cap the number of files — so the scan cost
+//! is predictable and does not blow up on giant subtrees.
 
 use std::time::UNIX_EPOCH;
 
@@ -12,11 +12,11 @@ pub struct ScanFile {
     pub mtime: i64,
 }
 
-/// Файлы непосредственно в `dir` (не рекурсивно), не более `cap` штук.
+/// Files directly in `dir` (non-recursive), at most `cap` of them.
 pub fn walk(dir: &str, cap: usize) -> Vec<ScanFile> {
     WalkDir::new(dir)
         .min_depth(1)
-        // .max_depth(1) // только текущая папка
+        // .max_depth(1) // current folder only
         .into_iter()
         .filter_map(|e| e.ok())
         .filter(|e| e.file_type().is_file())

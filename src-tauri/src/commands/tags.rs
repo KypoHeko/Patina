@@ -1,4 +1,4 @@
-//! Команды тегов.
+//! Tag commands.
 
 use std::collections::HashMap;
 
@@ -6,7 +6,7 @@ use tauri::{AppHandle, Manager};
 
 use crate::error::{Error, Result};
 use crate::fs::lister;
-use crate::index::tags_repo;
+use crate::index::tags;
 use crate::models::file::FileEntry;
 use crate::state::AppState;
 
@@ -15,10 +15,10 @@ pub async fn assign_tag(app: AppHandle, path: String, tag_id: String) -> Result<
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<AppState>();
         let conn = state.db()?;
-        tags_repo::assign(&conn, &path, &tag_id)
+        tags::assign(&conn, &path, &tag_id)
     })
     .await
-    .map_err(|e| Error::Operation(format!("assign_tag прерван: {e}")))?
+    .map_err(|e| Error::Operation(format!("assign_tag interrupted: {e}")))?
 }
 
 #[tauri::command]
@@ -26,10 +26,10 @@ pub async fn remove_tag(app: AppHandle, path: String, tag_id: String) -> Result<
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<AppState>();
         let conn = state.db()?;
-        tags_repo::remove(&conn, &path, &tag_id)
+        tags::remove(&conn, &path, &tag_id)
     })
     .await
-    .map_err(|e| Error::Operation(format!("remove_tag прерван: {e}")))?
+    .map_err(|e| Error::Operation(format!("remove_tag interrupted: {e}")))?
 }
 
 #[tauri::command]
@@ -40,10 +40,10 @@ pub async fn tags_for_paths(
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<AppState>();
         let conn = state.db_read()?;
-        tags_repo::for_paths(&conn, &paths)
+        tags::for_paths(&conn, &paths)
     })
     .await
-    .map_err(|e| Error::Operation(format!("теги прерваны: {e}")))?
+    .map_err(|e| Error::Operation(format!("tags interrupted: {e}")))?
 }
 
 #[tauri::command]
@@ -51,10 +51,10 @@ pub async fn paths_for_tag(app: AppHandle, tag_id: String) -> Result<Vec<String>
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<AppState>();
         let conn = state.db_read()?;
-        tags_repo::paths_for(&conn, &tag_id)
+        tags::paths_for(&conn, &tag_id)
     })
     .await
-    .map_err(|e| Error::Operation(format!("paths_for_tag прерван: {e}")))?
+    .map_err(|e| Error::Operation(format!("paths_for_tag interrupted: {e}")))?
 }
 
 #[tauri::command]
@@ -63,12 +63,12 @@ pub async fn list_tag(app: AppHandle, tag_id: String) -> Result<Vec<FileEntry>> 
         let state = app.state::<AppState>();
         let paths = {
             let conn = state.db_read()?;
-            tags_repo::paths_for(&conn, &tag_id)?
+            tags::paths_for(&conn, &tag_id)?
         };
         Ok(paths.iter().filter_map(|p| lister::entry_from_path(p)).collect())
     })
     .await
-    .map_err(|e| Error::Operation(format!("список тега прерван: {e}")))?
+    .map_err(|e| Error::Operation(format!("tag listing interrupted: {e}")))?
 }
 
 #[tauri::command]
@@ -76,8 +76,8 @@ pub async fn tag_counts(app: AppHandle) -> Result<HashMap<String, i64>> {
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<AppState>();
         let conn = state.db_read()?;
-        tags_repo::counts(&conn)
+        tags::counts(&conn)
     })
     .await
-    .map_err(|e| Error::Operation(format!("счётчики тегов прерваны: {e}")))?
+    .map_err(|e| Error::Operation(format!("tag counts interrupted: {e}")))?
 }

@@ -1,42 +1,42 @@
-//! USN Journal: инкрементальная синхронизация индекса NTFS-томов.
+//! USN Journal: incremental index sync for NTFS volumes.
 //!
-//! USN Update Sequence Number Journal — это лог файловых изменений, который
-//! NTFS ведёт автоматически. Каждое создание, удаление, переименование или
-//! модификация файла получает порядковый номер (USN).
+//! The USN (Update Sequence Number) Journal is a log of file changes that NTFS
+//! maintains automatically. Every file creation, deletion, rename or
+//! modification gets a sequence number (USN).
 //!
-//! Вместо полного перескана каталога при каждом запуске можно:
-//! 1. Один раз построить полный индекс (scanner.rs) и запомнить USN
-//! 2. При следующем запуске прочитать только изменения из журнала
-//! 3. Применить точечные upsert/delete к SQLite-индексу
+//! Instead of a full directory rescan on every launch, you can:
+//! 1. Build the full index once (scanner.rs) and remember the USN
+//! 2. On the next launch read only the changes from the journal
+//! 3. Apply targeted upsert/delete to the SQLite index
 //!
-//! Это превращает O(все файлы) в O(изменения), что на больших томах
-//! даёт ускорение на порядки (секунды → миллисекунды).
-#![allow(dead_code)] // Модуль используется через indexing.rs; sync_from_journal — публичный API
+//! This turns O(all files) into O(changes), which on large volumes gives an
+//! order-of-magnitude speedup (seconds → milliseconds).
+#![allow(dead_code)] // Reserved for the USN sync that is disabled in 0.1; sync_from_journal is the public API
 
 use crate::error::Result;
 use crate::platform;
 
-/// Результат инкрементальной синхронизации через USN Journal.
+/// Result of an incremental sync via the USN Journal.
 #[derive(Debug)]
 pub struct UsnSyncResult {
-    /// Количество обновлённых/созданных записей в файловом индексе
+    /// Number of updated/created rows in the file index
     pub upserted: usize,
-    /// Количество удалённых записей из файлового индекса
+    /// Number of deleted rows from the file index
     pub deleted: usize,
-    /// Новый USN для сохранения (позиция в журнале на момент чтения)
+    /// The new USN to save (the journal position at read time)
     pub new_usn: i64,
-    /// Была ли синхронизация через USN (false → fallback на полный перескан)
+    /// Whether the sync went through USN (false → fall back to a full rescan)
     pub used_journal: bool,
 }
 
-/// Попробовать инкрементальную синхронизацию индекса через USN Journal.
+/// Try an incremental index sync via the USN Journal.
 ///
-/// Если том поддерживает USN Journal (NTFS), читает изменения с момента
-/// `last_usn` и точечно обновляет `file_index` в SQLite.
+/// If the volume supports the USN Journal (NTFS), reads changes since
+/// `last_usn` and updates `file_index` in SQLite in a targeted way.
 ///
-/// Возвращает `UsnSyncResult` с числом изменений и новым USN.
-/// Если USN Journal недоступна (не NTFS, нет прав), возвращает результат
-/// с `used_journal: false` — вызывающая сторона должна сделать полный перескан.
+/// Returns a `UsnSyncResult` with the change counts and the new USN.
+/// If the USN Journal is unavailable (not NTFS, no permissions), returns a
+/// result with `used_journal: false` — the caller must do a full rescan.
 pub fn sync_from_journal(
     root: &str,
     last_usn: i64,
@@ -57,7 +57,7 @@ pub fn sync_from_journal(
     let mut upserted = 0;
     let mut deleted = 0;
 
-    // Точечное обновление файлового индекса по изменённым путям
+    // Targeted update of the file index for the changed paths
     for path in &changes.modified {
         if let Some(row) = crate::indexer::build_row_from_path(path) {
             if crate::index::file_index::upsert_one(conn, &row).is_ok() {
@@ -66,7 +66,7 @@ pub fn sync_from_journal(
         }
     }
 
-    // Удаление записей для удалённых файлов
+    // Delete rows for removed files
     for path in &changes.deleted {
         if crate::index::file_index::delete_path(conn, path).is_ok() {
             deleted += 1;
@@ -76,7 +76,7 @@ pub fn sync_from_journal(
     Ok(UsnSyncResult {
         upserted,
         deleted,
-        new_usn: last_usn + 1, // Позиция обновляется при следующем чтении
+        new_usn: last_usn + 1, // The position is updated on the next read
         used_journal: true,
     })
 }

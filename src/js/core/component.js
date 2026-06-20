@@ -1,11 +1,11 @@
-// Базовый класс компонента. От него наследуются все элементы UI.
-// Даёт единый жизненный цикл и — главное — автоматическую очистку
-// подписок и слушателей при destroy(), чтобы не текла память.
+// Base component class. All UI elements inherit from it.
+// Gives a unified lifecycle and — most importantly — automatic cleanup of
+// subscriptions and listeners on destroy(), so memory does not leak.
 
 export class Component {
   /**
    * @param {object} ctx
-   * @param {HTMLElement} ctx.mount  контейнер для рендера
+   * @param {HTMLElement} ctx.mount  render container
    * @param {object} ctx.store
    * @param {object} ctx.bus
    */
@@ -13,41 +13,41 @@ export class Component {
     this.mount = mount;
     this.store = store;
     this.bus = bus;
-    /** @type {Array<function>} функции отмены (отписки/снятия слушателей) */
+    /** @type {Array<function>} cleanup functions (unsubscribe/remove listeners) */
     this._cleanups = [];
-    /** @type {Array<Component>} дочерние компоненты */
+    /** @type {Array<Component>} child components */
     this._children = [];
   }
 
-  /** Подписка на стор с автоочисткой. */
+  /** Subscribe to the store with auto-cleanup. */
   subscribe(fn) {
     this._cleanups.push(this.store.subscribe(fn));
   }
 
-  /** Подписка на шину событий с автоочисткой. */
+  /** Subscribe to the event bus with auto-cleanup. */
   listen(event, fn) {
     this._cleanups.push(this.bus.on(event, fn));
   }
 
-  /** addEventListener с автоснятием при destroy. */
+  /** addEventListener that is auto-removed on destroy. */
   on(target, type, handler, options) {
     target.addEventListener(type, handler, options);
     this._cleanups.push(() => target.removeEventListener(type, handler, options));
   }
 
-  /** Зарегистрировать дочерний компонент (будет уничтожен вместе с родителем). */
+  /** Register a child component (destroyed together with the parent). */
   addChild(component) {
     this._children.push(component);
     return component;
   }
 
-  /** Точка входа. Переопределяется наследником. */
+  /** Entry point. Overridden by the subclass. */
   init() {}
 
-  /** Отрисовка. Переопределяется наследником. */
+  /** Render. Overridden by the subclass. */
   render() {}
 
-  /** Снять всё: дети, слушатели, подписки, очистить DOM. */
+  /** Tear down everything: children, listeners, subscriptions, clear the DOM. */
   destroy() {
     this._children.forEach((c) => c.destroy());
     this._children = [];

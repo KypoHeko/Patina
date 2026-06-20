@@ -1,5 +1,5 @@
--- Чанки версий для strategy='chunked'. Каждый чанк хранится в chunks/<hash>.
--- Порядок чанков важен для восстановления файла.
+-- Version chunks for strategy='chunked'. Each chunk is stored in chunks/<hash>.
+-- Chunk order matters for reassembling the file.
 CREATE TABLE IF NOT EXISTS version_chunks (
     version_id  INTEGER NOT NULL,
     chunk_order INTEGER NOT NULL,
@@ -10,7 +10,7 @@ CREATE TABLE IF NOT EXISTS version_chunks (
 );
 CREATE INDEX IF NOT EXISTS idx_vchunks_hash ON version_chunks (chunk_hash);
 
--- Словари zstd для strategy='zstd'. Хранятся как versions/dicts/dict-{id}.zstd.
+-- zstd dictionaries for strategy='zstd'. Stored as versions/dicts/dict-{id}.zstd.
 CREATE TABLE IF NOT EXISTS zstd_dicts (
     id   INTEGER PRIMARY KEY AUTOINCREMENT,
     ts   INTEGER NOT NULL,

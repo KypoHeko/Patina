@@ -1,7 +1,7 @@
 import { invoke } from './invoke.js';
 
-/** Группы дубликатов в ТЕКУЩЕЙ папке (без рекурсии, с ограничением по числу
- *  файлов). По ходу хеширования бэкенд шлёт событие 'dups:progress'. */
+/** Duplicate groups in the CURRENT folder (non-recursive, with a file-count
+ *  cap). During hashing the backend emits the 'dups:progress' event. */
 export function findDuplicates(dir) {
   return invoke('find_duplicates', { dir });
 }

@@ -1,15 +1,15 @@
 import { invoke } from './invoke.js';
 
 /**
- * Посчитать рекурсивные размеры всех папок поддерева `root` и сохранить в индекс.
- * Резолвится по завершении обхода. Прогресс шлётся событием `dirsize:progress`,
- * завершение — `dirsize:done`. Возвращает число обработанных каталогов.
+ * Compute recursive sizes of all folders under `root` and store them in the index.
+ * Resolves when the walk completes. Progress is sent via the `dirsize:progress`
+ * event, completion via `dirsize:done`. Returns the number of processed directories.
  */
 export function computeDirSizes(root) {
   return invoke('compute_dir_sizes', { root });
 }
 
-/** Готовые размеры для путей папок (для показа). Возвращает map: путь → размер. */
+/** Ready sizes for folder paths (for display). Returns a map: path → size. */
 export function dirSizes(paths) {
   return invoke('dir_sizes', { paths });
 }

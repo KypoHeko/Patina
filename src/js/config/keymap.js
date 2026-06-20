@@ -1,4 +1,4 @@
-// Декларативная раскладка горячих клавиш.
+// Declarative keyboard shortcut map.
 
 export const KEYMAP = [
   { combo: 'ctrl+k', action: 'command-palette', description: 'Поиск / палитра команд' },

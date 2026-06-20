@@ -1,5 +1,7 @@
+import { getLang } from './i18n.js';
+
 /**
- * Человекочитаемый размер файла.
+ * Human-readable file size.
  * @param {number} bytes
  * @returns {string}
  */
@@ -12,11 +14,13 @@ export function formatSize(bytes) {
 }
 
 /**
- * Дата изменения в коротком локальном формате.
+ * Modification date in a short locale format.
+ * The locale comes from i18n — dates and times are shown in the UI language.
  * @param {number|null} ms
  * @returns {string}
  */
 export function formatDate(ms) {
   if (!ms) return '';
-  return new Date(ms).toLocaleString();
+  const lang = (typeof getLang === 'function') ? getLang() : 'ru';
+  return new Date(ms).toLocaleString(lang === 'en' ? 'en-US' : 'ru-RU');
 }

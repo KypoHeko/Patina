@@ -20,10 +20,9 @@ import {
 import { getActiveSide, closeSplit, splitTab } from '../state/tabs.js';
 import { Breadcrumbs } from './breadcrumbs.js';
 import { makeMatcher } from '../lib/regex.js';
-import { t } from '../lib/i18n.js';
+import { t, tagLabel } from '../lib/i18n.js';
 
 const TAG_COLOR = Object.fromEntries(TAGS.map((t) => [t.id, t.color]));
-const TAG_LABEL = Object.fromEntries(TAGS.map((t) => [t.id, t.label]));
 
 // Оверлеи, которые сами обрабатывают клавиатуру (стрелки/Enter) — при их
 // открытии навигация по списку не должна срабатывать.
@@ -63,7 +62,7 @@ export class FilePanel extends Component {
         ? `<button class="panel__split" data-split title="${t('panel.split')}">▥</button>`
         : '';
     const closeBtn =
-      '<button class="panel__close" data-close-split title="Закрыть панель">×</button>';
+      `<button class="panel__close" data-close-split title="${t('panel.closePanel')}">×</button>`;
     this.mount.innerHTML = `
       <div class="panel">
         <div class="panel__head">
@@ -206,6 +205,12 @@ export class FilePanel extends Component {
   }
 
   async navigate(path, { record = true } = {}) {
+    // Перерисовка той же папки (например, после fs:changed от restore_version):
+    // сохраняем выделение, иначе restore снимет его. Для новой папки selected
+    // обнуляется как и раньше.
+    const isReload = this._lastPane?.path === path;
+    const prevSelected = isReload ? [...(this._lastPane?.selected || [])] : [];
+
     // Сбрасываем фильтр при навигации — чтобы не «ловить» старый поиск
     // в новой папке. Input обновится через sync().
     if (this.store.getState().searchQuery) {
@@ -216,7 +221,11 @@ export class FilePanel extends Component {
       const entries = path.startsWith('tag:') ? await listTag(path.slice(4)) : await listDir(path);
       this._tags = {}; // сбрасываем теги прошлой папки
       this._anchor = null;
-      updatePane(this.store, this.side, { path, entries, selected: [], loading: false });
+      // Оставляем в выделении только те пути, что всё ещё есть в листинге —
+      // например, после restore файл тот же, а после удаления — пропадёт.
+      const existing = new Set(entries.map((e) => e.path));
+      const selected = prevSelected.filter((p) => existing.has(p));
+      updatePane(this.store, this.side, { path, entries, selected, loading: false });
       if (record) recordHistory(this.store, this.side, path);
     } catch (err) {
       updatePane(this.store, this.side, { loading: false, error: err.message });
@@ -672,7 +681,7 @@ export class FilePanel extends Component {
       .map(
         (id) =>
           `<span class="tag-dot" style="background:${TAG_COLOR[id] || '#888'}" title="${escapeHtml(
-            TAG_LABEL[id] || id,
+            tagLabel(id),
           )}"></span>`,
       )
       .join('');
@@ -706,6 +715,55 @@ export class FilePanel extends Component {
     this.renderColhead();
     if (this._lastPane) this.renderList(this._lastPane);
   }
+  
+    /** Перерисовка при смене языка. Сохраняет навигацию, выделение, сортировку, теги. */
+    applyLang() {
+      if (!this.panelEl) return;
+      // 1. Кнопки в шапке панели.
+      const splitBtn = this.mount.querySelector('[data-split]');
+      if (splitBtn) splitBtn.title = t('panel.split');
+      const closeBtn = this.mount.querySelector('[data-close-split]');
+      if (closeBtn) closeBtn.title = t('panel.closePanel');
+      // 2. Заголовки колонок — пересобираем только текстовые узлы внутри span'ов.
+      const colLabels = {
+        name: t('col.name'),
+        type: t('col.type'),
+        size: t('col.size'),
+        modified: t('col.modified'),
+      };
+      for (const [key, label] of Object.entries(colLabels)) {
+        const span = this.colheadEl && this.colheadEl.querySelector(`[data-sort="${key}"]`);
+        if (span) {
+          // Сохраняем иконку сортировки, обновляем только текст.
+          const arrow = span.querySelector('.sort-arrow');
+          span.textContent = label;
+          if (arrow) span.append(arrow);
+        }
+      }
+      // Колонка «Метка» (без data-sort) — это span без класса col-sort, найдём по соседству.
+      if (this.colheadEl) {
+        const tagSpan = this.colheadEl.querySelector('span:not(.col-sort):not(:empty)');
+        // span идёт третьим в colhead; ищем простой текстовый span без дочерних.
+        const spans = this.colheadEl.querySelectorAll('span');
+        for (const s of spans) {
+          if (!s.classList.contains('col-sort') && !s.hasAttribute('data-sort') && s.childElementCount === 0) {
+            s.textContent = t('col.tag');
+            break;
+          }
+        }
+      }
+      // 3. Breadcrumbs.
+      if (this.breadcrumbs && this.breadcrumbs.applyLang) this.breadcrumbs.applyLang();
+      // 4. Список файлов (точечные тексты — Computing…, dots и т.д. уже через t()).
+      this.renderWindow();
+      // 5. Пустое состояние / ошибка — проверяем, не показано ли оно.
+      if (this._lastPane && this._lastPane.error) {
+        // ошибка — оставляем как есть, это сообщение от бэкенда.
+      } else if (this._lastPane && (!this._lastPane.entries || this._lastPane.entries.length === 0)) {
+        // панель пуста / ничего не найдено — перерисовать через renderList.
+        this.renderList(this._lastPane);
+      }
+    }
 
   renderColhead() {
     if (!this.colheadEl) return;

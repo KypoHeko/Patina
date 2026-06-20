@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { FilePanel } from './file-panel.js';
+import { FilePanel } from '../components/file-panel.js';
 import { createStore } from '../core/store.js';
 import { createEventBus } from '../core/event-bus.js';
 import { initialTabsState, getActiveTab } from '../state/tabs.js';

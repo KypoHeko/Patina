@@ -1,12 +1,11 @@
-//! Глобальное состояние приложения (Tauri .manage()).
+//! Global application state (Tauri .manage()).
 //!
-//! БД оборачивается в Mutex<Connection>, а не RwLock<Connection>:
-//! - rusqlite::Connection содержит RefCell внутри и не реализует Sync
-//! - RwLock<T>: Sync требует T: Send + Sync, а Connection: !Sync
-//! - Mutex<T>: Sync требует только T: Send, а Connection: Send
-//! - Практической разницы нет: на одном соединении SQLite всё равно
-//!   сериализует запросы, поэтому «множество читателей» RwLock
-//!   не даёт реального параллелизма
+//! The DB is wrapped in Mutex<Connection>, not RwLock<Connection>:
+//! - rusqlite::Connection holds a RefCell internally and does not implement Sync
+//! - RwLock<T>: Sync requires T: Send + Sync, but Connection: !Sync
+//! - Mutex<T>: Sync requires only T: Send, and Connection: Send
+//! - There is no practical difference: a single SQLite connection serializes
+//!   queries anyway, so RwLock's "many readers" gives no real parallelism
 
 use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard};
@@ -16,7 +15,7 @@ use rusqlite::Connection;
 
 use crate::error::{Error, Result};
 
-/// Состояние живого индекса: какой корень индексируется и активен ли контент-индекс.
+/// Live index state: which root is being indexed and whether the content index is active.
 #[derive(Default)]
 pub struct IndexState {
     pub root: Option<String>,
@@ -24,15 +23,15 @@ pub struct IndexState {
 }
 
 pub struct AppState {
-    /// Mutex<Connection> — единственный способ сделать AppState: Sync,
-    /// т.к. rusqlite::Connection: !Sync (внутренний RefCell).
-    /// На практике это не хуже RwLock: одно соединение SQLite сериализует
-    /// все запросы, поэтому «параллельные читатели» RwLock были иллюзией.
+    /// Mutex<Connection> is the only way to make AppState: Sync,
+    /// since rusqlite::Connection: !Sync (internal RefCell).
+    /// In practice this is no worse than RwLock: a single SQLite connection
+    /// serializes all queries, so RwLock's "parallel readers" were an illusion.
     pub db: Mutex<Connection>,
     pub versions_dir: PathBuf,
     pub thumbs_dir: PathBuf,
     pub watcher: Mutex<Option<RecommendedWatcher>>,
-    /// Рекурсивный вотчер индексируемого корня (живой индекс).
+    /// Recursive watcher of the indexed root (live index).
     pub index_watcher: Mutex<Option<RecommendedWatcher>>,
     pub index_info: Mutex<IndexState>,
 }
@@ -49,20 +48,21 @@ impl AppState {
         }
     }
 
-    /// Захват соединения БД (эксклюзивная блокировка).
-    /// Отравленный лок превращается в ошибку (её увидит фронт),
-    /// а не в крах всего процесса.
+    /// Acquire the DB connection (exclusive lock).
+    /// A poisoned lock turns into an error (which the front end sees),
+    /// not a crash of the whole process.
     pub fn db(&self) -> Result<MutexGuard<'_, Connection>> {
         self.db
             .lock()
-            .map_err(|_| Error::Operation("БД заблокирована (poisoned)".into()))
+            .map_err(|_| Error::Operation("DB lock poisoned".into()))
     }
 
-    /// Захват соединения БД для чтения. Сейчас — то же единственное соединение,
-    /// что и `db()`; метод существует как явный маркер read-намерения на стороне
-    /// вызова и как seam для будущего пула: когда появится отдельное read-only
-    /// соединение (WAL), читатели перестанут конкурировать с писателем за мьютекс.
-    /// Тогда поменяется только тело здесь — вызовы трогать не придётся.
+    /// Acquire the DB connection for reading. Currently the same single
+    /// connection as `db()`; this method exists as an explicit read-intent marker
+    /// at the call site and as a seam for a future pool: once a separate
+    /// read-only (WAL) connection exists, readers will stop competing with the
+    /// writer for the mutex. Only the body here will change then — call sites
+    /// will not need to be touched.
     pub fn db_read(&self) -> Result<MutexGuard<'_, Connection>> {
         self.db()
     }
@@ -70,18 +70,18 @@ impl AppState {
     pub fn watcher(&self) -> Result<MutexGuard<'_, Option<RecommendedWatcher>>> {
         self.watcher
             .lock()
-            .map_err(|_| Error::Operation("watcher заблокирован (poisoned)".into()))
+            .map_err(|_| Error::Operation("watcher lock poisoned".into()))
     }
 
     pub fn index_info(&self) -> Result<MutexGuard<'_, IndexState>> {
         self.index_info
             .lock()
-            .map_err(|_| Error::Operation("index_info заблокирован (poisoned)".into()))
+            .map_err(|_| Error::Operation("index_info lock poisoned".into()))
     }
 
     pub fn index_watcher(&self) -> Result<MutexGuard<'_, Option<RecommendedWatcher>>> {
         self.index_watcher
             .lock()
-            .map_err(|_| Error::Operation("index_watcher заблокирован (poisoned)".into()))
+            .map_err(|_| Error::Operation("index_watcher lock poisoned".into()))
     }
 }
