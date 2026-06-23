@@ -2,7 +2,10 @@ import { createStore } from './core/store.js';
 import { createEventBus } from './core/event-bus.js';
 import { createShortcuts } from './core/shortcuts.js';
 import { KEYMAP } from './config/keymap.js';
-import { initialTabsState, createTab, closeTab, reopenTab, getActiveTab } from './state/tabs.js';
+import {
+  initialTabsState, createTab, closeTab, reopenTab, getActiveTab, getActiveSide,
+  loadSavedTabs, restoreTabs, saveTabs,
+} from './state/tabs.js';
 import { setWatch } from './api/system.js';
 import { onEvent } from './api/events.js';
 import { initialUiState, getSplitRatio } from './state/ui.js';
@@ -22,16 +25,17 @@ import { homeDir } from './api/fs.js';
 import { initTheme } from './lib/theme.js';
 import { initLang, getLang, setLang, t } from './lib/i18n.js';
 
-const store = createStore({ ...initialTabsState(), ...initialUiState() });
+const _restored = restoreTabs(loadSavedTabs());
+const store = createStore({ ...(_restored || initialTabsState()), ...initialUiState() });
 const bus = createEventBus();
 
-// Применяем сохранённую палитру до монтажа компонентов (без мигания темы).
+// Apply the saved palette before components mount (no theme flicker).
 initTheme();
-// Язык тоже выбираем до монтажа — компоненты сразу отрисуются на нужном языке.
+// Pick the language before mounting too — components render in the right language immediately.
 initLang();
 
-// Стартуем homeDir() IPC ДО инициализации сайдбара — чтобы быстрый вызов
-// встал в очередь первым, до медленного listStorage() / sysinfo.
+// Start the homeDir() IPC BEFORE initializing the sidebar — so the fast call
+// queues first, ahead of the slow listStorage() / sysinfo.
 const _homePromise = homeDir();
 const _cachedHome = localStorage.getItem('patina:home');
 
@@ -51,8 +55,8 @@ const preview = new PreviewPanel({ mount: document.getElementById('preview-root'
 const divider = new Divider({ mount: document.getElementById('divider'), store, bus, workspace });
 const themeMenu = new ThemeMenu({ mount: document.getElementById('theme-root'), store, bus });
 
-// Инициализируем устойчиво: сбой одного компонента не должен срывать
-// подключение обработчиков кнопок ниже по файлу.
+// Initialize robustly: a failure of one component must not break the wiring
+// of the button handlers further down the file.
 const components = [
   sidebar, tabBar, left, right, statusBar, contextMenu, palette,
   duplicates, graph, confirmDialog, preview, divider, themeMenu,
@@ -61,7 +65,7 @@ for (const c of components) {
   try {
     c.init();
   } catch (err) {
-    console.error('[patina] ошибка инициализации компонента:', err);
+    console.error('[patina] component init error:', err);
   }
 }
 
@@ -69,7 +73,7 @@ document.getElementById('preview-btn').addEventListener('click', () => bus.emit(
 
 const searchInput = document.getElementById('topbar-search');
 searchInput.addEventListener('input', () => store.setState({ searchQuery: searchInput.value }));
-// При навигации searchQuery сбрасывается программно — синхронизируем input.
+// On navigation searchQuery is reset programmatically — keep the input in sync.
 store.subscribe((state) => {
   if (document.activeElement !== searchInput && searchInput.value !== (state.searchQuery || '')) {
     searchInput.value = state.searchQuery || '';
@@ -81,9 +85,9 @@ document.getElementById('duplicates-btn').addEventListener('click', () => bus.em
 document.getElementById('graph-btn').addEventListener('click', () => bus.emit('graph:open'));
 document.getElementById('theme-btn').addEventListener('click', () => bus.emit('theme:open'));
 
-// --- Язык интерфейса ---
-// Подсказки кнопок топбара и плейсхолдер поиска живут в статичном index.html,
-// поэтому переводим их из JS (на старте и при каждой смене языка).
+// --- UI language ---
+// Topbar button tooltips and the search placeholder live in the static
+// index.html, so we translate them from JS (at startup and on every language change).
 function syncTopbar() {
   const titles = {
     'dirsize-btn': 'topbar.dirsize',
@@ -105,21 +109,21 @@ function syncTopbar() {
   if (langBtn) langBtn.textContent = getLang().toUpperCase();
 }
 
-// Смена языка: переводим топбар, затем вызываем applyLang() у каждого
-// компонента. applyLang() точечно обновляет только тексты в DOM, сохраняя
-// состояние (открытые диалоги, выделение, фокус графа, инпуты и т.д.) —
-// в отличие от destroy()+init(), который сносил панели и transient-состояние.
-// Если у компонента нет applyLang — пропускаем (он не нуждается в перерисовке).
+// Language change: translate the topbar, then call applyLang() on each
+// component. applyLang() updates only the texts in the DOM in place, preserving
+// state (open dialogs, selection, graph focus, inputs, etc.) — unlike
+// destroy()+init(), which tore down panels and transient state.
+// If a component has no applyLang — we skip it (it needs no re-render).
 function applyLanguage() {
   syncTopbar();
   for (const c of components) {
     try {
       if (typeof c.applyLang === 'function') c.applyLang();
     } catch (err) {
-      console.error('[patina] ошибка перерисовки при смене языка:', err);
+      console.error('[patina] re-render error on language change:', err);
     }
   }
-  store.setState({}); // на случай, если кто-то из подписчиков store считает тексты
+  store.setState({}); // in case some store subscriber reads texts
 }
 
 document.getElementById('lang-btn').addEventListener('click', () => {
@@ -137,7 +141,7 @@ collapseBtn.addEventListener('click', () => {
 
 const tabColorsBtn = document.getElementById('tabcolors-btn');
 tabColorsBtn.addEventListener('click', () => {
-  const on = store.getState().tabColors === false; // было выкл -> включаем
+  const on = store.getState().tabColors === false; // was off -> turn on
   store.setState({ tabColors: on });
   tabColorsBtn.classList.toggle('is-on', on);
 });
@@ -163,11 +167,21 @@ shortcuts.register('duplicates', () => bus.emit('duplicates:open'));
 shortcuts.register('relationship-graph', () => bus.emit('graph:open'));
 shortcuts.register('reopen-tab', () => reopenTab(store));
 shortcuts.register('new-folder', () => bus.emit('folder:create'));
+// Delete key: move the active pane's selection to the Recycle Bin.
+// file:delete has no active-side fallback, so pass the side explicitly;
+// the handler still routes through the confirm dialog before deleting.
+shortcuts.register('delete', () => bus.emit('file:delete', { side: getActiveSide(store.getState()) }));
 
-// --- Запуск: показываем контент максимально быстро ---
-// _homePromise и _cachedHome уже объявлены выше (до init сайдбара).
-if (_cachedHome) {
-  // Оптимистичный запуск: показываем контент сразу, не дожидаясь IPC.
+// --- Startup: show content as fast as possible ---
+// _homePromise and _cachedHome are already declared above (before sidebar init).
+if (_restored) {
+  // Restore the previously open tabs: navigate the active tab's pane(s) now;
+  // inactive tabs navigate lazily when first activated.
+  const tab = getActiveTab(store.getState());
+  if (tab.panes.left.path) left.navigate(tab.panes.left.path);
+  if (tab.split && tab.panes.right.path) right.navigate(tab.panes.right.path);
+} else if (_cachedHome) {
+  // Optimistic startup: show content immediately, without waiting for IPC.
   left.navigate(_cachedHome);
 }
 
@@ -175,20 +189,15 @@ if (_cachedHome) {
   try {
     const home = await homeDir();
     store.setState({ homePath: home });
-    left.navigate(home);
-    if (!_cachedHome) {
-      // Первый запуск — навигируем только сейчас.
-      left.navigate(home);
-    } else if (_cachedHome !== home) {
-      // Путь изменился (маловероятно, но безопасно).
-      left.navigate(home);
-    }
+    // Only seed the home folder on a fresh start; a restored session keeps its
+    // own saved tabs and paths.
+    if (!_restored) left.navigate(home);
   } catch (err) {
-    console.error('[patina] не удалось определить домашнюю папку:', err);
+    console.error('[patina] could not determine the home folder:', err);
   }
 })();
 
-// --- Живой индекс: авто-обновление при внешних изменениях файлов ---
+// --- Live index: auto-refresh on external file changes ---
 let _watchTimer = null;
 let _pendingDirs = new Set();
 onEvent('fs:external-change', (dirs) => {
@@ -216,3 +225,12 @@ store.subscribe((state) => {
   _watchedKey = key;
   setWatch(dirs).catch(() => {});
 });
+
+// --- Persist open tabs across restarts (debounced) ---
+let _saveTabsTimer = null;
+store.subscribe((state) => {
+  clearTimeout(_saveTabsTimer);
+  _saveTabsTimer = setTimeout(() => saveTabs(state), 300);
+});
+// Flush on close so the last navigation isn't lost inside the debounce window.
+window.addEventListener('beforeunload', () => saveTabs(store.getState()));

@@ -82,7 +82,7 @@
   font: var(--font-mono);
   font-size: 12px;
   color: var(--text);
-  direction: rtl; /* показываем хвост пути */
+  direction: rtl; /* show the tail of the path */
   text-align: left;
 }
 .dup__keep {
@@ -101,7 +101,7 @@
   color: var(--tag-urgent);
 }
 
-/* Индикатор прогресса поиска дубликатов */
+/* Duplicate-search progress indicator */
 .dup__msg {
   display: flex;
   align-items: center;

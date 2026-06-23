@@ -9,41 +9,41 @@ import { getActiveSide } from '../state/tabs.js';
 import { pathToColor } from '../lib/path-color.js';
 import { t } from '../lib/i18n.js';
 
-const NODE_H = 28; // высота панели узла
-const NODE_PAD_X = 12; // горизонтальный паддинг внутри панели
-const NODE_PAD_Y = 6; // вертикальный паддинг
-const NODE_MIN_W = 64; // минимальная ширина панели
-const NODE_MAX_W = 180; // максимальная ширина панели
-const NODE_RADIUS = 6; // скругление углов панели
+const NODE_H = 28; // node panel height
+const NODE_PAD_X = 12; // horizontal padding inside the panel
+const NODE_PAD_Y = 6; // vertical padding
+const NODE_MIN_W = 64; // minimum panel width
+const NODE_MAX_W = 180; // maximum panel width
+const NODE_RADIUS = 6; // panel corner rounding
 const NODE_FONT = '11px system-ui, -apple-system, "Segoe UI", sans-serif';
-const OVERVIEW_CAP = 80; // не строим полотно из тысяч узлов
-const OVERVIEW_INDEX_CAP = 300; // потолок узлов обзора с учётом вложенных файлов из индекса
-const BUSY_DELAY = 350; // мс: спиннер показываем только если операция длится дольше — иначе не мелькаем
-const DEFAULT_W = 900; // ориентир до первой раскладки полотна
+const OVERVIEW_CAP = 80; // don't build a canvas out of thousands of nodes
+const OVERVIEW_INDEX_CAP = 300; // overview node cap including nested files from the index
+const BUSY_DELAY = 350; // ms: show the spinner only if the operation lasts longer — otherwise no flicker
+const DEFAULT_W = 900; // a reference value before the first canvas layout
 const DEFAULT_H = 600;
 
-// Физика (подобрана под десятки узлов, увеличена под панели)
-const REPULSION = 18000; // кулоновское отталкивание (больше — узлы-панели шире)
-const SPRING_LEN = 240; // длина покоя ребра (больше — длиннее связи)
-const SPRING_K = 0.010; // жёсткость пружины
-const GRAVITY = 0.008; // притяжение к центру (держит отвязанные узлы)
+// Physics (tuned for dozens of nodes, scaled up for the panels)
+const REPULSION = 18000; // Coulomb repulsion (larger — node panels spread wider)
+const SPRING_LEN = 240; // edge rest length (larger — longer links)
+const SPRING_K = 0.010; // spring stiffness
+const GRAVITY = 0.008; // pull toward the center (keeps detached nodes in)
 const DAMPING = 0.86;
 const ALPHA_MIN = 0.02;
 const ZOOM_MIN = 0.2;
 const ZOOM_MAX = 3;
 
-// Прогрессивная сборка: количество узлов, появляющихся за один тик
+// Progressive build: number of nodes that appear per tick
 const APPEAR_BATCH = 4;
-const APPEAR_INTERVAL = 60; // мс между батчами
+const APPEAR_INTERVAL = 60; // ms between batches
 
-// Цвета стрелок (легенда)
-const C_DEP = '#10b981'; // зависимости (зелёный — emerald)
-const C_BACK = '#f59e0b'; // обратные ссылки (жёлтый — amber)
+// Arrow colors (legend)
+const C_DEP = '#10b981'; // dependencies (green — emerald)
+const C_BACK = '#f59e0b'; // back-references (yellow — amber)
 const C_MANUAL = 'rgba(150,158,176,0.75)';
 const C_CTX = 'rgba(120,130,150,0.5)';
 const C_MENTION = 'rgba(120,130,150,0.3)';
 
-// Цвета расширений (из icons.js — та же палитра, что в файловой панели)
+// Extension colors (from icons.js — the same palette as in the file panel)
 const EXT_COLOR = {
   ts: '#3b82f6', tsx: '#3b82f6',
   js: '#f7df1e', mjs: '#f7df1e',
@@ -76,8 +76,8 @@ const EXT_COLOR = {
 };
 const DEFAULT_NODE_COLOR = '#94a3b8';
 
-/** Получить цвет узла по расширению файла. */
-/** Родительская папка пути (для цвета рамки = цвета вкладки этой папки). */
+/** Get the node color by file extension. */
+/** Parent folder of a path (used for the border color = the tab color of that folder). */
 function parentDir(p) {
   const i = Math.max(p.lastIndexOf('\\'), p.lastIndexOf('/'));
   return i > 0 ? p.slice(0, i) : p;
@@ -90,14 +90,14 @@ function nodeColor(name) {
   return EXT_COLOR[ext] || DEFAULT_NODE_COLOR;
 }
 
-/** Подпись узла: только собственное имя файла/папки (без родительской папки —
- *  иначе у всех узлов из одной папки в подписи дублируется её название). */
+/** Node label: only the file/folder's own name (without the parent folder —
+ *  otherwise every node from the same folder would repeat its name in the label). */
 function shortLabel(name, fullPath) {
   const label = name || fullPath.split(/[/\\]/).pop() || fullPath;
   return label.length > 28 ? label.slice(0, 27) + '…' : label;
 }
 
-/** Измерить ширину текста метки узла на полотне. */
+/** Measure the width of a node label's text on the canvas. */
 function measureLabelWidth(ctx, name, fullPath) {
   ctx.font = NODE_FONT;
   const text = shortLabel(name, fullPath || name);
@@ -105,11 +105,11 @@ function measureLabelWidth(ctx, name, fullPath) {
   return Math.min(NODE_MAX_W, Math.max(NODE_MIN_W, Math.ceil(w) + NODE_PAD_X * 2));
 }
 
-// Граф связей (Ctrl+G) — плавающее окно: его можно перетаскивать за заголовок и
-// менять размер за угол. Полотно занимает всё окно; узлы не привязаны к его
-// границам (могут уходить за край), фон можно панорамировать перетаскиванием и
-// масштабировать колесом. Один клик по узлу — сделать его фокусом; двойной —
-// показать файл в панели; двойной по пустому месту — сбросить вид.
+// Relationship graph (Ctrl+G) — a floating window: it can be dragged by the title
+// bar and resized by the corner. The canvas fills the whole window; nodes are not
+// bound to its edges (they may go off-screen), the background can be panned by
+// dragging and zoomed with the wheel. A single click on a node makes it the focus;
+// a double-click shows the file in the panel; a double-click on empty space resets the view.
 export class RelationshipGraph extends Component {
   init() {
     this._open = false;
@@ -117,7 +117,7 @@ export class RelationshipGraph extends Component {
     this._root = '';
     this._mode = 'overview'; // 'focus' | 'overview'
     this._focus = null;
-    this._connectedPaths = null; // Set<path> — узлы со связями к фокусу
+    this._connectedPaths = null; // Set<path> — nodes with links to the focus
     this._nodes = new Map();
     this._edges = [];
     this._curSeeds = [];
@@ -127,38 +127,38 @@ export class RelationshipGraph extends Component {
     this._alpha = 0;
     this._fetchSeq = 0;
 
-    // Состояние фонового построения индекса (для живого статуса вместо «висящей»
-    // плашки): прогресс приходит событиями index:progress, конец — index:ready.
+    // State of the background index build (for a live status instead of a "hung"
+    // badge): progress arrives via index:progress events, the end via index:ready.
     this._loading = false;
     this._indexing = false;
     this._indexCount = 0;
     this._indexTotal = 0;
     this._indexPhase = '';
-    this._showBusy = false; // спиннер показываем с задержкой BUSY_DELAY (анти-мелькание на быстрых операциях)
+    this._showBusy = false; // show the spinner with a BUSY_DELAY delay (anti-flicker on fast operations)
     this._busyTimer = null;
-    this._selfRebuild = false; // true, пока идёт пересборка, запущенная самим графом («Обновить»)
+    this._selfRebuild = false; // true while a rebuild started by the graph itself ("Refresh") is running
 
-    // Прогрессивная сборка
-    this._appeared = new Set(); // пути уже появившихся узлов
-    this._appearQueue = []; // узлы, ожидающие появления
+    // Progressive build
+    this._appeared = new Set(); // paths of nodes that have already appeared
+    this._appearQueue = []; // nodes waiting to appear
     this._appearTimer = null;
 
-    // Фаза хеширования
+    // Hashing phase
     this._hashing = false;
-    this._hashSeq = 0; // серийный номер — чтобы отличить устаревшие вызовы
+    this._hashSeq = 0; // serial number — to tell apart stale calls
     this._hashProgress = 0;
     this._hashTotal = 0;
     this._hashes = new Map(); // path → hash
 
-    // Размер полотна (обновляется ResizeObserver), вид (пан/зум), перетаскивания.
+    // Canvas size (updated by ResizeObserver), view (pan/zoom), drags.
     this._w = DEFAULT_W;
     this._h = DEFAULT_H;
     this._ox = 0;
     this._oy = 0;
     this._zoom = 1;
-    this._pan = null; // активное панорамирование фона
-    this._winDrag = null; // активное перетаскивание окна
-    this._moved = false; // был ли drag — чтобы не путать с кликом
+    this._pan = null; // active background panning
+    this._winDrag = null; // active window drag
+    this._moved = false; // whether a drag happened — to not confuse it with a click
     this._ro = null;
 
     this._colors = this.readColors();
@@ -180,38 +180,38 @@ export class RelationshipGraph extends Component {
         this.backToOverview();
       }
     });
-    // Перетаскивания обрабатываем на уровне документа (постоянно, с защитой),
-    // чтобы курсор можно было увести за пределы окна и не терять захват.
+    // Drags are handled at the document level (always, with guards), so the cursor
+    // can be moved outside the window without losing the grab.
     this.on(document, 'mousemove', (e) => this.onDocMove(e));
     this.on(document, 'mouseup', () => this.onDocUp());
 
     onEvent('index:ready', (root) => {
       if (!this._open) return;
       if (root && this._root && root !== this._root) return;
-      // Свою пересборку («Обновить») сопровождаем плашкой; чужую, фоновую —
-      // обновляем тихо, чтобы только что показанное «Загружено!» не сменялось
-      // снова «Загрузкой».
+      // Our own rebuild ("Refresh") gets a badge; someone else's, background one —
+      // we update silently so a just-shown "Loaded!" doesn't switch back to
+      // "Loading".
       const wasSelf = this._selfRebuild;
       this._selfRebuild = false;
       this._indexing = false;
       this.updateRebuildButton();
-      // Данные обновляем ВСЕГДА тихо (без мелькания «Загрузка…»). Если это была
-      // своя пересборка («Обновить») — показываем «Загружено!»; фоновую сборку
-      // не афишируем.
+      // We ALWAYS update the data silently (no "Loading…" flicker). If it was
+      // our own rebuild ("Refresh") — show "Loaded!"; we don't advertise a
+      // background build.
       this.refetch({ silent: true });
       if (wasSelf) this.markLoaded();
       else this.updateLoadingState();
     }).then((un) => this._cleanups.push(un));
 
-    // Живой прогресс фонового построения индекса — чтобы было видно, что идёт
-    // работа, а не «висит». Узлы появятся по index:ready (refetch выше).
+    // Live progress of the background index build — so it's visible that work is
+    // happening, not "hung". Nodes will appear on index:ready (refetch above).
     onEvent('index:progress', (p) => {
       if (!this._open) return;
       if (p && p.root && this._root && p.root !== this._root) return;
-      // Прогресс показываем ТОЛЬКО для сборки, запущенной из самого графа
-      // («Обновить» → rebuild() выставляет _indexing). Фоновую индексацию
-      // (например, из палитры) не латчим — иначе плашка «Загрузка» зависала бы,
-      // не дождавшись своего index:ready.
+      // We show progress ONLY for a build started from the graph itself
+      // ("Refresh" → rebuild() sets _indexing). We don't latch onto background
+      // indexing (e.g. from the palette) — otherwise the "Loading" badge would
+      // hang, never seeing its own index:ready.
       if (!this._indexing) return;
       this._indexCount = (p && p.count) || 0;
       this._indexTotal = (p && p.total) || 0;
@@ -221,7 +221,7 @@ export class RelationshipGraph extends Component {
     }).then((un) => this._cleanups.push(un));
   }
 
-  /* ── Открытие / закрытие ─────────────────── */
+  /* ── Open / close ─────────────────── */
 
   open() {
     const state = this.store.getState();
@@ -239,13 +239,13 @@ export class RelationshipGraph extends Component {
     } else {
       this._mode = 'overview';
       this._focus = null;
-      seeds = null; // обзорные сиды собираем асинхронно ниже (текущая папка + индекс)
+      seeds = null; // overview seeds are gathered asynchronously below (current folder + index)
     }
 
     this._ox = 0;
     this._oy = 0;
     this._zoom = 1;
-    // При открытии — чистый старт
+    // On open — a clean start
     this._nodes.clear();
     this._edges = [];
     this._appeared.clear();
@@ -268,23 +268,23 @@ export class RelationshipGraph extends Component {
     }
     this.render();
 
-    // Авто-сборку при открытии НЕ запускаем — только читаем уже готовый индекс
-    // (если он есть, граф покажется мгновенно). Полная (пере)сборка — по кнопке
-    // «Обновить» (rebuild()).
+    // We do NOT start an auto-build on open — we only read the already-built index
+    // (if it exists, the graph shows up instantly). A full (re)build happens via the
+    // "Refresh" button (rebuild()).
         if (this._mode === 'focus') {
           this.fetch(seeds, 1);
         } else {
-          // Обзор: файлы текущей папки + проиндексированные файлы поддерева
-          // (вложенные, напр. src/main.rs).
+          // Overview: files of the current folder + indexed files of the subtree
+          // (nested, e.g. src/main.rs).
           this.overviewSeeds(this._root, entries).then((s) => {
             if (this._open) this.fetch(s, 1);
           });
         }
       }
     
-      /** Сиды обзора: файлы текущей папки (всегда) + проиндексированные файлы
-       *  поддерева из индекса (вложенные). Если индекс ещё не построен — останутся
-       *  только файлы текущей папки. */
+      /** Overview seeds: files of the current folder (always) + indexed files of
+       *  the subtree from the index (nested). If the index is not built yet — only
+       *  the files of the current folder remain. */
       async overviewSeeds(root, entries) {
         const key = (p) => (p || '').toLowerCase();
         const seen = new Set();
@@ -296,7 +296,7 @@ export class RelationshipGraph extends Component {
           }
         }
         try {
-          const files = await searchFiles(root, '', OVERVIEW_INDEX_CAP); // '' → все файлы поддерева
+          const files = await searchFiles(root, '', OVERVIEW_INDEX_CAP); // '' → all files of the subtree
           for (const f of files || []) {
             if (seeds.length >= OVERVIEW_INDEX_CAP) break;
             if (f.path && !seen.has(key(f.path))) {
@@ -305,7 +305,7 @@ export class RelationshipGraph extends Component {
             }
           }
         } catch {
-          /* индекс недоступен — покажем только файлы текущей папки */
+          /* index unavailable — we'll show only the files of the current folder */
         }
         return seeds;
       }
@@ -313,6 +313,7 @@ export class RelationshipGraph extends Component {
   close() {
     if (!this._open) return;
     this._open = false;
+    document.getElementById('graph-btn')?.classList.remove('is-on');
     this.stopSim();
     if (this._appearTimer) {
       clearInterval(this._appearTimer);
@@ -351,28 +352,28 @@ export class RelationshipGraph extends Component {
     super.destroy();
   }
 
-  /* ── Загрузка данных ─────────────────────── */
+  /* ── Data loading ─────────────────────── */
 
   refetch({ silent = false } = {}) {
     this.fetch(this._curSeeds, this._curHops, { silent });
   }
 
-  /** Принудительная (пере)сборка индекса связей — ТОЛЬКО по кнопке «Обновить».
-   *  Авто-запуска при открытии графа нет. Узлы обновятся по событию index:ready. */
+  /** Forced (re)build of the relationship index — ONLY via the "Refresh" button.
+   *  There is no auto-start when the graph opens. Nodes update on the index:ready event. */
   rebuild() {
     if (this._indexing) return;
     if (!this._root) {
-      this.bus.emit('shortcut:hint', t('graph.error.noFolder'));
+          this.bus.emit('shortcut:hint', { text: t('graph.error.noFolder'), type: 'warn' });
       return;
     }
     this._indexing = true;
-    this._selfRebuild = true; // эту сборку запускает сам граф → её index:ready не «тихий»
+    this._selfRebuild = true; // this build is started by the graph itself → its index:ready is not "silent"
     this._indexCount = 0;
     this._indexTotal = 0;
     this._indexPhase = 'scan';
     this.updateLoadingState();
     this.updateRebuildButton();
-    // content=true, force=true → полная пересборка в фоне с прогрессом.
+    // content=true, force=true → full rebuild in the background with progress.
     startIndex(this._root, true, true).catch(() => {
       this._indexing = false;
       this._selfRebuild = false;
@@ -381,7 +382,7 @@ export class RelationshipGraph extends Component {
     });
   }
 
-  /** Кнопка «Обновить»: заблокирована и подписана «Строю…» во время сборки. */
+  /** "Refresh" button: disabled and labeled "Building…" during a build. */
   updateRebuildButton() {
     if (!this._rebuildBtn) return;
     this._rebuildBtn.disabled = this._indexing;
@@ -392,9 +393,9 @@ export class RelationshipGraph extends Component {
     this._curSeeds = seeds;
     this._curHops = hops;
     const seq = ++this._fetchSeq;
-    // silent=true — фоновое обновление (по чужому index:ready): данные графа
-    // обновляем, но плашку «Загрузка…»/«Загружено!» не трогаем, иначе она бы
-    // мигала с галочки обратно на спиннер.
+    // silent=true — a background update (on someone else's index:ready): we update
+    // the graph data but don't touch the "Loading…"/"Loaded!" badge, otherwise it
+    // would flip from the checkmark back to the spinner.
     if (!silent) {
       this._loading = true;
       this.updateLoadingState();
@@ -406,13 +407,13 @@ export class RelationshipGraph extends Component {
       if (seq === this._fetchSeq) {
         this._loading = false;
         this.updateLoadingState();
-        this.bus.emit('shortcut:hint', t('graph.error', { msg: err.message }));
+                this.bus.emit('shortcut:hint', { text: t('graph.error', { msg: err.message }), type: 'error' });
       }
       return;
     }
     if (seq !== this._fetchSeq || !this._open) {
-      // Стали старым запросом — сбрасываем _loading, иначе плашка «Загрузка…»
-      // может залипнуть (старый fetch не сбрасывает флаг, а новый уже работает).
+      // We became a stale request — reset _loading, otherwise the "Loading…" badge
+      // may get stuck (the old fetch doesn't reset the flag while the new one already runs).
       if (this._loading && !silent) {
         this._loading = false;
         this.updateLoadingState();
@@ -424,15 +425,15 @@ export class RelationshipGraph extends Component {
       this._connectedPaths = this.computeConnectedPaths(this._focus);
     }
     this.renderAside();
-    // Кнопка хеширования доступна сразу, как только появились узлы (запуск —
-    // только по клику, автоматически хеширование не стартует).
+    // The hashing button is available as soon as nodes appear (it only starts on
+    // click — hashing never starts automatically).
     this.updateHashButton();
     this._loading = false;
-    // «Загружено!» показываем только для видимой загрузки (первичной или своей
-    // пересборки), но не для фонового тихого обновления по чужому index:ready.
+    // We show "Loaded!" only for a visible load (the initial one or our own
+    // rebuild), but not for a silent background update on someone else's index:ready.
     if (!silent && !this._indexing) this.markLoaded();
     this.updateLoadingState();
-    // Прогрессивная сборка: добавляем только новые узлы
+    // Progressive build: add only the new nodes
     this.startProgressiveAppear();
   }
 
@@ -442,7 +443,7 @@ export class RelationshipGraph extends Component {
     const cx = this._w / 2;
     const cy = this._h / 2;
 
-    // Фильтруем папки: они не отображаются как узлы графа
+    // Filter out folders: they are not shown as graph nodes
     const folderPaths = new Set();
     const fileNodes = rawNodes.filter((n) => {
       if (n.isDir) {
@@ -452,14 +453,14 @@ export class RelationshipGraph extends Component {
       return true;
     });
 
-    // Убираем рёбра, ссылающиеся на папки (они не будут отображаться)
+    // Drop edges referencing folders (they won't be displayed)
     const edges = rawEdges.filter((e) => !folderPaths.has(e.src) && !folderPaths.has(e.dst));
 
-    // Инкрементальное слияние: старые узлы остаются, новые добавляются.
-    // Позиции существующих узлов сохраняются — нет «прыжков» при refetch.
+    // Incremental merge: old nodes stay, new ones are added.
+    // Positions of existing nodes are preserved — no "jumps" on refetch.
     fileNodes.forEach((n, i) => {
       if (this._nodes.has(n.path)) {
-        // Обновляем мета-данные, но сохраняем позицию и скорость
+        // Update the metadata, but keep the position and velocity
         const prev = this._nodes.get(n.path);
         prev.name = n.name;
         prev.isDir = false;
@@ -478,7 +479,7 @@ export class RelationshipGraph extends Component {
         });
       }
     });
-    // Удаляем узлы, которых больше нет в данных (кроме seeds)
+    // Remove nodes that are no longer in the data (except seeds)
     const validPaths = new Set(fileNodes.map((n) => n.path));
     for (const s of seeds) {
       if (!folderPaths.has(s)) validPaths.add(s);
@@ -486,7 +487,7 @@ export class RelationshipGraph extends Component {
     for (const path of [...this._nodes.keys()]) {
       if (!validPaths.has(path)) this._nodes.delete(path);
     }
-    // Добавляем seed-пути, если их не оказалось в данных (только файлы, не папки)
+    // Add seed paths if they weren't in the data (files only, not folders)
     for (const s of seeds) {
       if (folderPaths.has(s)) continue;
       if (!this._nodes.has(s)) {
@@ -508,16 +509,16 @@ export class RelationshipGraph extends Component {
     }
   }
 
-  /* ── Прогрессивная сборка ─────────────────── */
+  /* ── Progressive build ─────────────────── */
 
-  /** Запускает постепенное появление узлов на полотне.
-   *  Уже появившиеся узлы остаются видимыми — не перезапускаем анимацию. */
+  /** Starts the gradual appearance of nodes on the canvas.
+   *  Already-appeared nodes stay visible — we don't restart the animation. */
   startProgressiveAppear() {
-    // Только новые узлы (ещё не появившиеся) добавляем в очередь
+    // Only new (not-yet-appeared) nodes go into the queue
     this._appearQueue = [...this._nodes.keys()].filter((p) => !this._appeared.has(p));
     if (this._appearTimer) clearInterval(this._appearTimer);
     if (this._appearQueue.length === 0) {
-      // Все узлы уже видны — сразу запускаем физику
+      // All nodes are already visible — start the physics right away
       this.onProgressiveDone();
       return;
     }
@@ -534,21 +535,21 @@ export class RelationshipGraph extends Component {
     }, APPEAR_INTERVAL);
   }
 
-  /** Все узлы появились — запускаем физику. Хеширование запускается кнопкой. */
+  /** All nodes have appeared — start the physics. Hashing is started by the button. */
   onProgressiveDone() {
     this.startSim();
-    // Показываем кнопку хеширования
+    // Show the hashing button
     this.updateHashButton();
   }
 
-  /* ── Хеширование файлов графа ────────────── */
+  /* ── Hashing the graph's files ────────────── */
 
   async startHashing() {
-    // Не перезапускаем если уже идёт
+    // Don't restart if already running
     if (this._hashing) return;
 
     const paths = [...this._nodes.keys()];
-    // Хешируем только те файлы, которые ещё не прохешированы
+    // Hash only the files that haven't been hashed yet
     const unhashed = paths.filter((p) => !this._hashes.has(p));
     if (unhashed.length === 0) {
       this.updateHashButton();
@@ -563,7 +564,7 @@ export class RelationshipGraph extends Component {
     this.updateHashButton();
     try {
       const result = await hashGraphFiles(unhashed);
-      // Проверяем что это не устаревший вызов и окно всё ещё открыто
+      // Check that this isn't a stale call and the window is still open
       if (mySeq !== this._hashSeq || !this._open) {
         this._hashing = false;
         this.updateHashButton();
@@ -573,14 +574,14 @@ export class RelationshipGraph extends Component {
         if (h.hash) this._hashes.set(h.path, h.hash);
       }
     } catch (err) {
-      // хеширование не критично — молча глотаем
+      // hashing is not critical — swallow silently
     }
     this._hashing = false;
     this.updateHashButton();
     this.draw();
   }
 
-  /* ── Физика ──────────────────────────────── */
+  /* ── Physics ──────────────────────────────── */
 
   startSim() {
     this._alpha = 1;
@@ -649,8 +650,8 @@ export class RelationshipGraph extends Component {
       q.vy -= fy;
     }
 
-    // гравитация к центру + интегрирование. Границами НЕ ограничиваем —
-    // узлы свободно расходятся, за край видно панорамированием/зумом.
+    // gravity toward the center + integration. We do NOT clamp to bounds —
+    // nodes spread freely, off-screen areas are reachable via panning/zoom.
     for (const p of nodes) {
       p.vx += (cx - p.x) * GRAVITY * a;
       p.vy += (cy - p.y) * GRAVITY * a;
@@ -668,7 +669,7 @@ export class RelationshipGraph extends Component {
     }
   }
 
-  /* ── Отрисовка полотна ───────────────────── */
+  /* ── Canvas rendering ───────────────────── */
 
   draw() {
     const c = this.ctx;
@@ -684,13 +685,13 @@ export class RelationshipGraph extends Component {
       return;
     }
 
-    // Применяем пан/зум: рисуем в «мировых» координатах.
+    // Apply pan/zoom: draw in "world" coordinates.
     c.setTransform(this._zoom, 0, 0, this._zoom, this._ox, this._oy);
     for (const e of this._edges) {
       const p = this._nodes.get(e.src);
       const q = this._nodes.get(e.dst);
       if (!p || !q) continue;
-      // Рисуем ребро только если оба узла уже появились
+      // Draw the edge only if both nodes have already appeared
       if (!this._appeared.has(p.path) || !this._appeared.has(q.path)) continue;
       this.drawEdge(c, p, q, e);
     }
@@ -706,35 +707,35 @@ export class RelationshipGraph extends Component {
       back: v('--tag-progress', C_BACK),
       folder: v('--accent-2', '#14b8a6'),
       file: v('--text-faint', '#5b6478'),
-      // Текст на полотне — из токенов, чтобы читался и в светлой теме
-      // (раньше был захардкожен «светлым под тёмное» и пропадал на светлом фоне).
+      // Canvas text — from tokens, so it's readable in the light theme too
+      // (previously it was hardcoded "light on dark" and vanished on a light background).
       label: v('--text', '#e5e7eb'),
       labelDim: v('--text-dim', '#9ca3af'),
     };
   }
 
-  /** Определяет цвет и стиль стрелки по типу ребра.
-   *  Зелёный — зависимость (src→dst), жёлтый — обратная ссылка (dst→seed).
-   *  В режиме фокуса: исходящие от фокуса = зелёный, входящие в фокус = жёлтый.
-   *  В режиме обзора: по kind ребра. */
+  /** Determines the arrow's color and style by edge type.
+   *  Green — dependency (src→dst), yellow — back-reference (dst→seed).
+   *  In focus mode: outgoing from the focus = green, incoming to the focus = yellow.
+   *  In overview mode: by the edge's kind. */
   edgeStyle(e) {
-    // Ручные связи — пунктир, нейтральный цвет
+    // Manual links — dashed, neutral color
     if (e.kind === 'manual') return { color: C_MANUAL, dash: [5, 4], arrow: false, strong: false };
-    // В режиме фокуса — исходящие зелёные, входящие жёлтые
+    // In focus mode — outgoing green, incoming yellow
     if (this._focus) {
       if (e.src === this._focus) return { color: C_DEP, dash: [], arrow: true, strong: true };
       if (e.dst === this._focus) return { color: C_BACK, dash: [], arrow: true, strong: true };
     }
-    // В режиме обзора или для транзитных рёбер:
-    // зависимости (import/include) — зелёный, упоминания — тусклый
+    // In overview mode or for transitive edges:
+    // dependencies (import/include) — green, mentions — dim
     if (e.kind === 'mention') return { color: C_MENTION, dash: [2, 4], arrow: true, strong: false };
-    // Остальные рёбра (контекстные) — зелёный по умолчанию (зависимость)
+    // Other (contextual) edges — green by default (dependency)
     return { color: C_DEP, dash: [], arrow: true, strong: false };
   }
 
   drawEdge(c, p, q, e) {
     const st = this.edgeStyle(e);
-    // В режиме фокуса: рёбра без прямой связи с фокусом — полупрозрачные
+    // In focus mode: edges with no direct link to the focus are semi-transparent
     const isRelated = !this._focus || !this._connectedPaths ||
       (this._connectedPaths.has(e.src) && this._connectedPaths.has(e.dst));
     if (!isRelated) c.globalAlpha = 0.35;
@@ -743,13 +744,13 @@ export class RelationshipGraph extends Component {
     c.lineWidth = st.strong ? 2 : 1.2;
     c.setLineDash(st.dash);
     c.beginPath();
-    // Стрелка от края панели p к краю панели q
+    // Arrow from the edge of panel p to the edge of panel q
     const dx = q.x - p.x;
     const dy = q.y - p.y;
     const ang = Math.atan2(dy, dx);
-    // Точка на границе панели p
+    // Point on the boundary of panel p
     const pEdge = this.edgePoint(p, ang, p.w || NODE_MIN_W, NODE_H);
-    // Точка на границе панели q
+    // Point on the boundary of panel q
     const qEdge = this.edgePoint(q, ang + Math.PI, q.w || NODE_MIN_W, NODE_H);
     c.moveTo(pEdge.x, pEdge.y);
     c.lineTo(qEdge.x, qEdge.y);
@@ -765,17 +766,17 @@ export class RelationshipGraph extends Component {
       c.closePath();
       c.fill();
     }
-    // Восстанавливаем прозрачность после несвязанного ребра
+    // Restore opacity after an unrelated edge
     if (!isRelated) c.globalAlpha = 1;
   }
 
-  /** Точка на границе прямоугольной панели узла по углу от центра. */
+  /** Point on the boundary of a node's rectangular panel by the angle from its center. */
   edgePoint(n, angle, w, h) {
     const hw = w / 2;
     const hh = h / 2;
     const cos = Math.cos(angle);
     const sin = Math.sin(angle);
-    // Пересечение луча с прямоугольником
+    // Intersection of the ray with the rectangle
     let t;
     if (Math.abs(cos) * hh > Math.abs(sin) * hw) {
       t = hw / Math.abs(cos);
@@ -786,16 +787,16 @@ export class RelationshipGraph extends Component {
   }
 
   drawNode(c, n) {
-    if (!this._appeared.has(n.path)) return; // ещё не появился
+    if (!this._appeared.has(n.path)) return; // not appeared yet
 
-    // В режиме фокуса: не связанные с фокусом узлы — полупрозрачные
+    // In focus mode: nodes not connected to the focus are semi-transparent
     const isRelated = !this._focus || !this._connectedPaths || this._connectedPaths.has(n.path);
     if (!isRelated) c.globalAlpha = 0.35;
 
     const isFocus = n.path === this._focus;
     const hasHash = this._hashes.has(n.path);
 
-    // Вычисляем ширину панели по тексту
+    // Compute the panel width from the text
     c.font = NODE_FONT;
     const text = shortLabel(n.name, n.path);
     const textW = c.measureText(text).width;
@@ -805,24 +806,24 @@ export class RelationshipGraph extends Component {
     const x = n.x - nw / 2;
     const y = n.y - nh / 2;
 
-    // Цвет узла по расширению (как в файловой панели)
+    // Node color by extension (as in the file panel)
     const extCol = nodeColor(n.name);
 
-    // Фон панели — тонированный цветом расширения
+    // Panel background — tinted with the extension color
     c.beginPath();
     this.roundRect(c, x, y, nw, nh, NODE_RADIUS);
     const bgColor = extCol + (isFocus ? '30' : '18');
     c.fillStyle = bgColor;
     c.fill();
 
-    // Рамка — цвет ПАПКИ узла (тот же, что у вкладки этой папки): файлы одной
-    // папки визуально группируются. Заливка остаётся по расширению файла.
+    // Border — the color of the node's FOLDER (the same as that folder's tab): files
+    // from one folder are visually grouped. The fill stays based on the file extension.
     const folderCol = pathToColor(parentDir(n.path));
     c.lineWidth = isFocus ? 2.5 : 1.5;
     c.strokeStyle = isFocus ? folderCol : folderCol + 'cc';
     c.stroke();
 
-    // Текст внутри панели — показываем путь (папка/файл) вместо просто имени
+    // Text inside the panel — show the path (folder/file) instead of just the name
     const labelText = shortLabel(n.name, n.path);
     c.fillStyle = this._colors.label;
     c.font = isFocus ? 'bold ' + NODE_FONT : NODE_FONT;
@@ -831,7 +832,7 @@ export class RelationshipGraph extends Component {
     c.fillText(labelText, n.x, n.y);
     c.textBaseline = 'alphabetic';
 
-    // Иконка хеширования (маленький кружок-спиннер в правом верхнем углу)
+    // Hashing icon (a small spinner circle in the top-right corner)
     if (this._hashing) {
       const ix = x + nw - 6;
       const iy = y + 6;
@@ -839,7 +840,7 @@ export class RelationshipGraph extends Component {
       c.arc(ix, iy, 3.5, 0, Math.PI * 2);
       c.fillStyle = extCol + '66';
       c.fill();
-      // Вращающаяся дуга
+      // Rotating arc
       const angle = (Date.now() / 200) % (Math.PI * 2);
       c.beginPath();
       c.arc(ix, iy, 3.5, angle, angle + Math.PI * 0.8);
@@ -847,7 +848,7 @@ export class RelationshipGraph extends Component {
       c.lineWidth = 1.5;
       c.stroke();
     } else if (hasHash) {
-      // Галочка — файл прохеширован
+      // Checkmark — the file is hashed
       const ix = x + nw - 8;
       const iy = y + 6;
       c.beginPath();
@@ -863,11 +864,11 @@ export class RelationshipGraph extends Component {
       c.stroke();
     }
 
-    // Восстанавливаем прозрачность после несвязанного узла
+    // Restore opacity after an unrelated node
     if (!isRelated) c.globalAlpha = 1;
   }
 
-  /** Скруглённый прямоугольник (canvas path). */
+  /** Rounded rectangle (canvas path). */
   roundRect(c, x, y, w, h, r) {
     c.moveTo(x + r, y);
     c.lineTo(x + w - r, y);
@@ -881,7 +882,7 @@ export class RelationshipGraph extends Component {
     c.closePath();
   }
 
-  /* ── Боковые списки ──────────────────────── */
+  /* ── Side lists ──────────────────────── */
 
   renderAside() {
     if (!this.aside) return;
@@ -929,10 +930,11 @@ export class RelationshipGraph extends Component {
     return `<div class="graph__group"><div class="graph__group-title">${escapeHtml(title)} <span class="graph__count">${uniq.length}</span></div><ul class="graph__list">${items}</ul></div>`;
   }
 
-  /* ── Разметка окна + события ─────────────── */
+  /* ── Window markup + events ─────────────── */
 
   render() {
     this._open = true;
+    document.getElementById('graph-btn')?.classList.add('is-on');
     this.mount.innerHTML = `
       <div class="graph graph--window">
         <div class="graph__head" data-drag>
@@ -985,14 +987,14 @@ export class RelationshipGraph extends Component {
     this.canvas.addEventListener('dblclick', (e) => this.onDblClick(e));
     this.canvas.addEventListener('wheel', (e) => this.onWheel(e), { passive: false });
 
-    // Центрируем окно и подгоняем полотно под его размер.
+    // Center the window and fit the canvas to its size.
     this.centerWindow();
     this.resizeCanvas();
     if (typeof ResizeObserver !== 'undefined') {
       this._ro = new ResizeObserver(() => this.resizeCanvas());
       this._ro.observe(this.canvas.parentElement);
     }
-    // Рисуем боковые списки — иначе при смене языка aside пуст до клика.
+    // Draw the side lists — otherwise the aside stays empty until a click after a language change.
     this.renderAside();
   }
 
@@ -1018,7 +1020,7 @@ export class RelationshipGraph extends Component {
     this.draw();
   }
 
-  /** Показать плашку «Загружено!» — держится до следующей загрузки. */
+  /** Show the "Loaded!" badge — it stays until the next load. */
   markLoaded() {
     if (this._loadedTimer) clearTimeout(this._loadedTimer);
     this._loadedTimer = null;
@@ -1026,22 +1028,22 @@ export class RelationshipGraph extends Component {
     this.updateLoadingState();
   }
 
-  /** «Занят» для целей плашки. КЛЮЧЕВОЕ правило: спиннер «Загрузка…» показываем
-   *  только на ПУСТОМ графе (первая отрисовка). Как только узлы есть, любые
-   *  до-загрузки/refetch — фоновые и плашку НЕ поднимают; даже если флаг
-   *  _loading из-за гонки залип true, спиннер поверх данных не появится.
-   *  Пересборка (_indexing, кнопка «Обновить») показывается всегда. Это и
-   *  устраняет «галочка → снова Загрузка» при уже отрисованном графе. */
+  /** "Busy" for badge purposes. KEY rule: we show the "Loading…" spinner only on
+   *  an EMPTY graph (the first render). Once there are nodes, any further
+   *  loads/refetches are background and do NOT raise the badge; even if the
+   *  _loading flag got stuck true due to a race, the spinner won't appear over the data.
+   *  A rebuild (_indexing, the "Refresh" button) is always shown. This is what
+   *  removes the "checkmark → Loading again" on an already-rendered graph. */
   _isBusy() {
     return (this._loading && this._nodes.size === 0) || this._indexing;
   }
 
-  /** Обновить индикатор: «Загрузка…»/«Индексирую…» при работе, «Загружено!»
-   *  кратко по завершении, иначе скрыт. */
+  /** Update the indicator: "Loading…"/"Indexing…" while working, "Loaded!"
+   *  briefly on completion, otherwise hidden. */
   updateLoadingState() {
-    // Спиннер показываем не сразу, а через BUSY_DELAY: быстрые операции (мелкие
-    // папки) не должны давать мелькающий индикатор. Если за время задержки работа
-    // успела закончиться — спиннер вообще не появится, сразу «Загружено!».
+    // We show the spinner not immediately but after BUSY_DELAY: fast operations (small
+    // folders) should not produce a flickering indicator. If the work finishes during
+    // the delay — the spinner won't appear at all, going straight to "Loaded!".
     if (this._isBusy()) {
       if (!this._showBusy && !this._busyTimer) {
         this._busyTimer = setTimeout(() => {
@@ -1062,8 +1064,8 @@ export class RelationshipGraph extends Component {
     this.applyPlate();
   }
 
-  /** Применить состояние к плашке. busyVisible — спиннер уже разрешён к показу
-   *  (после задержки); «Загружено!» показывается мгновенно, без задержки. */
+  /** Apply the state to the badge. busyVisible — the spinner is already allowed to show
+   *  (after the delay); "Loaded!" is shown instantly, without a delay. */
   applyPlate() {
     const busyVisible = this._showBusy && this._isBusy();
     const loadingVisible = busyVisible && this._loading && this._nodes.size === 0;
@@ -1093,7 +1095,7 @@ export class RelationshipGraph extends Component {
     }
   }
 
-  /** Обновить состояние кнопки хеширования. */
+  /** Update the hashing button state. */
   updateHashButton() {
     if (!this._hashBtn) return;
     if (this._hashing) {
@@ -1115,12 +1117,12 @@ export class RelationshipGraph extends Component {
     }
   }
 
-  /** Вернуться из фокусного режима к обзору графа. */
+  /** Return from focus mode to the graph overview. */
   backToOverview() {
     if (this._mode !== 'focus') return;
     this._mode = 'overview';
     this._focus = null;
-    // Заново загружаем обзор для текущего корня
+    // Reload the overview for the current root
     const state = this.store.getState();
     const pane = getPane(state, this._side);
     const entries = pane.entries || [];
@@ -1129,18 +1131,18 @@ export class RelationshipGraph extends Component {
     });
   }
   
-    /** Перерисовка при смене языка. Сохраняет узлы, рёбра, фокус, позицию окна. */
+    /** Re-render on language change. Preserves nodes, edges, focus, window position. */
     applyLang() {
       if (!this._open) return;
-      // Точечно обновляем только тексты в шапке, легенде, кнопках — canvas не трогаем.
+      // Update only the texts in the header, legend, buttons pointwise — we don't touch the canvas.
       const titleEl = this.mount.querySelector('.graph__title');
       if (titleEl) titleEl.textContent = t('graph.title');
       const dots = this.mount.querySelectorAll('.graph__legend .graph__dot');
       if (dots.length >= 2) {
-        // Текстовые соседи точек легенды — это text nodes между ними.
+        // The text neighbors of the legend dots are the text nodes between them.
         const legend = this.mount.querySelector('.graph__legend');
         if (legend) {
-          // Пересобираем legend целиком: 2 точки + 2 подписи.
+          // Rebuild the whole legend: 2 dots + 2 labels.
           legend.innerHTML = '';
           legend.append(
             document.createElement('span'),
@@ -1165,13 +1167,13 @@ export class RelationshipGraph extends Component {
       this.updateHashButton();
       this.updateLoadingState();
       this.renderAside();
-      this.draw(); // canvas: текст «Связей не найдено» зависит от языка.
+      this.draw(); // canvas: the "No relations found" text depends on the language.
     }
 
-  /* ── Перетаскивание окна / панорамирование / зум ── */
+  /* ── Window drag / panning / zoom ── */
 
   onHeadDown(e) {
-    if (e.target.closest('button')) return; // клики по кнопкам — не drag
+    if (e.target.closest('button')) return; // clicks on buttons are not a drag
     this._winDrag = { x: e.clientX, y: e.clientY, left: this.win.offsetLeft, top: this.win.offsetTop };
     e.preventDefault();
   }
@@ -1211,14 +1213,14 @@ export class RelationshipGraph extends Component {
     const factor = e.deltaY < 0 ? 1.12 : 1 / 1.12;
     const z = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, this._zoom * factor));
     this._zoom = z;
-    this._ox = sx - wx * z; // точка под курсором остаётся на месте
+    this._ox = sx - wx * z; // the point under the cursor stays in place
     this._oy = sy - wy * z;
     this.draw();
   }
 
-  /* ── Координаты и попадание ──────────────── */
+  /* ── Coordinates and hit-testing ──────────────── */
 
-  // Координаты события в пикселях полотна (с учётом возможного масштаба CSS).
+  // Event coordinates in canvas pixels (accounting for possible CSS scaling).
   canvasPoint(e) {
     const rect = this.canvas.getBoundingClientRect();
     const sx = ((e.clientX - rect.left) / rect.width) * this._w;
@@ -1228,7 +1230,7 @@ export class RelationshipGraph extends Component {
 
   nodeAt(e) {
     const [sx, sy] = this.canvasPoint(e);
-    const wx = (sx - this._ox) / this._zoom; // экран -> мир
+    const wx = (sx - this._ox) / this._zoom; // screen -> world
     const wy = (sy - this._oy) / this._zoom;
     let best = null;
     let bestDist = Infinity;
@@ -1236,7 +1238,7 @@ export class RelationshipGraph extends Component {
       if (!this._appeared.has(n.path)) continue;
       const nw = n.w || NODE_MIN_W;
       const nh = NODE_H;
-      // Попадание в прямоугольник
+      // Hit-test against the rectangle
       if (wx >= n.x - nw / 2 && wx <= n.x + nw / 2 && wy >= n.y - nh / 2 && wy <= n.y + nh / 2) {
         const d = Math.hypot(n.x - wx, n.y - wy);
         if (d < bestDist) {
@@ -1250,12 +1252,12 @@ export class RelationshipGraph extends Component {
 
   async onClick(e) {
     if (this._moved) {
-      this._moved = false; // это было панорамирование, не клик
+      this._moved = false; // it was panning, not a click
       return;
     }
     const node = this.nodeAt(e);
     if (!node) {
-      // Клик по пустому месту — снимаем выделение, все узлы снова видны
+      // Click on empty space — clear the selection, all nodes are visible again
       if (this._focus) {
         this._focus = null;
         this._connectedPaths = null;
@@ -1265,8 +1267,8 @@ export class RelationshipGraph extends Component {
       }
       return;
     }
-    // Переключаем фокус без подгрузки новых данных:
-    // все узлы остаются, несвязанные — полупрозрачными
+    // Switch the focus without loading new data:
+    // all nodes stay, unrelated ones become semi-transparent
     this._mode = 'focus';
     this._focus = node.path;
     this._connectedPaths = this.computeConnectedPaths(node.path);
@@ -1274,7 +1276,7 @@ export class RelationshipGraph extends Component {
     this.draw();
   }
 
-  /** Собрать множество путей узлов, связанных с фокусом (прямые связи обоих направлений). */
+  /** Collect the set of node paths connected to the focus (direct links in both directions). */
   computeConnectedPaths(focusPath) {
     const connected = new Set([focusPath]);
     for (const e of this._edges) {
@@ -1290,7 +1292,7 @@ export class RelationshipGraph extends Component {
       this.bus.emit('graph:reveal', { path: node.path });
       this.close();
     } else {
-      // двойной клик по пустому месту — сброс вида
+      // double-click on empty space — reset the view
       this._ox = 0;
       this._oy = 0;
       this._zoom = 1;

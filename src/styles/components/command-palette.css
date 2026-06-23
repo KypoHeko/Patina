@@ -110,7 +110,7 @@
   color: var(--text-faint);
 }
 
-/* Переключатель области поиска */
+/* Search scope switcher */
 .palette__scope {
   display: flex;
   gap: 6px;
@@ -135,7 +135,7 @@
   cursor: not-allowed;
 }
 
-/* Имя + путь в одной ячейке */
+/* Name + path in one cell */
 .palette__main {
   display: flex;
   align-items: baseline;
@@ -162,7 +162,7 @@
   text-align: center;
 }
 
-/* Режим поиска по содержимому: путь + сниппет со второй строкой */
+/* Content search mode: path + snippet with a second line */
 .palette__item--content {
   display: flex;
   flex-direction: column;

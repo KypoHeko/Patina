@@ -1,6 +1,7 @@
 import { Component } from '../core/component.js';
 import { escapeHtml } from '../core/dom.js';
 import { readPreview } from '../api/fs.js';
+import { assetUrl } from '../api/invoke.js';
 import { snapshotVersion, listVersions, restoreVersion, deleteVersion } from '../api/versions.js';
 import { tagsForPaths } from '../api/tags.js';
 import { TAGS } from '../config/tags.js';
@@ -11,35 +12,35 @@ import { parentPath } from '../lib/paths.js';
 import { t, tagLabel } from '../lib/i18n.js';
 
 /**
- * Превью выбранного файла + информация + история версий.
+ * Preview of the selected file + info + version history.
  *
- * Секции (сверху вниз):
- *  1. Превью — миниатюра / текст / «нет превью»
- *  2. FILE INFO — имя, размер, дата изменения, дата создания
- *  3. VERSION HISTORY — список версий v1…vN с бейджем «текущая»
- *  4. Кнопки: Добавить / Сменить / Удалить*
+ * Sections (top to bottom):
+ *  1. Preview — thumbnail / text / "no preview"
+ *  2. FILE INFO — name, size, modified date, created date
+ *  3. VERSION HISTORY — list of versions v1…vN with a "current" badge
+ *  4. Buttons: Add / Replace / Delete*
  */
 export class PreviewPanel extends Component {
   init() {
     this._open = false;
     this._path = null;
-    this._preview = null;   // данные readPreview
-    this._versions = [];    // список версий
-    this._tags = [];        // id тегов выбранного файла
-    this._verBusy = false;  // загрузка версий
-    this._snapBusy = false; // создание снимка
-    this._selectedVer = null; // id версии для восстановления/удаления
-    this._currentVerId = null; // id версии, соответствующей текущему файлу
+    this._preview = null;   // readPreview data
+    this._versions = [];    // list of versions
+    this._tags = [];        // tag ids of the selected file
+    this._verBusy = false;  // loading versions
+    this._snapBusy = false; // creating a snapshot
+    this._selectedVer = null; // version id for restore/delete
+    this._currentVerId = null; // id of the version matching the current file
     this.mainEl = document.querySelector('.main');
 
     this.listen('preview:toggle', () => (this._open ? this.close() : this.openNow()));
     this.listen('tags:changed', () => {
       if (this._open) this.refreshTags();
     });
-    // Внешние изменения файла (внешний редактор, restore из другого места,
-    // и т.д.) — перечитываем превью целиком: текст, метаданные, версии, теги.
-    // Без этого превью показывает устаревший контент после save во внешнем
-    // редакторе или после restore из соседней панели.
+    // External file changes (external editor, restore from elsewhere, etc.) —
+    // re-read the whole preview: text, metadata, versions, tags.
+    // Without this the preview shows stale content after a save in an external
+    // editor or after a restore from the adjacent pane.
     this.listen('fs:changed', ({ dirs }) => {
       if (!this._open || !this._path) return;
       const parent = parentPath(this._path);
@@ -53,6 +54,7 @@ export class PreviewPanel extends Component {
 
   openNow() {
     this._open = true;
+    document.getElementById('preview-btn')?.classList.add('is-on');
     this._path = null;
     this._preview = null;
     this._versions = [];
@@ -65,6 +67,7 @@ export class PreviewPanel extends Component {
 
   close() {
     this._open = false;
+    document.getElementById('preview-btn')?.classList.remove('is-on');
     this._path = null;
     this._preview = null;
     this._versions = [];
@@ -88,12 +91,12 @@ export class PreviewPanel extends Component {
     this._versions = [];
     this._tags = [];
     this._selectedVer = null;
-    this._currentVerId = null; // сброс: для нового файла ещё не знаем «текущую»
+    this._currentVerId = null; // reset: for a new file we don't know the "current" one yet
     if (!path) {
       this.renderFrame();
       return;
     }
-    // Показываем спиннер
+    // Show the spinner
     this.renderFrame();
     try {
       const [preview, versions, tagMap] = await Promise.all([
@@ -101,14 +104,14 @@ export class PreviewPanel extends Component {
         listVersions(path).catch(() => []),
         tagsForPaths([path]).catch(() => ({})),
       ]);
-      if (this._path !== path) return; // выбор сменился
+      if (this._path !== path) return; // selection changed
       this._preview = preview;
       this._versions = versions || [];
       this._tags = (tagMap && tagMap[path]) || [];
       this._selectedVer = null;
-      // По умолчанию «текущая» — новейшая версия (предполагаем, что файл
-      // соответствует ей, если только что открыли превью). После restore
-      // _currentVerId будет переопределён в doRestore.
+      // By default the "current" one is the newest version (we assume the file
+      // matches it if the preview was just opened). After a restore,
+      // _currentVerId is overridden in doRestore.
       this._currentVerId = this._versions[0]?.id || null;
       this.renderFrame();
     } catch (err) {
@@ -122,20 +125,20 @@ export class PreviewPanel extends Component {
   }
   
     /**
-     * Перечитать превью, версии, теги и «текущую» версию для уже открытого файла.
+     * Re-read the preview, versions, tags and "current" version for the already open file.
      *
-     * Используется:
-     *  - после doSnapshot (файл не изменился, но добавилась новая версия, и
-     *    возможно изменился mtime / размер — превью должно быть свежим);
-     *  - после doRestore (файл перезаписан, контент и метаданные изменились);
-     *  - по событию fs:changed (внешний редактор сохранил файл).
+     * Used:
+     *  - after doSnapshot (the file is unchanged, but a new version was added, and
+     *    mtime / size may have changed — the preview must be fresh);
+     *  - after doRestore (the file was overwritten, content and metadata changed);
+     *  - on the fs:changed event (an external editor saved the file).
      *
-     * Сохраняет _path и _selectedVer; обновляет всё остальное.
+     * Preserves _path and _selectedVer; updates everything else.
      */
     async refreshPreview() {
       if (!this._path) return;
       const path = this._path;
-      // Сохраняем selectedVer — пользователь мог выделить строку версии.
+      // Preserve selectedVer — the user may have selected a version row.
       const savedSel = this._selectedVer;
       try {
         const [preview, versions, tagMap] = await Promise.all([
@@ -143,35 +146,35 @@ export class PreviewPanel extends Component {
           listVersions(path).catch(() => []),
           tagsForPaths([path]).catch(() => ({})),
         ]);
-        if (this._path !== path) return; // выбор сменился за время запроса
+        if (this._path !== path) return; // selection changed while the request was in flight
         this._preview = preview;
         this._versions = versions || [];
         this._tags = (tagMap && tagMap[path]) || [];
         this._selectedVer = savedSel;
-        // «Текущая» версия — та, что соответствует файлу. Если мы только что
-        // сделали restore или snapshot, caller уже выставил _currentVerId явно
-        // до вызова refreshPreview; иначе предполагаем новейшую (по умолчанию).
+        // The "current" version is the one matching the file. If we just did a
+        // restore or snapshot, the caller already set _currentVerId explicitly
+        // before calling refreshPreview; otherwise we assume the newest (default).
         if (!this._versions.some(v => v.id === this._currentVerId)) {
           this._currentVerId = this._versions[0]?.id || null;
         }
         this.renderFrame();
       } catch {
         if (this._path !== path) return;
-        // Не удалось перечитать — оставляем прежнее состояние, чтобы пользователь
-        // не увидел пустую панель из-за транзиентной ошибки.
+        // Re-read failed — keep the previous state so the user does not see an
+        // empty panel because of a transient error.
       }
     }
 
   onClick(e) {
     if (e.target.closest('[data-close]')) return this.close();
 
-    // Добавить версию (снимок)
+    // Add a version (snapshot)
     if (e.target.closest('[data-snap]')) {
       this.doSnapshot();
       return;
     }
 
-    // Восстановить выбранную версию
+    // Restore the selected version
     if (e.target.closest('[data-restore]')) {
       const btn = e.target.closest('[data-restore]');
       const id = +btn.dataset.restore;
@@ -179,7 +182,7 @@ export class PreviewPanel extends Component {
       return;
     }
 
-    // Удалить версию
+    // Delete a version
     if (e.target.closest('[data-del]')) {
       const btn = e.target.closest('[data-del]');
       const id = +btn.dataset.del;
@@ -187,7 +190,7 @@ export class PreviewPanel extends Component {
       return;
     }
 
-    // Клик по строке версии — выделить
+    // Click on a version row — select it
     const verRow = e.target.closest('[data-ver]');
     if (verRow) {
       this._selectedVer = +verRow.dataset.ver;
@@ -201,17 +204,17 @@ export class PreviewPanel extends Component {
     this.renderFrame();
     try {
       this._versions = (await snapshotVersion(this._path)) || [];
-      // Новый снимок становится «текущей» версией — файл не менялся, только
-      // что сохранили его состояние.
+      // The new snapshot becomes the "current" version — the file did not change,
+      // we just saved its state.
       this._currentVerId = this._versions[0]?.id || null;
       this.bus.emit('shortcut:hint', t('pv.snapshotCreated'));
-      // Перечитываем превью целиком: после snapshot файл мог получить новый
-      // mtime/size (хотя контент тот же), и превью должно показать свежие
-      // метаданные + актуальный текст (если он изменился между открытием
-      // превью и кликом на «Добавить версию»).
+      // Re-read the whole preview: after a snapshot the file may have a new
+      // mtime/size (even though the content is the same), and the preview should
+      // show fresh metadata + the current text (in case it changed between
+      // opening the preview and clicking "Add version").
       await this.refreshPreview();
     } catch (err) {
-      this.bus.emit('shortcut:hint', err.message || t('pv.snapshotError'));
+      this.bus.emit('shortcut:hint', { text: err.message || t('pv.snapshotError'), type: 'error' });
     }
     this._snapBusy = false;
     this.renderFrame();
@@ -220,19 +223,19 @@ export class PreviewPanel extends Component {
   async doRestore(id) {
     try {
       await restoreVersion(id);
-      // После restore файл соответствует выбранной версии — отмечаем её как
-      // «текущую» в UI. do_snapshot в бэкенде проверил has_hash_for_path и не
-      // создал дубликат, если состояние уже было сохранено.
+      // After a restore the file matches the selected version — mark it as the
+      // "current" one in the UI. The backend's do_snapshot checked has_hash_for_path
+      // and did not create a duplicate if the state was already saved.
       this._currentVerId = id;
       this.bus.emit('fs:changed', { dirs: [parentPath(this._path)].filter(Boolean) });
       this.bus.emit('shortcut:hint', t('pv.versionRestored'));
-      // Перечитываем превью: контент файла изменился (его перезаписал restore),
-      // mtime обновился, размер мог измениться. refreshPreview покажет свежий
-      // текст и метаданные. fs:changed выше тоже триггернет refreshPreview
-      // (через подписку), но это дёшево — Promise.all параллелит запросы.
+      // Re-read the preview: the file content changed (restore overwrote it),
+      // mtime was updated, size may have changed. refreshPreview will show the
+      // fresh text and metadata. The fs:changed above also triggers refreshPreview
+      // (via the subscription), but it's cheap — Promise.all parallelizes the requests.
       await this.refreshPreview();
     } catch (err) {
-      this.bus.emit('shortcut:hint', err.message || t('pv.restoreError'));
+          this.bus.emit('shortcut:hint', { text: err.message || t('pv.restoreError'), type: 'error' });
     }
   }
 
@@ -241,13 +244,13 @@ export class PreviewPanel extends Component {
       this._versions = (await deleteVersion(id)) || [];
       this.bus.emit('shortcut:hint', t('pv.versionDeleted'));
       this._selectedVer = null;
-      // Если удалили «текущую» версию — сбрасываем к новейшей из оставшихся.
+      // If the "current" version was deleted — reset to the newest of the remaining ones.
       if (this._currentVerId === id || !this._versions.some(v => v.id === this._currentVerId)) {
         this._currentVerId = this._versions[0]?.id || null;
       }
       this.renderFrame();
     } catch (err) {
-      this.bus.emit('shortcut:hint', err.message || t('pv.deleteError'));
+          this.bus.emit('shortcut:hint', { text: err.message || t('pv.deleteError'), type: 'error' });
     }
   }
 
@@ -255,7 +258,7 @@ export class PreviewPanel extends Component {
     if (!this._path) return;
     try {
       this._versions = (await listVersions(this._path)) || [];
-      // Если _currentVerId больше нет в списке (удалили?) — сброс к новейшей.
+      // If _currentVerId is no longer in the list (deleted?) — reset to the newest.
       if (this._currentVerId && !this._versions.some(v => v.id === this._currentVerId)) {
         this._currentVerId = this._versions[0]?.id || null;
       }
@@ -275,9 +278,9 @@ export class PreviewPanel extends Component {
       this.renderFrame();
     }
 
-  // ── Рендер ──────────────────────────────────────────────────
-  
-  /** Строка «Теги» для секции ИНФОРМАЦИЯ: цветные чипы. Если тегов нет — строка не выводится. */
+  // ── Render ──────────────────────────────────────────────────
+
+  /** The "Tags" row for the INFO section: colored chips. If there are no tags, the row is not rendered. */
   tagsRowHtml() {
     const ids = this._tags || [];
     if (!ids.length) return '';
@@ -302,18 +305,21 @@ export class PreviewPanel extends Component {
     const p = this._preview;
     const path = this._path;
     const vers = this._versions;
-    // Текущая версия — та, что соответствует файлу на диске. По умолчанию —
-    // новейшая; после restore или snapshot _currentVerId указывает явно.
+    // The current version is the one matching the file on disk. By default it's
+    // the newest; after a restore or snapshot _currentVerId points to it explicitly.
     const currentVersion = vers.find(v => v.id === this._currentVerId) || vers[0];
 
-    // ── Превью ──
+    // ── Preview ──
     let previewHtml;
     if (!path) {
       previewHtml = `<div class="pv__msg">${escapeHtml(t('pv.selectFile'))}</div>`;
     } else if (!p) {
       previewHtml = `<div class="pv__msg">${escapeHtml(t('common.loading'))}</div>`;
     } else if (p.kind === 'image') {
-      previewHtml = `<div class="pv__imgwrap"><img class="pv__img" src="${escapeHtml(p.dataUrl || '')}" alt=""></div>`;
+          // Prefer the cached thumbnail via the asset protocol (streamed by the web
+          // engine, no base64 over IPC). SVG and any fallback still arrive inline.
+          const src = p.thumbPath ? assetUrl(p.thumbPath) : (p.dataUrl || '');
+      previewHtml = `<div class="pv__imgwrap"><img class="pv__img" src="${escapeHtml(src)}" alt=""></div>`;
     } else if (p.kind === 'text') {
       previewHtml = `<pre class="pv__text">${escapeHtml(p.text || '')}</pre>`;
     } else {
@@ -388,7 +394,7 @@ export class PreviewPanel extends Component {
         </div>`;
     }
 
-    // ── Сборка ──
+    // ── Assembly ──
     this.mount.innerHTML = `
       <div class="pv">
         <div class="pv__head">
@@ -403,7 +409,7 @@ export class PreviewPanel extends Component {
       </div>`;
   }
 
-  /** Перерисовка при смене языка. Сохраняет путь, версии, теги. */
+  /** Re-render on language change. Preserves the path, versions, tags. */
   applyLang() {
     if (!this._open) return;
     this.renderFrame();

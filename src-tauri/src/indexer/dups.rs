@@ -65,15 +65,12 @@ where
     let mut fresh: Vec<(String, u64, i64, String)> = Vec::new();
     let mut done = 0usize;
     for f in to_hash {
-        match hasher::hash_file(&f.path) {
-            Ok(h) => {
-                fresh.push((f.path.clone(), f.size, f.mtime, h.clone()));
-                hashes.insert(f.path.clone(), h);
-            }
-            Err(_) => {}
+        if let Ok(h) = hasher::hash_file(&f.path) {
+            fresh.push((f.path.clone(), f.size, f.mtime, h.clone()));
+            hashes.insert(f.path.clone(), h);
         }
         done += 1;
-        if done % 8 == 0 || done == total {
+        if done.is_multiple_of(8) || done == total {
             on_progress(done, total);
         }
     }

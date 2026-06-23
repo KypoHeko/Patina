@@ -49,10 +49,42 @@ fn is_text(path: &Path, len: u64) -> bool {
     if len == 0 || len > MAX_FILE {
         return false;
     }
-    match path.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()) {
-        Some(ext) => TEXT_EXTS.contains(&ext.as_str()),
-        None => false,
+    if let Some(ext) = path
+        .extension()
+        .map(|e| e.to_string_lossy().to_ascii_lowercase())
+    {
+        if TEXT_EXTS.contains(&ext.as_str()) {
+            return true;
+        }
     }
+    // Unknown / no extension: sniff the head so text-but-unlisted files (e.g. a
+    // `.dat` full of digits) are still searchable, while binaries are skipped.
+    sample_looks_textual(&read_head(path, 8192))
+}
+
+/// Best-effort read of up to `cap` bytes from the head of a file.
+fn read_head(path: &Path, cap: usize) -> Vec<u8> {
+    use std::io::Read;
+    let mut buf = Vec::new();
+    if let Ok(f) = std::fs::File::open(path) {
+        let _ = f.take(cap as u64).read_to_end(&mut buf);
+    }
+    buf
+}
+
+/// Heuristic: a head sample with no NUL byte and few stray control characters
+/// is treated as text. Keeps binaries (including binary `.dat`/`.bin`) out of
+/// the content index while letting unlisted *text* files through.
+fn sample_looks_textual(sample: &[u8]) -> bool {
+    if sample.is_empty() || sample.contains(&0) {
+        return false;
+    }
+    let control = sample
+        .iter()
+        .filter(|&&b| b < 0x20 && !matches!(b, b'\t' | b'\n' | b'\r' | 0x0c))
+        .count();
+    // Allow normal whitespace; reject if too many stray control bytes (binary).
+    control * 10 < sample.len() * 3
 }
 
 fn ext_lower(path: &str) -> String {
@@ -397,8 +429,21 @@ pub async fn start_index(
 
 #[cfg(test)]
 mod tests {
-    use super::{plan_index, IndexPlan};
+    use super::{plan_index, sample_looks_textual, IndexPlan};
 
+    #[test]
+    fn sample_looks_textual_separates_text_from_binary() {
+        assert!(sample_looks_textual(b"0000000000")); // a .dat full of '0' digits
+        assert!(sample_looks_textual(b"hello\nworld\t!"));
+        assert!(!sample_looks_textual(b"\x00\x00\x00")); // NUL bytes -> binary
+        assert!(!sample_looks_textual(&[])); // empty -> not text
+        let mut binary = vec![b'A'; 100];
+        for b in binary.iter_mut().take(40) {
+            *b = 0x01; // 40% stray control bytes -> binary
+        }
+        assert!(!sample_looks_textual(&binary));
+    }
+    
     #[test]
     fn reopen_same_root_always_rescans() {
         // same root, not a force, content already built → rescan,

@@ -8,4 +8,5 @@ export const KEYMAP = [
   { combo: 'ctrl+w', action: 'close-tab', description: 'Закрыть вкладку' },
   { combo: 'ctrl+shift+t', action: 'reopen-tab', description: 'Открыть закрытую вкладку' },
   { combo: 'ctrl+shift+n', action: 'new-folder', description: 'Создать папку' },
+  { combo: 'delete', action: 'delete', description: 'Удалить в корзину' },
 ];

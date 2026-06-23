@@ -9,7 +9,7 @@
   z-index: 1000;
 }
 
-/* Полоска тегов */
+/* Tag strip */
 .ctx-menu__tags {
   display: flex;
   gap: 7px;

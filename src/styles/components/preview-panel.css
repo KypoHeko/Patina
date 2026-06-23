@@ -1,4 +1,4 @@
-/* ── Превью-панель: контейнер ── */
+/* ── Preview panel: container ── */
 .pv {
   display: flex;
   flex-direction: column;
@@ -7,7 +7,7 @@
   border-left: 1px solid var(--border-strong);
 }
 
-/* ── Заголовок ── */
+/* ── Header ── */
 .pv__head {
   display: flex;
   align-items: center;
@@ -37,7 +37,7 @@
   color: var(--text);
 }
 
-/* ── Тело (скролл) ── */
+/* ── Body (scroll) ── */
 .pv__body {
   flex: 1;
   overflow-y: auto;
@@ -45,7 +45,7 @@
   padding: 12px;
 }
 
-/* ── Сообщение-заглушка ── */
+/* ── Placeholder message ── */
 .pv__msg {
   padding: 24px;
   text-align: center;
@@ -53,7 +53,7 @@
   font-size: 13px;
 }
 
-/* ── Превью-изображение ── */
+/* ── Preview image ── */
 .pv__imgwrap {
   display: flex;
   justify-content: center;
@@ -70,7 +70,7 @@
   border-radius: 2px;
 }
 
-/* ── Превью-текст ── */
+/* ── Preview text ── */
 .pv__text {
   margin: 0;
   font: var(--font-mono);
@@ -86,7 +86,7 @@
   padding: 8px;
 }
 
-/* ── Секция-заголовок (ИНФОРМАЦИЯ / ИСТОРИЯ ВЕРСИЙ) ── */
+/* ── Section header (INFO / VERSION HISTORY) ── */
 .pv__section {
   font-size: 10px;
   letter-spacing: 0.1em;
@@ -99,7 +99,7 @@
   margin-top: 0;
 }
 
-/* ── Информационная карточка ── */
+/* ── Info card ── */
 .pv__info {
   background: var(--bg-2);
   border: 1px solid var(--border);
@@ -139,7 +139,7 @@
   color: var(--accent-2);
 }
 
-/* ── Список версий ── */
+/* ── Version list ── */
 .pv__ver-list {
   background: var(--bg-2);
   border: 1px solid var(--border);
@@ -166,7 +166,7 @@
   box-shadow: inset 3px 0 0 var(--accent);
 }
 
-/* Метка версии: v1, v2, v3… */
+/* Version label: v1, v2, v3… */
 .pv__ver-label {
   font-family: ui-monospace, "Cascadia Code", "Consolas", monospace;
   font-size: 12px;
@@ -179,7 +179,7 @@
   font-weight: 600;
 }
 
-/* Дата версии */
+/* Version date */
 .pv__ver-date {
   flex: 1;
   font-size: 12px;
@@ -190,7 +190,7 @@
   min-width: 0;
 }
 
-/* Бейдж «текущая» */
+/* "Current" badge */
 .pv__ver-badge {
   font-size: 10px;
   padding: 2px 7px;
@@ -201,7 +201,7 @@
   flex-shrink: 0;
 }
 
-/* ── Кнопки версий ── */
+/* ── Version buttons ── */
 .pv__ver-actions {
   display: grid;
   grid-template-columns: 1fr 1fr 1fr;

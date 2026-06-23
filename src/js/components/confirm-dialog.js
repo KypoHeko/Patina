@@ -2,7 +2,7 @@ import { Component } from '../core/component.js';
 import { el } from '../core/dom.js';
 import { t } from '../lib/i18n.js';
 
-// Универсальный диалог. Открывается событием шины:
+// A generic dialog. Opened by a bus event:
 // confirm:open { title, message, confirmLabel, altLabel, danger, onConfirm, onAlt }
 export class ConfirmDialog extends Component {
   init() {
@@ -46,12 +46,12 @@ export class ConfirmDialog extends Component {
     if (req && typeof req[key] === 'function') req[key]();
   }
 
-  /** Перерисовка при смене языка (если диалог открыт). */
+  /** Re-render on language change (if the dialog is open). */
   applyLang() {
     if (!this._req) return;
-    // Перерисовываем с тем же запросом, но кнопка «Отмена» / дефолт-тексты
-    // подтянут новые переводы. Если вызывающий передал confirmLabel/altLabel,
-    // они сохранятся — это caller-provided строки, не наши ключи.
+    // Re-render with the same request, but the "Cancel" button / default texts
+    // will pick up new translations. If the caller passed confirmLabel/altLabel,
+    // they are preserved — those are caller-provided strings, not our keys.
     this.open(this._req);
   }
 

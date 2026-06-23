@@ -20,15 +20,15 @@ body {
   user-select: none;
 }
 
-/* Поля ввода остаются выделяемыми (в body выделение отключено),
-   иначе нельзя было бы выделить и скопировать текст. */
+/* Input fields stay selectable (selection is disabled on body),
+   otherwise text could not be selected and copied. */
 input,
 textarea {
   -webkit-user-select: text;
   user-select: text;
 }
 
-/* Тонкие тёмные скроллбары */
+/* Thin dark scrollbars */
 ::-webkit-scrollbar {
   width: 10px;
   height: 10px;

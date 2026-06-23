@@ -21,6 +21,10 @@
       }
     ],
     "security": {
+      "assetProtocol": {
+        "enable": true,
+        "scope": ["**"]
+      },
       "csp": {
         "default-src": "'self'",
         "script-src": "'self'",

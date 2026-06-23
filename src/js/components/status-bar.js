@@ -14,7 +14,7 @@ const ICON = {
   drive: `<svg ${SVG}><line x1="22" x2="2" y1="12" y2="12"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/><line x1="6" x2="6.01" y1="16" y2="16"/><line x1="10" x2="10.01" y1="16" y2="16"/></svg>`,
 };
 
-// Статус-бар: слева путь и счётчики/выделение, справа подсказки клавиш и общий объём.
+// Status bar: path and counts/selection on the left, key hints and total size on the right.
 export class StatusBar extends Component {
   constructor(ctx) {
     super(ctx);
@@ -26,13 +26,18 @@ export class StatusBar extends Component {
     this.subscribe(() => {
       if (!this._hintTimer) this.render();
     });
-    this.listen('shortcut:hint', (text) => this.flash(text));
+    this.listen('shortcut:hint', (payload) => {
+      // Back-compatible payload: a bare string is an info message; an object
+      // { text, type } carries a severity ('info' | 'warn' | 'error').
+      if (typeof payload === 'string') this.flash(payload);
+      else if (payload) this.flash(payload.text, payload.type);
+    });
     this.loadStorage();
     this.render();
     this._cleanups.push(() => clearTimeout(this._hintTimer));
   }
 
-  /** Перерисовка при смене языка (если не показана вспышка-подсказка). */
+  /** Re-render on language change (unless a hint flash is showing). */
   applyLang() {
     if (!this._hintTimer) this.render();
   }
@@ -45,7 +50,7 @@ export class StatusBar extends Component {
       this._storage = total > 0 ? { used, total } : null;
       if (!this._hintTimer) this.render();
     } catch {
-      /* нет данных — правую часть с объёмом просто не показываем */
+      /* no data — we simply do not show the right-hand size section */
     }
   }
 
@@ -85,13 +90,23 @@ export class StatusBar extends Component {
       storage +
       `</div>`;
   }
-
-  flash(text) {
-    clearTimeout(this._hintTimer);
-    this.mount.innerHTML = `<span class="status__hint">${escapeHtml(text)}</span>`;
-    this._hintTimer = setTimeout(() => {
-      this._hintTimer = null;
-      this.render();
-    }, 1800);
+  
+    /**
+     * Show a transient message in the status bar.
+     * @param {string} text
+     * @param {'info'|'warn'|'error'} [type='info'] info — success/neutral (emerald);
+     *   warn — soft refusal (amber); error — failure (red, larger, shown ~2x longer).
+     */
+    flash(text, type = 'info') {
+      clearTimeout(this._hintTimer);
+      const cls = type === 'info' ? 'status__hint' : `status__hint status__hint--${type}`;
+      this.mount.innerHTML = `<span class="${cls}">${escapeHtml(text)}</span>`;
+      // Errors and warnings linger so they are not missed; info stays brief.
+      const ms = type === 'error' ? 3600 : type === 'warn' ? 2600 : 1800;
+      this._hintTimer = setTimeout(() => {
+        this._hintTimer = null;
+        this.render();
+      }, ms);
+    }
   }
-}
+  

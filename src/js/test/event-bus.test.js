@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { createEventBus } from '../core/event-bus.js';
 
 describe('createEventBus', () => {
-  it('emit вызывает подписчика с payload', () => {
+  it('emit calls the subscriber with the payload', () => {
     const bus = createEventBus();
     const spy = vi.fn();
     bus.on('test', spy);
@@ -10,7 +10,7 @@ describe('createEventBus', () => {
     expect(spy).toHaveBeenCalledWith({ x: 1 });
   });
 
-  it('несколько подписчиков одного события получают один payload', () => {
+  it('multiple subscribers of one event receive the same payload', () => {
     const bus = createEventBus();
     const spy1 = vi.fn();
     const spy2 = vi.fn();
@@ -21,7 +21,7 @@ describe('createEventBus', () => {
     expect(spy2).toHaveBeenCalledWith(42);
   });
 
-  it('подписчики разных событий не пересекаются', () => {
+  it('subscribers of different events do not overlap', () => {
     const bus = createEventBus();
     const spyA = vi.fn();
     const spyB = vi.fn();
@@ -32,7 +32,7 @@ describe('createEventBus', () => {
     expect(spyB).not.toHaveBeenCalled();
   });
 
-  it('off снимает подписку', () => {
+  it('off removes the subscription', () => {
     const bus = createEventBus();
     const spy = vi.fn();
     bus.on('ev', spy);
@@ -41,7 +41,7 @@ describe('createEventBus', () => {
     expect(spy).not.toHaveBeenCalled();
   });
 
-  it('on возвращает функцию отписки', () => {
+  it('on returns an unsubscribe function', () => {
     const bus = createEventBus();
     const spy = vi.fn();
     const unsub = bus.on('ev', spy);
@@ -50,17 +50,17 @@ describe('createEventBus', () => {
     expect(spy).not.toHaveBeenCalled();
   });
 
-  it('emit без подписчиков не бросает исключение', () => {
+  it('emit with no subscribers does not throw', () => {
     const bus = createEventBus();
     expect(() => bus.emit('missing', null)).not.toThrow();
   });
 
-  it('повторная отписка безопасна', () => {
+  it('repeated unsubscribe is safe', () => {
     const bus = createEventBus();
     const spy = vi.fn();
     const unsub = bus.on('ev', spy);
     unsub();
-    unsub(); // второй раз — не должно бросить
+    unsub(); // second time — should not throw
     expect(() => unsub()).not.toThrow();
   });
 });

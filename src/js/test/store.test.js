@@ -2,31 +2,31 @@ import { describe, it, expect } from 'vitest';
 import { createStore } from '../core/store.js';
 
 describe('createStore', () => {
-  it('возвращает начальное состояние через getState', () => {
+  it('returns the initial state via getState', () => {
     const store = createStore({ a: 1, b: 'hello' });
     expect(store.getState()).toEqual({ a: 1, b: 'hello' });
   });
 
-  it('обновляет состояние объектом-патчем', () => {
+  it('updates the state with an object patch', () => {
     const store = createStore({ x: 0 });
     store.setState({ x: 42 });
     expect(store.getState().x).toBe(42);
   });
 
-  it('обновляет состояние функцией-патчем', () => {
+  it('updates the state with a function patch', () => {
     const store = createStore({ count: 5 });
     store.setState((s) => ({ count: s.count + 1 }));
     expect(store.getState().count).toBe(6);
   });
 
-  it('сливает патч поверхностно (не глубоко)', () => {
+  it('merges the patch shallowly (not deeply)', () => {
     const store = createStore({ a: { x: 1 }, b: 2 });
     store.setState({ b: 3 });
     expect(store.getState().b).toBe(3);
     expect(store.getState().a).toEqual({ x: 1 });
   });
 
-  it('уведомляет подписчиков при setState', () => {
+  it('notifies subscribers on setState', () => {
     const store = createStore({ v: 0 });
     const spy = vi.fn();
     store.subscribe(spy);
@@ -35,7 +35,7 @@ describe('createStore', () => {
     expect(spy).toHaveBeenCalledWith({ v: 1 });
   });
 
-  it('функция отписки, возвращаемая subscribe, снимает подписку', () => {
+  it('the unsubscribe function returned by subscribe removes the subscription', () => {
     const store = createStore({ v: 0 });
     const spy = vi.fn();
     const unsub = store.subscribe(spy);
@@ -44,7 +44,7 @@ describe('createStore', () => {
     expect(spy).not.toHaveBeenCalled();
   });
 
-  it('подписчики не мешают друг другу при отписке', () => {
+  it('subscribers do not interfere with each other on unsubscribe', () => {
     const store = createStore({ v: 0 });
     const spy1 = vi.fn();
     const spy2 = vi.fn();
@@ -56,7 +56,7 @@ describe('createStore', () => {
     expect(spy2).not.toHaveBeenCalled();
   });
 
-  it('не мутирует прежний объект состояния', () => {
+  it('does not mutate the previous state object', () => {
     const store = createStore({ v: 0 });
     const prev = store.getState();
     store.setState({ v: 1 });

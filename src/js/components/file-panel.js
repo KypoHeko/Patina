@@ -7,7 +7,7 @@ import { tagsForPaths, listTag } from '../api/tags.js';
 import { computeDirSizes, dirSizes } from '../api/dir_size.js';
 import { TAGS } from '../config/tags.js';
 import { formatSize, formatDate } from '../lib/format.js';
-import { fileIcon } from '../lib/icons.js';
+import { fileIcon, hasOwnIcon } from '../lib/icons.js';
 import { parentPath, folderName } from '../lib/paths.js';
 import {
   getPane,
@@ -24,8 +24,8 @@ import { t, tagLabel } from '../lib/i18n.js';
 
 const TAG_COLOR = Object.fromEntries(TAGS.map((t) => [t.id, t.color]));
 
-// Оверлеи, которые сами обрабатывают клавиатуру (стрелки/Enter) — при их
-// открытии навигация по списку не должна срабатывать.
+// Overlays that handle the keyboard themselves (arrows/Enter) — while they are
+// open, list navigation must not fire.
 const OVERLAY_ROOTS = ['palette-root', 'graph-root', 'confirm-root'];
 function overlayOpen() {
   return OVERLAY_ROOTS.some((id) => {
@@ -45,15 +45,17 @@ export class FilePanel extends Component {
     this._lastPane = null;
     this._lastActive = null;
     this._dropRow = null;
-    this._tags = {}; // путь -> [tagId] для текущего листинга
-    this._anchor = null; // якорь для Shift-выделения
-    this._sort = { key: 'name', dir: 'asc' }; // сортировка по умолчанию — имя
-    this._view = []; // отображаемый (отсортированный) порядок
-    this._filter = ''; // строка поиска (regex / подстрока)
+    this._tags = {}; // path -> [tagId] for the current listing
+    this._anchor = null; // anchor for Shift selection
+    this._sort = { key: 'name', dir: 'asc' }; // default sort — name
+    this._view = []; // the displayed (sorted) order
+    this._renaming = null; // path being inline-renamed (suppresses reloads)
+    this._pendingReload = false; // a reload deferred while inline-renaming
+    this._filter = ''; // search string (regex / substring)
     this._appliedFilter = '';
     this._cursor = 0;
-    this._nativeIcons = new Map(); // путь → data-URL (кэш нативных иконок)
-    this._iconPending = new Set(); // пути, для которых уже отправлен запрос
+    this._nativeIcons = new Map(); // path → data-URL (native icon cache)
+    this._iconPending = new Set(); // paths a request has already been sent for
   }
 
   init() {
@@ -85,8 +87,8 @@ export class FilePanel extends Component {
     this.listEl = this.mount.querySelector('.panel__list');
     this.colheadEl = this.mount.querySelector('.panel__colhead');
 
-    // Размеры папок (Фаза 1): кэш «путь → размер» для показа + флаг идущего
-    // пересчёта (рисуем спиннеры у папок). Запуск — только по кнопке.
+    // Folder sizes (Phase 1): a "path → size" cache for display + a flag for an
+    // ongoing recompute (we draw spinners on folders). Triggered only by the button.
     this._dirSizes = new Map();
     this._dirComputing = false;
 
@@ -140,7 +142,16 @@ export class FilePanel extends Component {
       if (side === this.side) this.createFolderHere();
     });
     this.listen('fs:changed', ({ dirs }) => {
-      if (this._lastPane && dirs.includes(this._lastPane.path)) this.reload();
+      if (this._lastPane && dirs.includes(this._lastPane.path)) {
+        // Don't clobber an open inline-rename editor. Creating a folder triggers
+        // a watcher event that would otherwise rebuild the list and drop the
+        // rename input; defer the reload until the edit finishes.
+        if (this._renaming) {
+          this._pendingReload = true;
+          return;
+        }
+        this.reload();
+      }
     });
     this.listen('dirsize:recalc', () => {
       if (getActiveSide(this.store.getState()) === this.side) this.recalcDirSizes();
@@ -149,7 +160,7 @@ export class FilePanel extends Component {
       const cur = this._lastPane;
       if (!cur) return;
       if ((cur.path || '').startsWith('tag:')) {
-        this.reload(); // в тег-папке снятие тега убирает файл из списка
+        this.reload(); // in a tag-folder, removing the tag drops the file from the list
         return;
       }
       const entries = cur.entries || [];
@@ -196,8 +207,8 @@ export class FilePanel extends Component {
       this.renderList(pane);
       if (structureChanged) {
         this.loadTags(pane.entries);
-        // Новая папка: спиннеры прошлого пересчёта сбрасываем, размеры —
-        // подтягиваем из индекса, если уже посчитаны (иначе у папок пусто).
+        // New folder: reset spinners from the previous recompute; pull sizes
+        // from the index if already computed (otherwise folders show nothing).
         this._dirComputing = false;
         this.loadDirSizes(pane.entries);
       }
@@ -205,24 +216,24 @@ export class FilePanel extends Component {
   }
 
   async navigate(path, { record = true } = {}) {
-    // Перерисовка той же папки (например, после fs:changed от restore_version):
-    // сохраняем выделение, иначе restore снимет его. Для новой папки selected
-    // обнуляется как и раньше.
+    // Re-render of the same folder (e.g. after fs:changed from restore_version):
+    // keep the selection, otherwise restore would clear it. For a new folder
+    // selected is reset as before.
     const isReload = this._lastPane?.path === path;
     const prevSelected = isReload ? [...(this._lastPane?.selected || [])] : [];
 
-    // Сбрасываем фильтр при навигации — чтобы не «ловить» старый поиск
-    // в новой папке. Input обновится через sync().
+    // Reset the filter on navigation — so we do not "catch" an old search in
+    // the new folder. The input updates via sync().
     if (this.store.getState().searchQuery) {
       this.store.setState({ searchQuery: '' });
     }
     updatePane(this.store, this.side, { loading: true, error: null });
     try {
       const entries = path.startsWith('tag:') ? await listTag(path.slice(4)) : await listDir(path);
-      this._tags = {}; // сбрасываем теги прошлой папки
+      this._tags = {}; // reset the previous folder's tags
       this._anchor = null;
-      // Оставляем в выделении только те пути, что всё ещё есть в листинге —
-      // например, после restore файл тот же, а после удаления — пропадёт.
+      // Keep in the selection only the paths still present in the listing —
+      // e.g. after restore the file is the same, but after deletion it is gone.
       const existing = new Set(entries.map((e) => e.path));
       const selected = prevSelected.filter((p) => existing.has(p));
       updatePane(this.store, this.side, { path, entries, selected, loading: false });
@@ -232,8 +243,8 @@ export class FilePanel extends Component {
     }
   }
 
-  /** Показать файл из графа: перейти в его папку и выделить там. Для корня
-   *  диска (родителя нет) просто открываем его как папку. */
+  /** Reveal a file from the graph: navigate to its folder and select it there.
+   *  For a drive root (no parent) we simply open it as a folder. */
   async revealPath(path) {
     const parent = parentPath(path);
     if (parent) {
@@ -251,29 +262,29 @@ export class FilePanel extends Component {
       this._tags = map || {};
       this.updateTags();
     } catch {
-      /* теги — не критично, молча игнорируем */
+      /* tags — not critical, silently ignore */
     }
   }
 
-  /** Пересчитать размеры всех папок текущей директории (по кнопке ∑). Пока идёт
-   *  обход — у папок крутится спиннер; по завершении подставляются числа. */
+  /** Recompute the sizes of all folders in the current directory (the ∑ button).
+   *  While the walk runs a spinner spins on the folders; numbers fill in on completion. */
   async recalcDirSizes() {
     const root = this._lastPane && this._lastPane.path;
-    if (!root || root.startsWith('tag:')) return; // тег-папки не лежат на диске
+    if (!root || root.startsWith('tag:')) return; // tag folders are not on disk
     if (this._dirComputing) return;
     this._dirComputing = true;
-    this._dirSizes = new Map(); // пересчёт — сбрасываем показанные значения
-    this.renderWindow(); // показать спиннеры у папок
+    this._dirSizes = new Map(); // recompute — clear the shown values
+    this.renderWindow(); // show spinners on folders
     try {
       await computeDirSizes(root);
     } catch {
-      /* размеры — не критично, молча игнорируем */
+      /* sizes — not critical, silently ignore */
     }
     this._dirComputing = false;
     await this.loadDirSizes(this._lastPane ? this._lastPane.entries : []);
   }
 
-  /** Подтянуть уже посчитанные размеры папок для текущего списка и показать. */
+  /** Fetch already-computed folder sizes for the current list and show them. */
   async loadDirSizes(entries) {
     const folders = (entries || []).filter((e) => e.kind === 'folder').map((e) => e.path);
     if (!folders.length) {
@@ -312,11 +323,11 @@ export class FilePanel extends Component {
     try {
       await openPath(entry.path);
     } catch (err) {
-      this.bus.emit('shortcut:hint', t('panel.openError', { msg: err.message }));
+      this.bus.emit('shortcut:hint', { text: t('panel.openError', { msg: err.message }), type: 'error' });
     }
   }
 
-  /* ── Клавиатурная навигация ──────────────── */
+  /* ── Keyboard navigation ─────────────────── */
 
   onListKey(e) {
     if (isTextInput(e) || overlayOpen()) return;
@@ -409,7 +420,7 @@ export class FilePanel extends Component {
   async createFolderHere() {
     const pane = this._lastPane;
     if (!pane || !pane.path || pane.path.startsWith('tag:')) {
-          this.bus.emit('shortcut:hint', t('panel.noCreateHere'));
+      this.bus.emit('shortcut:hint', { text: t('panel.noCreateHere'), type: 'warn' });
       return;
     }
     const dir = pane.path;
@@ -428,18 +439,29 @@ export class FilePanel extends Component {
         if (entry) this.startRename(entry);
       });
     } catch (err) {
-      this.bus.emit('shortcut:hint', t('panel.createFolderError', { msg: err.message }));
+      this.bus.emit('shortcut:hint', { text: t('panel.createFolderError', { msg: err.message }), type: 'error' });
     }
   }
 
   entryAt(row) {
     return (this._lastPane?.entries || []).find((e) => e.path === row.dataset.path);
   }
+  
+    /**
+     * The current selection, read from the STORE (the source of truth) rather
+     * than from `_lastPane` (a render cache). Selection-changing and
+     * selection-acting handlers must use this: computing the next selection from
+     * a possibly-stale cache breaks Ctrl-click accumulation, which in turn makes
+     * bulk actions (tagging, delete, drag) hit only the last-clicked file.
+     */
+    selectedPaths() {
+      return getPane(this.store.getState(), this.side).selected || [];
+    }
 
-  /* ── Операции ──────────────────────────────── */
+  /* ── Operations ────────────────────────────── */
 
   deleteSelected() {
-    const paths = this._lastPane?.selected || [];
+    const paths = this.selectedPaths();
     if (!paths.length) return;
     const dir = this._lastPane.path;
     this.bus.emit('confirm:open', {
@@ -453,7 +475,7 @@ export class FilePanel extends Component {
           this.bus.emit('shortcut:hint', t('common.trashed', { n: paths.length }));
           this.bus.emit('fs:changed', { dirs: [dir] });
         } catch (err) {
-          this.bus.emit('shortcut:hint', t('panel.deleteError', { msg: err.message }));
+                  this.bus.emit('shortcut:hint', { text: t('panel.deleteError', { msg: err.message }), type: 'error' });
         }
       },
     });
@@ -464,6 +486,7 @@ export class FilePanel extends Component {
       (r) => r.dataset.path === entry.path,
     );
     if (!row) return;
+    this._renaming = entry.path;
     const nameEl = row.querySelector('.row__name');
     const input = document.createElement('input');
     input.className = 'row__rename';
@@ -478,6 +501,7 @@ export class FilePanel extends Component {
     const finish = async (commit) => {
       if (done) return;
       done = true;
+      this._renaming = null;
       const value = input.value.trim();
       input.removeEventListener('keydown', onKey);
       input.removeEventListener('blur', onBlur);
@@ -487,10 +511,15 @@ export class FilePanel extends Component {
           this.bus.emit('fs:changed', { dirs: [this._lastPane.path] });
           return;
         } catch (err) {
-          this.bus.emit('shortcut:hint', t('panel.renameError', { msg: err.message }));
+                  this.bus.emit('shortcut:hint', { text: t('panel.renameError', { msg: err.message }), type: 'error' });
         }
       }
       nameEl.textContent = entry.name;
+      // Apply any reload that arrived (and was deferred) during the edit.
+      if (this._pendingReload) {
+        this._pendingReload = false;
+        this.reload();
+      }
     };
     const onKey = (e) => {
       if (e.key === 'Enter') finish(true);
@@ -502,13 +531,13 @@ export class FilePanel extends Component {
     input.addEventListener('blur', onBlur);
   }
 
-  /* ── Перетаскивание ────────────────────────── */
+  /* ── Drag and drop ─────────────────────────── */
 
   onDragStart(e) {
     const row = e.target.closest('.row');
     if (!row) return;
     const path = row.dataset.path;
-    const selected = this._lastPane?.selected || [];
+    const selected = this.selectedPaths();
     const paths = selected.includes(path) && selected.length > 1 ? [...selected] : [path];
     startDrag(paths, this.side);
     e.dataTransfer.effectAllowed = 'copyMove';
@@ -545,7 +574,7 @@ export class FilePanel extends Component {
     clearDrag();
     this.clearDropHighlight();
     if (destDir.startsWith('tag:')) {
-      this.bus.emit('shortcut:hint', t('panel.noDropTag'));
+          this.bus.emit('shortcut:hint', { text: t('panel.noDropTag'), type: 'warn' });
       return;
     }
     this.dropEntries(paths, destDir, copy);
@@ -578,7 +607,7 @@ export class FilePanel extends Component {
     try {
       conflicts = (await checkConflicts(filtered, destDir)) || [];
     } catch {
-      /* при ошибке проверки просто пробуем без перезаписи */
+      /* on a check error, just try without overwriting */
     }
 
     if (conflicts.length) {
@@ -613,11 +642,11 @@ export class FilePanel extends Component {
       this.bus.emit('fs:changed', { dirs: [...affected] });
       this.bus.emit('shortcut:hint', copy ? t('panel.copied', { n: sources.length }) : t('panel.moved', { n: sources.length }));
     } catch (err) {
-      this.bus.emit('shortcut:hint', t('common.error', { msg: err.message }));
+          this.bus.emit('shortcut:hint', { text: t('common.error', { msg: err.message }), type: 'error' });
     }
   }
 
-  /* ── Ввод ──────────────────────────────────── */
+  /* ── Input ─────────────────────────────────── */
 
   onMouseDown(e) {
     setActivePane(this.store, this.side);
@@ -635,7 +664,7 @@ export class FilePanel extends Component {
     if (!row) return;
     const path = row.dataset.path;
     const entries = this._view.length ? this._view : this._lastPane?.entries || [];
-    const cur = this._lastPane?.selected || [];
+    const cur = this.selectedPaths();
     let next;
 
     if (e.ctrlKey || e.metaKey) {
@@ -664,17 +693,31 @@ export class FilePanel extends Component {
   }
 
   onContextMenu(e) {
+    e.preventDefault();
     const row = e.target.closest('.row');
-    if (!row) return;
+    if (!row) {
+      // Right-click on empty space: a minimal background menu (New folder for
+      // the current directory). No target entry, no selection change.
+      this.bus.emit('contextmenu:open', {
+        x: e.clientX,
+        y: e.clientY,
+        entry: null,
+        side: this.side,
+        paths: [],
+      });
+      return;
+    }
     const entry = this.entryAt(row);
     if (!entry) return;
-    e.preventDefault();
-    const selected = this._lastPane?.selected || [];
+    const selected = this.selectedPaths();
+    // Act on the whole selection when the right-clicked row is part of it;
+    // otherwise narrow the selection to just this row.
+    const paths = selected.includes(entry.path) ? [...selected] : [entry.path];
     if (!selected.includes(entry.path)) selectInPane(this.store, this.side, [entry.path]);
-    this.bus.emit('contextmenu:open', { x: e.clientX, y: e.clientY, entry, side: this.side });
+    this.bus.emit('contextmenu:open', { x: e.clientX, y: e.clientY, entry, side: this.side, paths });
   }
 
-  /* ── Отрисовка ─────────────────────────────── */
+  /* ── Rendering ─────────────────────────────── */
 
   dotsHtml(path) {
     return (this._tags[path] || [])
@@ -716,15 +759,15 @@ export class FilePanel extends Component {
     if (this._lastPane) this.renderList(this._lastPane);
   }
   
-    /** Перерисовка при смене языка. Сохраняет навигацию, выделение, сортировку, теги. */
+    /** Re-render on language change. Preserves navigation, selection, sort, tags. */
     applyLang() {
       if (!this.panelEl) return;
-      // 1. Кнопки в шапке панели.
+      // 1. Panel header buttons.
       const splitBtn = this.mount.querySelector('[data-split]');
       if (splitBtn) splitBtn.title = t('panel.split');
       const closeBtn = this.mount.querySelector('[data-close-split]');
       if (closeBtn) closeBtn.title = t('panel.closePanel');
-      // 2. Заголовки колонок — пересобираем только текстовые узлы внутри span'ов.
+      // 2. Column headers — rebuild only the text nodes inside the spans.
       const colLabels = {
         name: t('col.name'),
         type: t('col.type'),
@@ -734,16 +777,16 @@ export class FilePanel extends Component {
       for (const [key, label] of Object.entries(colLabels)) {
         const span = this.colheadEl && this.colheadEl.querySelector(`[data-sort="${key}"]`);
         if (span) {
-          // Сохраняем иконку сортировки, обновляем только текст.
+          // Keep the sort icon, update only the text.
           const arrow = span.querySelector('.sort-arrow');
           span.textContent = label;
           if (arrow) span.append(arrow);
         }
       }
-      // Колонка «Метка» (без data-sort) — это span без класса col-sort, найдём по соседству.
+      // The "Tag" column (no data-sort) is a span without the col-sort class; find it nearby.
       if (this.colheadEl) {
         const tagSpan = this.colheadEl.querySelector('span:not(.col-sort):not(:empty)');
-        // span идёт третьим в colhead; ищем простой текстовый span без дочерних.
+        // the span is third in colhead; look for a plain text span with no children.
         const spans = this.colheadEl.querySelectorAll('span');
         for (const s of spans) {
           if (!s.classList.contains('col-sort') && !s.hasAttribute('data-sort') && s.childElementCount === 0) {
@@ -754,13 +797,13 @@ export class FilePanel extends Component {
       }
       // 3. Breadcrumbs.
       if (this.breadcrumbs && this.breadcrumbs.applyLang) this.breadcrumbs.applyLang();
-      // 4. Список файлов (точечные тексты — Computing…, dots и т.д. уже через t()).
+      // 4. File list (per-row texts — Computing…, dots, etc. already go through t()).
       this.renderWindow();
-      // 5. Пустое состояние / ошибка — проверяем, не показано ли оно.
+      // 5. Empty state / error — check whether it is showing.
       if (this._lastPane && this._lastPane.error) {
-        // ошибка — оставляем как есть, это сообщение от бэкенда.
+        // error — leave as is, this is a message from the backend.
       } else if (this._lastPane && (!this._lastPane.entries || this._lastPane.entries.length === 0)) {
-        // панель пуста / ничего не найдено — перерисовать через renderList.
+        // panel empty / nothing found — re-render via renderList.
         this.renderList(this._lastPane);
       }
     }
@@ -783,6 +826,9 @@ export class FilePanel extends Component {
   }
 
   renderList(pane) {
+    // A full rebuild destroys any inline-rename input, so drop the edit state.
+    this._renaming = null;
+    this._pendingReload = false;
     if (pane.error) {
       this.listEl.innerHTML = `<div class="panel__error">${escapeHtml(pane.error)}</div>`;
       this._view = [];
@@ -796,11 +842,11 @@ export class FilePanel extends Component {
     this.renderWindow();
   }
 
-  // Виртуализация: в DOM только видимое окно строк + запас.
-  // .vlist-sizer задаёт полную высоту для скроллбара, строки — абсолютно.
-  // Вместо полной замены innerHTML при каждом скролле используем дифференцированное
-  // обновление: создаём недостающие строки, обновляем изменённые, удаляем лишние.
-  // Это на порядок быстрее для больших списков (5 000+ файлов).
+  // Virtualization: only the visible window of rows + a margin is in the DOM.
+  // .vlist-sizer sets the full height for the scrollbar, rows are positioned absolutely.
+  // Instead of fully replacing innerHTML on every scroll we use a diff update:
+  // create missing rows, update changed ones, remove extras.
+  // This is an order of magnitude faster for large lists (5,000+ files).
   renderWindow() {
     if (!this._lastPane || this._lastPane.error || !this._view) return;
     const view = this._view;
@@ -813,12 +859,12 @@ export class FilePanel extends Component {
     const total = view.length;
     const scrollTop = this.listEl.scrollTop;
     const viewport = this.listEl.clientHeight || rowH * 20;
-    const over = 10; // запас строк сверху/снизу (увеличен для плавности при быстром скролле)
+    const over = 10; // row margin top/bottom (increased for smoothness on fast scroll)
     const start = Math.max(0, Math.floor(scrollTop / rowH) - over);
     const end = Math.min(total, start + Math.ceil(viewport / rowH) + over * 2);
     const selected = new Set(this._lastPane.selected || []);
 
-    // Обновляем или создаём sizer
+    // Update or create the sizer
     let sizer = this.listEl.querySelector('.vlist-sizer');
     if (!sizer) {
       sizer = document.createElement('div');
@@ -830,11 +876,11 @@ export class FilePanel extends Component {
       sizer.style.height = totalHeight + 'px';
     }
 
-    // Собираем набор видимых путей
+    // Build the set of visible paths
     const visiblePaths = new Set();
     for (let i = start; i < end; i++) visiblePaths.add(view[i].path);
 
-    // Удаляем строки, которые больше не видны
+    // Remove rows that are no longer visible
     if (!this._renderedPaths) this._renderedPaths = new Set();
     for (const p of this._renderedPaths) {
       if (!visiblePaths.has(p)) {
@@ -844,21 +890,21 @@ export class FilePanel extends Component {
     }
     this._renderedPaths = visiblePaths;
 
-    // Обновляем/создаём видимые строки
+    // Update/create the visible rows
     for (let i = start; i < end; i++) {
       const e = view[i];
       const path = e.path;
       let row = this.listEl.querySelector(`.row[data-path="${CSS.escape(path)}"]`);
 
       if (row) {
-        // Обновляем только то, что могло измениться: выделение, позицию, размер папки
+        // Update only what could change: selection, position, folder size
         const topPx = i * rowH;
         if (row.style.top !== topPx + 'px') row.style.top = topPx + 'px';
         const isSel = selected.has(path);
         if (isSel !== row.classList.contains('is-selected')) {
           row.classList.toggle('is-selected', isSel);
         }
-        // Обновляем размер папки (динамическое поле)
+        // Update the folder size (dynamic field)
         if (e.kind === 'folder') {
           const sizeSpan = row.querySelector('.row__size');
           if (sizeSpan) {
@@ -869,21 +915,25 @@ export class FilePanel extends Component {
             if (sizeSpan.innerHTML !== sizeText) sizeSpan.innerHTML = sizeText;
           }
         }
-        // Обновляем теги (метки) — могли измениться через контекстное меню
+        // Update tags — they could change via the context menu
         const tagsSpan = row.querySelector('.row__tags');
         if (tagsSpan) {
           const newTags = this.dotsHtml(path);
           if (tagsSpan.innerHTML !== newTags) tagsSpan.innerHTML = newTags;
         }
       } else {
-        // Создаём новую строку
+        // Create a new row
         row = document.createElement('div');
         row.className = 'row' + (selected.has(path) ? ' is-selected' : '');
         row.draggable = true;
         row.dataset.path = path;
         row.dataset.kind = e.kind;
+                // Prefer our own icon; only files without one are eligible for the
+                // native (OS) icon, which loadNativeIcons() fetches lazily.
+                const own = hasOwnIcon(e);
+                row.dataset.nat = own ? '' : '1';
         row.style.top = (i * rowH) + 'px';
-        const iconHtml = this._nativeIcons.has(path)
+        const iconHtml = (!own && this._nativeIcons.has(path))
           ? `<img class="row__native-icon" src="${this._nativeIcons.get(path)}" width="16" height="16" alt="" draggable="false">`
           : fileIcon(e);
         let size;
@@ -916,29 +966,30 @@ export class FilePanel extends Component {
     });
   }
 
-  /** Ленивая загрузка нативных иконок для видимых строк.
-   *  Запрашивает только те, которых ещё нет в кэше и не в процессе загрузки.
-   *  При получении — обновляет только иконку в DOM, не перерисовывая всю строку. */
+  /** Lazy loading of native icons for the visible rows.
+   *  Requests only those not yet in the cache and not already loading.
+   *  On receipt — updates only the icon in the DOM, without re-rendering the whole row. */
   loadNativeIcons() {
     if (!this._nativeIcons) return;
     const rows = this.listEl.querySelectorAll('.row');
     const paths = [];
     for (const row of rows) {
+      if (row.dataset.nat !== '1') continue; // we already have our own icon for this one
       const p = row.dataset.path;
       if (p && !this._nativeIcons.has(p) && !this._iconPending.has(p)) {
         paths.push(p);
         this._iconPending.add(p);
-        if (paths.length >= 30) break; // лимит одновременных запросов
+        if (paths.length >= 30) break; // limit on concurrent requests
       }
     }
     if (!paths.length) return;
-    // Запускаем запросы параллельно, каждый сам обновит DOM
+    // Fire the requests in parallel; each updates the DOM itself
     for (const p of paths) {
       nativeIcon(p, 16).then((result) => {
         this._iconPending.delete(p);
         if (result && result.dataUrl) {
           this._nativeIcons.set(p, result.dataUrl);
-          // Обновляем иконку в DOM без полного перерендера
+          // Update the icon in the DOM without a full re-render
           const iconSpan = this.listEl.querySelector(`.row[data-path="${CSS.escape(p)}"] .row__icon`);
           if (iconSpan && !iconSpan.querySelector('.row__native-icon')) {
             iconSpan.innerHTML = `<img class="row__native-icon" src="${result.dataUrl}" width="16" height="16" alt="" draggable="false">`;
@@ -946,7 +997,7 @@ export class FilePanel extends Component {
         }
       }).catch(() => {
         this._iconPending.delete(p);
-        // Фолбэк на SVG уже отрисован — ничего не делаем
+        // The SVG fallback is already rendered — do nothing
       });
     }
   }

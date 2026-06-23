@@ -65,7 +65,7 @@ fn node_meta(conn: &Connection, path: &str) -> (String, bool) {
         Some((name, is_dir)) => (name, is_dir),
         None => {
             let name = path
-                .rsplit(|c| c == '\\' || c == '/')
+                .rsplit(['\\', '/'])
                 .next()
                 .unwrap_or(path)
                 .to_string();

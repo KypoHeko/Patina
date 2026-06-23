@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createShortcuts } from '../core/shortcuts.js';
 
-// Хелпер: отправить keydown с заданными модификаторами от конкретной цели.
+// Helper: dispatch a keydown with the given modifiers from a specific target.
 function press(key, { ctrl = false, shift = false, alt = false, meta = false, target = document.body } = {}) {
   const ev = new KeyboardEvent('keydown', {
     key,
@@ -28,7 +28,7 @@ describe('createShortcuts', () => {
     sc = null;
   });
 
-  it('вызывает обработчик зарегистрированного действия по комбинации', () => {
+  it('calls the registered action handler for a combo', () => {
     sc = createShortcuts([{ combo: 'ctrl+k', action: 'palette' }]);
     const fn = vi.fn();
     sc.register('palette', fn);
@@ -36,15 +36,15 @@ describe('createShortcuts', () => {
     expect(fn).toHaveBeenCalledTimes(1);
   });
 
-  it('не реагирует без нужного модификатора', () => {
+  it('does not react without the required modifier', () => {
     sc = createShortcuts([{ combo: 'ctrl+k', action: 'palette' }]);
     const fn = vi.fn();
     sc.register('palette', fn);
-    press('k'); // без ctrl
+    press('k'); // without ctrl
     expect(fn).not.toHaveBeenCalled();
   });
 
-  it('различает ctrl+shift+t и ctrl+t', () => {
+  it('distinguishes ctrl+shift+t from ctrl+t', () => {
     sc = createShortcuts([
       { combo: 'ctrl+t', action: 'new' },
       { combo: 'ctrl+shift+t', action: 'reopen' },
@@ -63,7 +63,7 @@ describe('createShortcuts', () => {
     expect(newTab).toHaveBeenCalledTimes(1);
   });
 
-  it('metaKey (Cmd на macOS) трактуется как ctrl', () => {
+  it('metaKey (Cmd on macOS) is treated as ctrl', () => {
     sc = createShortcuts([{ combo: 'ctrl+k', action: 'palette' }]);
     const fn = vi.fn();
     sc.register('palette', fn);
@@ -71,7 +71,7 @@ describe('createShortcuts', () => {
     expect(fn).toHaveBeenCalledTimes(1);
   });
 
-  it('регистр клавиши не важен (K и k)', () => {
+  it('key case does not matter (K and k)', () => {
     sc = createShortcuts([{ combo: 'ctrl+k', action: 'palette' }]);
     const fn = vi.fn();
     sc.register('palette', fn);
@@ -79,14 +79,14 @@ describe('createShortcuts', () => {
     expect(fn).toHaveBeenCalledTimes(1);
   });
 
-  it('preventDefault вызывается при срабатывании', () => {
+  it('preventDefault is called when triggered', () => {
     sc = createShortcuts([{ combo: 'ctrl+k', action: 'palette' }]);
     sc.register('palette', () => {});
     const ev = press('k', { ctrl: true });
     expect(ev.defaultPrevented).toBe(true);
   });
 
-  it('не перехватывает клавиши при наборе в <input>', () => {
+  it('does not intercept keys while typing in <input>', () => {
     sc = createShortcuts([{ combo: 'ctrl+k', action: 'palette' }]);
     const fn = vi.fn();
     sc.register('palette', fn);
@@ -96,24 +96,24 @@ describe('createShortcuts', () => {
     expect(fn).not.toHaveBeenCalled();
   });
 
-  it('не перехватывает в contentEditable', () => {
+  it('does not intercept in contentEditable', () => {
     sc = createShortcuts([{ combo: 'ctrl+k', action: 'palette' }]);
     const fn = vi.fn();
     sc.register('palette', fn);
     const div = document.createElement('div');
-    div.isContentEditable = true; // jsdom не вычисляет это сам — задаём явно
+    div.isContentEditable = true; // jsdom doesn't compute this itself — set it explicitly
     document.body.appendChild(div);
     press('k', { ctrl: true, target: div });
     expect(fn).not.toHaveBeenCalled();
   });
 
-  it('комбинация без зарегистрированного обработчика безопасно игнорируется', () => {
+  it('a combo without a registered handler is safely ignored', () => {
     sc = createShortcuts([{ combo: 'ctrl+k', action: 'palette' }]);
-    // обработчик не зарегистрирован
+    // handler is not registered
     expect(() => press('k', { ctrl: true })).not.toThrow();
   });
 
-  it('destroy снимает глобальный слушатель', () => {
+  it('destroy removes the global listener', () => {
     sc = createShortcuts([{ combo: 'ctrl+k', action: 'palette' }]);
     const fn = vi.fn();
     sc.register('palette', fn);

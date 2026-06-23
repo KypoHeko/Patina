@@ -34,7 +34,7 @@
   color: var(--text);
   border-color: var(--border-strong);
 }
-/* У цветной вкладки фон — градиент (см. has-color); текст делаем читаемее. */
+/* A colored tab has a gradient background (see has-color); make the text more readable. */
 .tab.has-color {
   color: #fff;
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);

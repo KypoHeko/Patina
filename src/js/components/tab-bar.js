@@ -9,7 +9,7 @@ import { t, tagLabel } from '../lib/i18n.js';
 const TAG_BY_ID = Object.fromEntries(TAGS.map((t) => [t.id, t]));
 const DEFAULT_TAB_COLOR = '#3a3a48';
 
-// Сведения по одной стороне вкладки: цвет фона, цвет-точка тега, подпись.
+// Info for one side of a tab: background color, tag color dot, label.
 function sideInfo(pane) {
   const p = pane.path || '';
   if (p.startsWith('tag:')) {
@@ -19,8 +19,8 @@ function sideInfo(pane) {
   return { color: pathToColor(p), dot: null, label: folderName(p) || '—' };
 }
 
-// Полоса вкладок. Цвет вкладки выводится из пути её папки; при расколе —
-// градиент слева направо из двух цветов. Цвет текста подбирается по яркости.
+// Tab strip. A tab's color is derived from its folder path; when split —
+// a left-to-right gradient of two colors. Text color is chosen by brightness.
 function appendSide(container, info) {
   if (info.dot) {
     container.append(
@@ -58,7 +58,7 @@ export class TabBar extends Component {
     this.render(state);
   }
 
-  /** Перерисовка при смене языка: сбрасываем сигнатуру, чтобы maybeRender сработал. */
+  /** Re-render on language change: reset the signature so maybeRender fires. */
   applyLang() {
     this._sig = null;
     this.maybeRender(this.store.getState());
@@ -118,7 +118,7 @@ export class TabBar extends Component {
 
   onDragOver(e) {
     if (!this._dragId) return;
-    e.preventDefault(); // вся полоса вкладок — зона сброса
+    e.preventDefault(); // the whole tab strip is a drop zone
     this.clearIndicators();
     const overTab = e.target.closest('[data-tab]');
     if (overTab && overTab.dataset.tab !== this._dragId) {
@@ -129,7 +129,7 @@ export class TabBar extends Component {
       if (add) add.classList.add('is-drop-end');
       this._dropTarget = '__end__';
     } else {
-      this._dropTarget = null; // над самой перетаскиваемой вкладкой
+      this._dropTarget = null; // over the dragged tab itself
     }
   }
 

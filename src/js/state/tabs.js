@@ -180,3 +180,73 @@ export function moveTab(store, fromId, toId) {
     return { tabs };
   });
 }
+
+/* ── Persistence: keep open tabs across restarts ───────────────────────────
+   We store only what is needed to rebuild the workspace — each tab's pane
+   paths plus its layout (split / active side / color) and which tab was
+   active. Runtime data (entries, history, selection) is intentionally NOT
+   persisted; panes re-navigate to their saved path on load. */
+
+const TABS_KEY = 'patina:tabs';
+const TABS_VERSION = 1;
+const MAX_PERSISTED_TABS = 50;
+
+/** Minimal serializable snapshot of the open tabs. */
+export function serializeTabs(state) {
+  const tabs = (state.tabs || []).slice(0, MAX_PERSISTED_TABS).map((t) => ({
+    l: t.panes.left.path || '',
+    r: t.split ? t.panes.right.path || '' : '',
+    split: !!t.split,
+    side: t.activeSide === 'right' ? 'right' : 'left',
+    color: t.color || null,
+  }));
+  const activeIndex = Math.max(
+    0,
+    (state.tabs || []).findIndex((t) => t.id === state.activeTabId),
+  );
+  return { v: TABS_VERSION, activeIndex, tabs };
+}
+
+/** Persist the current tabs (best-effort; storage may be unavailable/full). */
+export function saveTabs(state) {
+  try {
+    const data = serializeTabs(state);
+    if (!data.tabs.length) return;
+    localStorage.setItem(TABS_KEY, JSON.stringify(data));
+  } catch {
+    /* ignore storage errors */
+  }
+}
+
+/** Read the saved snapshot, or null if absent/invalid/old. */
+export function loadSavedTabs() {
+  try {
+    const raw = localStorage.getItem(TABS_KEY);
+    if (!raw) return null;
+    const data = JSON.parse(raw);
+    if (!data || data.v !== TABS_VERSION || !Array.isArray(data.tabs) || !data.tabs.length) {
+      return null;
+    }
+    return data;
+  } catch {
+    return null;
+  }
+}
+
+/** Rebuild a tabs state ({ tabs, activeTabId }) from a snapshot, or null. */
+export function restoreTabs(saved) {
+  if (!saved || !Array.isArray(saved.tabs) || !saved.tabs.length) return null;
+  const tabs = saved.tabs.slice(0, MAX_PERSISTED_TABS).map((s) => {
+    const tab = makeTab('');
+    tab.panes.left = makePane(typeof s.l === 'string' ? s.l : '');
+    tab.split = !!s.split;
+    tab.panes.right = makePane(tab.split && typeof s.r === 'string' ? s.r : '');
+    tab.activeSide = s.side === 'right' && tab.split ? 'right' : 'left';
+    tab.color = s.color || null;
+    return tab;
+  });
+  const idx = Number.isInteger(saved.activeIndex)
+    ? Math.min(Math.max(saved.activeIndex, 0), tabs.length - 1)
+    : 0;
+  return { tabs, activeTabId: tabs[idx].id };
+}

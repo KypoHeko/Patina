@@ -2,81 +2,81 @@ import { describe, it, expect } from 'vitest';
 import { parentPath, folderName, isRoot, pathCrumbs } from '../lib/paths.js';
 
 describe('parentPath', () => {
-  it('POSIX: возвращает родительский каталог', () => {
+  it('POSIX: returns the parent directory', () => {
     expect(parentPath('/home/user/docs')).toBe('/home/user');
   });
 
-  it('POSIX: корень возвращает null', () => {
+  it('POSIX: root returns null', () => {
     expect(parentPath('/')).toBeNull();
   });
 
-  it('POSIX: односегментный путь — null', () => {
+  it('POSIX: single-segment path → null', () => {
     expect(parentPath('/home')).toBeNull();
   });
 
-  it('Windows: возвращает родительский каталог', () => {
+  it('Windows: returns the parent directory', () => {
     expect(parentPath('C:\\Users\\admin')).toBe('C:\\Users');
   });
 
-  it('Windows: корень диска возвращает null', () => {
+  it('Windows: drive root returns null', () => {
     expect(parentPath('C:\\')).toBeNull();
   });
 
-  it('Windows: подъём до буквы диска добавляет обратный слеш', () => {
-    // "C:" без слеша — это «текущая папка на диске C», не корень.
-    // parentPath("C:\\foo") = "C:" → должно стать "C:\"
+  it('Windows: going up to the drive letter adds a backslash', () => {
+    // "C:" without a slash is the "current folder on drive C", not the root.
+    // parentPath("C:\\foo") = "C:" → should become "C:\"
     expect(parentPath('C:\\foo')).toBe('C:\\');
   });
 
-  it('убирает конечные слеши', () => {
+  it('strips trailing slashes', () => {
     expect(parentPath('/home/user/docs/')).toBe('/home/user');
     expect(parentPath('C:\\Users\\admin\\')).toBe('C:\\Users');
   });
 });
 
 describe('folderName', () => {
-  it('POSIX: извлекает последний сегмент', () => {
+  it('POSIX: extracts the last segment', () => {
     expect(folderName('/home/user/docs')).toBe('docs');
   });
 
-  it('POSIX: корень — /', () => {
+  it('POSIX: root is /', () => {
     expect(folderName('/')).toBe('/');
   });
 
-  it('Windows: извлекает последний сегмент', () => {
+  it('Windows: extracts the last segment', () => {
     expect(folderName('C:\\Users\\admin')).toBe('admin');
   });
 
-  it('Windows: корень диска — буква', () => {
+  it('Windows: drive root is the letter', () => {
     expect(folderName('C:\\')).toBe('C:');
   });
 
-  it('пустая строка', () => {
+  it('empty string', () => {
     expect(folderName('')).toBe('');
   });
 });
 
 describe('isRoot', () => {
-  it('POSIX корень', () => {
+  it('POSIX root', () => {
     expect(isRoot('/')).toBe(true);
   });
 
-  it('Windows корень с обратным слешем', () => {
+  it('Windows root with backslash', () => {
     expect(isRoot('C:\\')).toBe(true);
   });
 
-  it('Windows корень с прямым слешем', () => {
+  it('Windows root with forward slash', () => {
     expect(isRoot('C:/')).toBe(true);
   });
 
-  it('не корень', () => {
+  it('not a root', () => {
     expect(isRoot('/home')).toBe(false);
     expect(isRoot('C:\\Users')).toBe(false);
   });
 });
 
 describe('pathCrumbs', () => {
-  it('POSIX путь разбивается на крошки', () => {
+  it('POSIX path splits into crumbs', () => {
     const crumbs = pathCrumbs('/home/user/docs');
     expect(crumbs).toEqual([
       { label: '/', path: '/' },
@@ -86,7 +86,7 @@ describe('pathCrumbs', () => {
     ]);
   });
 
-  it('Windows путь разбивается на крошки', () => {
+  it('Windows path splits into crumbs', () => {
     const crumbs = pathCrumbs('C:\\Users\\admin');
     expect(crumbs).toEqual([
       { label: 'C:', path: 'C:\\' },
@@ -95,15 +95,15 @@ describe('pathCrumbs', () => {
     ]);
   });
 
-  it('пустая строка — пустой массив', () => {
+  it('empty string → empty array', () => {
     expect(pathCrumbs('')).toEqual([]);
   });
 
-  it('POSIX корень — один элемент', () => {
-    // '/' после trim → '' → возвращает пустой массив (конечный слеш убран)
+  it('POSIX root → single element', () => {
+    // '/' after trim → '' → returns an empty array (trailing slash removed)
     const crumbs = pathCrumbs('/');
-    // Реализация: trimmed.replace(/[\\/]+$/, '') на '/' даёт ''
-    // поэтому результат — пустой массив
+    // Implementation: trimmed.replace(/[\\/]+$/, '') on '/' yields ''
+    // so the result is an empty array
     expect(crumbs).toEqual([]);
   });
 });

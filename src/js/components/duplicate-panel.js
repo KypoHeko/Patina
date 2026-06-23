@@ -9,7 +9,7 @@ import { getPane } from '../state/panes.js';
 import { getActiveSide } from '../state/tabs.js';
 import { t } from '../lib/i18n.js';
 
-// Выдвижная панель поиска дубликатов (Ctrl+D) по папке активной панели.
+// Slide-out duplicate-search panel (Ctrl+D) for the active panel's folder.
 export class DuplicatePanel extends Component {
   init() {
     this._open = false;
@@ -25,8 +25,8 @@ export class DuplicatePanel extends Component {
     });
     this.on(this.mount, 'click', (e) => this.onClick(e));
 
-    // Прогресс хеширования из бэкенда — обновляем индикатор, не перерисовывая
-    // всю панель на каждый тик.
+    // Hashing progress from the backend — update the indicator without
+    // re-rendering the whole panel on every tick.
     onEvent('dups:progress', (p) => this.onProgress(p)).then((un) => this._cleanups.push(un));
   }
 
@@ -34,6 +34,7 @@ export class DuplicatePanel extends Component {
     const state = this.store.getState();
     this._dir = getPane(state, getActiveSide(state)).path;
     this._open = true;
+    document.getElementById('duplicates-btn')?.classList.add('is-on');
     this._loading = true;
     this._groups = [];
     this._progress = null;
@@ -46,7 +47,7 @@ export class DuplicatePanel extends Component {
     try {
       this._groups = (await findDuplicates(this._dir)) || [];
     } catch (err) {
-      this.bus.emit('shortcut:hint', t('dup.scanError', { msg: err.message }));
+      this.bus.emit('shortcut:hint', { text: t('dup.scanError', { msg: err.message }), type: 'error' });
       this._groups = [];
     }
     this._loading = false;
@@ -56,7 +57,7 @@ export class DuplicatePanel extends Component {
   onProgress(p) {
     this._progress = p;
     if (!this._open || !this._loading) return;
-    // Точечно обновляем только строку прогресса (без перерисовки панели).
+    // Update only the progress line in place (without re-rendering the panel).
     const el = this.mount.querySelector('.dup__progress');
     if (el) el.textContent = this.progressText();
     else this.render();
@@ -70,6 +71,7 @@ export class DuplicatePanel extends Component {
   close() {
     if (!this._open) return;
     this._open = false;
+    document.getElementById('duplicates-btn')?.classList.remove('is-on');
     if (this.mainEl) this.mainEl.classList.remove('has-dup');
     this.mount.innerHTML = '';
   }
@@ -87,7 +89,7 @@ export class DuplicatePanel extends Component {
         .filter((g) => g.paths.length > 1);
       this.render();
     } catch (err) {
-      this.bus.emit('shortcut:hint', t('panel.deleteError', { msg: err.message }));
+      this.bus.emit('shortcut:hint', { text: t('panel.deleteError', { msg: err.message }), type: 'error' });
     }
   }
 
@@ -104,7 +106,7 @@ export class DuplicatePanel extends Component {
     if (del) this.removePaths([del.dataset.del]);
   }
 
-  /** Перерисовка при смене языка. Сохраняет найденные группы. */
+  /** Re-render on language change. Preserves the found groups. */
   applyLang() {
     if (!this._open) return;
     this.render();
@@ -115,6 +117,9 @@ export class DuplicatePanel extends Component {
       this.mount.innerHTML = '';
       return;
     }
+    // Preserve scroll position across re-renders: acting on Keep/Delete deep in
+    // a long list must not snap the view back to the top.
+    const prevScroll = this.mount.querySelector('.dup__body')?.scrollTop || 0;
     const total = this._groups.reduce((n, g) => n + g.paths.length - 1, 0);
     const body = this._loading
       ? `<div class="dup__msg"><span class="dup__spinner" aria-hidden="true"></span><span class="dup__progress">${this.progressText()}</span></div>`
@@ -135,6 +140,11 @@ export class DuplicatePanel extends Component {
         </div>
         <div class="dup__body">${body}</div>
       </div>`;
+
+    if (prevScroll) {
+      const bodyEl = this.mount.querySelector('.dup__body');
+      if (bodyEl) bodyEl.scrollTop = prevScroll;
+    }
   }
 
   renderGroup(g, i) {

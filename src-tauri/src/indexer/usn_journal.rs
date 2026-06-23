@@ -59,11 +59,10 @@ pub fn sync_from_journal(
 
     // Targeted update of the file index for the changed paths
     for path in &changes.modified {
-        if let Some(row) = crate::indexer::build_row_from_path(path) {
-            if crate::index::file_index::upsert_one(conn, &row).is_ok() {
+        if let Some(row) = crate::indexer::build_row_from_path(path)
+            && crate::index::file_index::upsert_one(conn, &row).is_ok() {
                 upserted += 1;
             }
-        }
     }
 
     // Delete rows for removed files

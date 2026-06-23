@@ -12,7 +12,7 @@ function makeCtx() {
 }
 
 describe('Component', () => {
-  it('конструктор сохраняет mount, store, bus', () => {
+  it('constructor stores mount, store, bus', () => {
     const ctx = makeCtx();
     const c = new Component(ctx);
     expect(c.mount).toBe(ctx.mount);
@@ -20,7 +20,7 @@ describe('Component', () => {
     expect(c.bus).toBe(ctx.bus);
   });
 
-  it('subscribe подписывается на store, отписка при destroy', () => {
+  it('subscribe subscribes to the store, unsubscribes on destroy', () => {
     const ctx = makeCtx();
     const c = new Component(ctx);
     c.init();
@@ -30,10 +30,10 @@ describe('Component', () => {
     expect(spy).toHaveBeenCalledTimes(1);
     c.destroy();
     ctx.store.setState({ val: 2 });
-    expect(spy).toHaveBeenCalledTimes(1); // больше не вызывается
+    expect(spy).toHaveBeenCalledTimes(1); // no longer called
   });
 
-  it('listen подписывается на bus, отписка при destroy', () => {
+  it('listen subscribes to the bus, unsubscribes on destroy', () => {
     const ctx = makeCtx();
     const c = new Component(ctx);
     c.init();
@@ -46,7 +46,7 @@ describe('Component', () => {
     expect(spy).toHaveBeenCalledTimes(1);
   });
 
-  it('on добавляет слушатель, снимает при destroy', () => {
+  it('on adds a listener, removes it on destroy', () => {
     const ctx = makeCtx();
     const btn = document.createElement('button');
     document.body.appendChild(btn);
@@ -62,7 +62,7 @@ describe('Component', () => {
     btn.remove();
   });
 
-  it('destroy очищает mount innerHTML', () => {
+  it('destroy clears mount innerHTML', () => {
     const ctx = makeCtx();
     ctx.mount.innerHTML = '<span>hello</span>';
     const c = new Component(ctx);
@@ -71,7 +71,7 @@ describe('Component', () => {
     expect(ctx.mount.innerHTML).toBe('');
   });
 
-  it('addChild: дочерний компонент уничтожается вместе с родителем', () => {
+  it('addChild: child component is destroyed together with the parent', () => {
     const ctx = makeCtx();
     const childMount = document.createElement('div');
     ctx.mount.appendChild(childMount);
@@ -86,7 +86,7 @@ describe('Component', () => {
     expect(spy).not.toHaveBeenCalled();
   });
 
-  it('двойной destroy не бросает исключение', () => {
+  it('double destroy does not throw', () => {
     const ctx = makeCtx();
     const c = new Component(ctx);
     c.init();

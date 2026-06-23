@@ -59,9 +59,7 @@ pub fn chunk_file(path: &str) -> Result<Vec<Chunk>> {
     let lookup = build_lookup();
 
     // Reset the window
-    for b in &mut window {
-        *b = 0;
-    }
+    window.fill(0);
 
     // Buffered read: this used to be [0u8; 1] with a read syscall per byte —
     // for a 15 MB file that is ~15 million syscalls. Now we read in 256 KB

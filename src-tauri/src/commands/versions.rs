@@ -111,13 +111,12 @@ fn do_snapshot(db: &std::sync::Mutex<rusqlite::Connection>, versions_dir: &Path,
         // Materialize the blob outside the lock. If the file does not exist yet,
         // write it; if the write fails, roll back the just-inserted row so no
         // version is left referencing a non-existent blob.
-        if !blob.exists() {
-            if let Err(e) = std::fs::write(&blob, &compressed).map_err(Error::Io) {
+        if !blob.exists()
+            && let Err(e) = std::fs::write(&blob, &compressed).map_err(Error::Io) {
                 let conn = db.lock().map_err(|_| Error::Operation("DB lock poisoned".into()))?;
                 let _ = versions::delete(&conn, new_id);
                 return Err(e);
             }
-        }
 
         // NOTE: dictionary training/retraining happens in one place —
         // in `snapshot_version` after `do_snapshot`.
@@ -192,7 +191,7 @@ fn maybe_train_dict_with_dir(
     }
 
     let max_samples = 20;
-    let max_sample_size = 1 * 1024 * 1024;
+    let max_sample_size = 1024 * 1024;
 
     let rows: Vec<(String, Option<i64>)> = {
         let conn = db.lock().map_err(|_| Error::Operation("DB lock poisoned".into()))?;

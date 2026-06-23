@@ -168,7 +168,7 @@ pub struct Storage {
 }
 
 /// List of volumes: mount point, kind (SSD/HDD), used/total.
-/// The "Cloud" kind is not detected via sysinfo — it shows as "Диск".
+/// The "Cloud" kind is not detected via sysinfo — it shows as a plain "Disk".
 /// Bounded by a 5 s timeout — sysinfo can hang on network volumes.
 #[tauri::command]
 pub async fn list_storage() -> Vec<Storage> {
@@ -258,15 +258,14 @@ pub async fn native_icon(app: AppHandle, path: String, size: u32) -> Result<Opti
         let cache_path = state.thumbs_dir.join(format!("icon_{cache_key}.bin"));
 
         // Check the cache
-        if let Ok(cached) = std::fs::read(&cache_path) {
-            if let Ok(data_url) = String::from_utf8(cached) {
+        if let Ok(cached) = std::fs::read(&cache_path)
+            && let Ok(data_url) = String::from_utf8(cached) {
                 return Ok(Some(NativeIconResult {
                     data_url,
                     width: size,
                     height: size,
                 }));
             }
-        }
 
         // Get the native icon
         let icon = crate::platform::get_native_icon(&path, size);

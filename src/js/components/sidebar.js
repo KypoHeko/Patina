@@ -16,14 +16,14 @@ const LOC_ICON = {
   drive: '💽',
 };
 
-// Подпись для добавленной папки — последний сегмент пути.
+// Label for an added folder — the last path segment.
 function baseLabel(path) {
   const trimmed = path.replace(/[\\/]+$/, '');
   const parts = trimmed.split(/[\\/]/);
   return parts[parts.length - 1] || trimmed || path;
 }
 
-// Боковая панель: сворачиваемые секции «Быстрый доступ», «Хранилище», «Теги».
+// Sidebar: collapsible "Quick Access", "Storage", "Tags" sections.
 export class Sidebar extends Component {
   init() {
     this._collapsed = { quick: false, storage: false, tags: false };
@@ -31,7 +31,7 @@ export class Sidebar extends Component {
     this._quick = [];
     this.renderFrame();
     this.on(this.mount, 'click', (e) => this.onClick(e));
-    // Drag-and-drop быстрого доступа.
+    // Quick-access drag-and-drop.
     this.on(this.mount, 'dragstart', (e) => this.onQuickDragStart(e));
     this.on(this.mount, 'dragover', (e) => this.onQuickDragOver(e));
     this.on(this.mount, 'dragleave', (e) => this.onQuickDragLeave(e));
@@ -52,9 +52,9 @@ export class Sidebar extends Component {
     this.renderTags();
   }
   
-  /** Перерисовать секции и теги при смене языка. Сохраняет свёрнутые секции. */
+  /** Re-render sections and tags on language change. Preserves collapsed sections. */
   applyLang() {
-    // Обновляем заголовки секций на месте — body не трогаем, там данные.
+    // Update section headers in place — leave the body alone, it holds data.
     const titles = { quick: t('sidebar.quick'), storage: t('sidebar.storage'), tags: t('sidebar.tags') };
     for (const [key, label] of Object.entries(titles)) {
       const head = this.mount.querySelector(`[data-toggle="${key}"]`);
@@ -83,9 +83,9 @@ export class Sidebar extends Component {
   }
 
   async load() {
-    // Сначала загружаем быстрые данные (quickAccess + tagCounts).
-    // listStorage() через sysinfo может занимать 10–30 с на Linux —
-    // откладываем его, чтобы не блокировать первый показ контента.
+    // First load the fast data (quickAccess + tagCounts).
+    // listStorage() via sysinfo can take 10–30 s on Linux —
+    // defer it so it does not block the first content paint.
     try {
       const [quick, counts] = await Promise.all([quickAccess(), tagCounts()]);
       this._counts = counts || {};
@@ -95,7 +95,7 @@ export class Sidebar extends Component {
     } catch (err) {
       console.error('[patina] sidebar:', err);
     }
-    // Хранилище — фоновой загрузкой, после того как панель уже отрисована.
+    // Storage — loaded in the background, after the panel is already rendered.
     requestIdleCallback(() => this.loadStorage());
   }
 
@@ -109,7 +109,7 @@ export class Sidebar extends Component {
     }
   }
 
-  /* ── Быстрый доступ ─────────────────────────── */
+  /* ── Quick access ───────────────────────────── */
 
   fillQuick(locations) {
     this._quick = Array.isArray(locations) ? locations.slice() : [];
@@ -147,7 +147,7 @@ export class Sidebar extends Component {
     return !!body && body.contains(node);
   }
 
-  /** Индекс вставки по позиции курсора (перед элементом, над которым он находится). */
+  /** Insertion index by cursor position (before the item it is hovering over). */
   _insertIndexAt(clientY) {
     const body = this._quickBody();
     if (!body) return 0;
@@ -184,7 +184,7 @@ export class Sidebar extends Component {
     item.classList.add('is-dragging');
     e.dataTransfer.effectAllowed = 'move';
     e.dataTransfer.setData('application/x-patina-quick', this._dragPath);
-    // Esc отличаем от «бросили наружу», чтобы отмена перетаскивания не удаляла пункт.
+    // Distinguish Esc from "dropped outside", so cancelling a drag does not remove the item.
     this._escGuard = (ev) => {
       if (ev.key === 'Escape') this._dragCancelled = true;
     };
@@ -244,7 +244,7 @@ export class Sidebar extends Component {
       .querySelectorAll('.sidebar__item.is-dragging')
       .forEach((n) => n.classList.remove('is-dragging'));
     this._clearDropMarker();
-    // Брошен вне блока (и это не отмена по Esc) → убираем из быстрого доступа.
+    // Dropped outside the block (and not an Esc cancel) → remove from quick access.
     if (dragged && !this._droppedInside && !this._dragCancelled) this._removeQuick(dragged);
   }
 
@@ -253,7 +253,7 @@ export class Sidebar extends Component {
     if (from < 0) return;
     const [moved] = this._quick.splice(from, 1);
     let to = toIndex;
-    if (from < to) to -= 1; // компенсация после удаления исходного
+    if (from < to) to -= 1; // compensate after removing the source
     to = Math.max(0, Math.min(this._quick.length, to));
     this._quick.splice(to, 0, moved);
     this.renderQuick();
@@ -276,7 +276,7 @@ export class Sidebar extends Component {
       this.renderQuick();
       this._saveQuick();
     } else {
-      this.bus.emit('shortcut:hint', t('sidebar.alreadyInQuick'));
+      this.bus.emit('shortcut:hint', { text: t('sidebar.alreadyInQuick'), type: 'warn' });
     }
   }
 
@@ -297,7 +297,7 @@ export class Sidebar extends Component {
     }
   }
 
-  /* ── Хранилище и теги ───────────────────────── */
+  /* ── Storage and tags ───────────────────────── */
 
   fillStorage(disks) {
     const body = this.mount.querySelector('[data-section="storage"]');

@@ -172,7 +172,7 @@ fn normalize(p: &Path) -> PathBuf {
 /// the file exists (for extensionless imports, common extensions are tried).
 pub fn resolve(src_path: &str, raw: &str) -> Option<String> {
     let t = raw.trim();
-    let t = t.split(|c| c == '#' || c == '?').next().unwrap_or("").trim();
+    let t = t.split(['#', '?']).next().unwrap_or("").trim();
     if t.is_empty() || t.starts_with("//") || t.contains("://") {
         return None;
     }

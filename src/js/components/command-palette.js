@@ -8,16 +8,17 @@ import { onEvent } from '../api/events.js';
 import { TAGS } from '../config/tags.js';
 import { fileIcon } from '../lib/icons.js';
 import { getPane } from '../state/panes.js';
+import { pathKey } from '../lib/paths.js';
 import { getActiveSide } from '../state/tabs.js';
 import { safeRegExp } from '../lib/regex.js';
 import { t, tagLabel } from '../lib/i18n.js';
 
 const TAG_COLOR = Object.fromEntries(TAGS.map((t) => [t.id, t.color]));
-const DISPLAY_CAP = 300; // сколько строк показываем разом
-const TREE_LIMIT = 20000; // потолок обхода поддерева
+const DISPLAY_CAP = 300; // how many rows we show at once
+const TREE_LIMIT = 20000; // ceiling for the subtree walk
 
-// Палитра поиска: имя (или regex) + теги, с выбором области —
-// текущая папка либо всё поддерево (кросс-папочный поиск через бэкенд).
+// Search palette: name (or regex) + tags, with a scope selector —
+// the current folder or the whole subtree (cross-folder search via the backend).
 export class CommandPalette extends Component {
   init() {
     this._open = false;
@@ -27,8 +28,8 @@ export class CommandPalette extends Component {
     this._loading = false;
     this._entries = [];
     this._folderEntries = [];
-    this._tags = {}; // path -> [tagId] (точки, лениво)
-    this._tagFilter = null; // Set<path> | null — фильтр по активным тегам
+    this._tags = {}; // path -> [tagId] (dots, lazily)
+    this._tagFilter = null; // Set<path> | null — filter by active tags
     this._activeTags = new Set();
     this._regex = false;
     this._query = '';
@@ -48,8 +49,8 @@ export class CommandPalette extends Component {
     this._lastSig = '';
 
     this.listen('palette:open', () => (this._open ? this.close() : this.open()));
-    // Свежесть индексов теперь держит бэкенд (рекурсивный вотчер); по событию
-    // лишь переспрашиваем текущий запрос.
+    // Index freshness is now maintained by the backend (recursive watcher); on an
+    // event we just re-run the current query.
     onEvent('index:ready', () => this.onIndexEvent());
     onEvent('index:changed', () => this.onIndexEvent());
     this.on(document, 'keydown', (e) => {
@@ -109,14 +110,14 @@ export class CommandPalette extends Component {
       return;
     }
 
-    // поддерево — из персистентного индекса; запрос уходит на сервер по вводу
+    // subtree — from the persistent index; the query goes to the server on input
     this._treeBase = null;
     this.runTreeQuery();
   }
 
   onTreeInput() {
     if (this._regex) {
-      this.runTreeQuery(); // regex фильтруется на фронте по кешу базы
+      this.runTreeQuery(); // regex is filtered on the front end against the cached base
     } else {
       clearTimeout(this._treeTimer);
       this._treeTimer = setTimeout(() => this.runTreeQuery(), 150);
@@ -139,8 +140,8 @@ export class CommandPalette extends Component {
       this._resultsEl.innerHTML = `<div class="palette__empty">${escapeHtml(text)}</div>`;
   }
 
-  // Обычный режим — серверный подстрочный поиск (мало данных через IPC).
-  // Regex — один раз тянем базовый набор корня и фильтруем на фронте.
+  // Normal mode — server-side substring search (little data over IPC).
+  // Regex — fetch the root's base set once and filter on the front end.
   runTreeQuery(silent = false) {
     const root = this._root;
     const q = this._query.trim();
@@ -151,7 +152,7 @@ export class CommandPalette extends Component {
       return;
     }
 
-    if (!silent) this._lastSig = '';
+    if (!silent) this._lastSig = null; // null, so an empty result still re-renders (clears loading)
 
     if (this._regex && this._treeBase) {
       this.commitResults(this._treeBase, seq);
@@ -205,27 +206,27 @@ export class CommandPalette extends Component {
     return startIndex(root, true).catch(() => {});
   }
 
-  // Подпись набора результатов: пути + сниппеты. Если не изменилась —
-  // повторную перерисовку пропускаем (убирает мелькание при событиях индекса).
+  // Signature of the result set: paths + snippets. If unchanged, we skip the
+  // re-render (removes flicker on index events).
   _resultsSig(list) {
     let out = '';
     for (const e of list) out += `${e.path}\u0000${e.snippet || ''}\u0001`;
     return out;
   }
 
-  // Зафиксировать результаты запроса с учётом устаревания и без лишних ререндеров.
+  // Commit query results, accounting for staleness and without extra re-renders.
   commitResults(entries, seq) {
     if (seq !== this._scanSeq || !this._open) return;
     this._loading = false;
     const sig = this._resultsSig(entries);
     this._entries = entries;
-    if (sig === this._lastSig) return; // ничего не поменялось — не перерисовываем
+    if (sig === this._lastSig) return; // nothing changed — do not re-render
     this._lastSig = sig;
     this.update();
   }
 
-  // Полнотекстовый поиск по содержимому: сервер уже отобрал совпадения,
-  // на фронте только показываем путь и сниппет.
+  // Full-text content search: the server already selected the matches,
+  // the front end just shows the path and snippet.
   runContentQuery(silent = false) {
     const root = this._root;
     const q = this._query.trim();
@@ -235,7 +236,9 @@ export class CommandPalette extends Component {
       return;
     }
     if (!silent) {
-      this._lastSig = '';
+      // null (not '') so an empty result set — whose signature is '' — still
+      // differs from _lastSig and re-renders, clearing the loading spinner.
+      this._lastSig = null;
       this._loading = true;
       this.renderResults();
     }
@@ -254,16 +257,16 @@ export class CommandPalette extends Component {
   filtered() {
     if (this._scope === 'content') {
       let list = this._entries;
-      if (this._tagFilter) list = list.filter((e) => this._tagFilter.has(e.path));
+      if (this._tagFilter) list = list.filter((e) => this._tagFilter.has(pathKey(e.path)));
       return list;
     }
     let list = this._entries;
-    if (this._tagFilter) list = list.filter((e) => this._tagFilter.has(e.path));
+    if (this._tagFilter) list = list.filter((e) => this._tagFilter.has(pathKey(e.path)));
     const q = this._query.trim();
     if (q) {
       if (this._regex) {
         const { ok, re } = safeRegExp(q, 'i');
-        if (!ok) return list;           // небезопасный/битый паттерн — не фильтруем, как и раньше
+        if (!ok) return list;           // unsafe/broken pattern — do not filter, as before
         list = list.filter((e) => re.test(e.name));
       } else {
         const ql = q.toLowerCase();
@@ -278,7 +281,7 @@ export class CommandPalette extends Component {
     this.loadDots();
   }
 
-  // Лениво подгружаем теги только для видимых строк (ограниченный набор).
+  // Lazily load tags only for the visible rows (a bounded set).
   loadDots() {
     if (this._scope === 'content') return;
     const missing = this._results.map((e) => e.path).filter((p) => !(p in this._tags));
@@ -308,7 +311,7 @@ export class CommandPalette extends Component {
       .join('');
   }
 
-  // Фильтр по тегам — глобальные множества путей из БД, пересечение (AND).
+  // Tag filter — global path sets from the DB, intersection (AND).
   rebuildTagFilter() {
     if (!this._activeTags.size) {
       this._tagFilter = null;
@@ -320,9 +323,12 @@ export class CommandPalette extends Component {
     Promise.all(tags.map((t) => pathsForTag(t)))
       .then((lists) => {
         if (seq !== this._tagSeq || !this._open) return;
-        let set = new Set(lists[0] || []);
+        // Keys come back in the index's normalized form (case-folded on
+        // Windows); compare via pathKey so the filter matches folder entries
+        // whose paths are in original case.
+        let set = new Set((lists[0] || []).map(pathKey));
         for (let i = 1; i < lists.length; i++) {
-          const s = new Set(lists[i] || []);
+          const s = new Set((lists[i] || []).map(pathKey));
           set = new Set([...set].filter((p) => s.has(p)));
         }
         this._tagFilter = set;
@@ -379,7 +385,7 @@ export class CommandPalette extends Component {
     );
     head.append(this._input, this._regexBtn);
 
-    // Переключатель области поиска
+    // Search scope switcher
     const scope = el('div', { class: 'palette__scope' });
     this._scopeFolderBtn = el(
       'button',
@@ -448,7 +454,7 @@ export class CommandPalette extends Component {
     if (this._scopeTreeBtn) this._scopeTreeBtn.classList.toggle('is-on', this._scope === 'tree');
     if (this._scopeContentBtn) this._scopeContentBtn.classList.toggle('is-on', this._scope === 'content');
     if (this._input) this._input.placeholder = t(`palette.placeholder.${this._scope}`);
-    // Обновляем titles у кнопок scope — они зависят от treeAllowed.
+    // Update the scope buttons' titles — they depend on treeAllowed.
     if (this._scopeTreeBtn) this._scopeTreeBtn.title = this.treeAllowed ? t('palette.scope.treeHint') : t('palette.scope.disabledTag');
     if (this._scopeContentBtn) this._scopeContentBtn.title = this.treeAllowed ? t('palette.scope.contentHint') : t('palette.scope.disabledTag');
     if (this._reindexBtn) this._reindexBtn.title = t('palette.reindex.title');
@@ -503,11 +509,11 @@ export class CommandPalette extends Component {
     });
   }
   
-  /** Перерисовка при смене языка. Сохраняет открытую палитру, запрос, scope, теги. */
+  /** Re-render on language change. Preserves the open palette, query, scope, tags. */
   applyLang() {
     if (!this._open) return;
     this._syncScopeUI();
-    // Кнопки-чипы тегов: последний ребёнок — текстовая подпись, обновляем её.
+    // Tag chip buttons: the last child is the text label, we update it.
     const chips = this.mount.querySelectorAll('.palette__chip');
     chips.forEach((chip, i) => {
       const tag = TAGS[i];
@@ -537,7 +543,7 @@ export class CommandPalette extends Component {
     }
   }
 
-  // Сброс кэшей индексов имён/содержимого для затронутых внешними изменениями корней.
+  // Reset the name/content index caches for roots affected by external changes.
   onIndexEvent() {
     if (!this._open) return;
     if (this._scope !== 'tree' && this._scope !== 'content') return;

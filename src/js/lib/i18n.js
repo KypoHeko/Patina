@@ -3,7 +3,7 @@
 //
 // Usage:
 //   import { t } from '../lib/i18n.js';
-//   t('panel.empty')                       -> "Папка пуста" / "Folder is empty"
+//   t('panel.empty')                       -> "Folder is empty" (localized per current language)
 //   t('status.selected', { n: 3 })         -> substitutes {n}
 
 import { STRINGS } from '../config/locales.js';

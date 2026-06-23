@@ -87,18 +87,17 @@ pub fn next_label(conn: &Connection, path: &str) -> Result<String> {
     let rows = stmt.query_map([path], |r| r.get::<_, String>(0))?;
     for row in rows {
         let label = row?;
-        if let Some(suffix) = label.strip_prefix('v') {
-            if let Ok(n) = suffix.parse::<i64>() {
-                if n > max_existing {
+        if let Some(suffix) = label.strip_prefix('v')
+            && let Ok(n) = suffix.parse::<i64>()
+                && n > max_existing {
                     max_existing = n;
                 }
-            }
-        }
     }
 
     Ok(format!("v{}", max_existing + 1))
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn insert(
     conn: &Connection,
     path: &str,

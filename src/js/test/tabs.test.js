@@ -18,13 +18,13 @@ function makeStore() {
 }
 
 describe('initialTabsState', () => {
-  it('создаёт одну вкладку', () => {
+  it('creates a single tab', () => {
     const state = initialTabsState();
     expect(state.tabs).toHaveLength(1);
     expect(state.activeTabId).toBe(state.tabs[0].id);
   });
 
-  it('вкладка имеет левую и правую панели', () => {
+  it('a tab has left and right panes', () => {
     const state = initialTabsState();
     const tab = state.tabs[0];
     expect(tab.panes.left).toBeDefined();
@@ -34,7 +34,7 @@ describe('initialTabsState', () => {
 });
 
 describe('getActiveTab', () => {
-  it('возвращает активную вкладку', () => {
+  it('returns the active tab', () => {
     const store = makeStore();
     const tab = getActiveTab(store.getState());
     expect(tab.id).toBe(store.getState().activeTabId);
@@ -42,14 +42,14 @@ describe('getActiveTab', () => {
 });
 
 describe('getActiveSide', () => {
-  it('по умолчанию левая сторона', () => {
+  it('defaults to the left side', () => {
     const store = makeStore();
     expect(getActiveSide(store.getState())).toBe('left');
   });
 });
 
 describe('createTab', () => {
-  it('добавляет вкладку и делает её активной', () => {
+  it('adds a tab and makes it active', () => {
     const store = makeStore();
     const prevCount = store.getState().tabs.length;
     createTab(store);
@@ -60,16 +60,16 @@ describe('createTab', () => {
 });
 
 describe('closeTab', () => {
-  it('закрывает вкладку; если последняя — создаёт новую', () => {
+  it('closes a tab; if it is the last one — creates a new one', () => {
     const store = makeStore();
     const onlyTab = getActiveTab(store.getState());
     closeTab(store, onlyTab.id);
-    // Должна быть 1 вкладка (создана новая)
+    // There should be 1 tab (a new one was created)
     expect(store.getState().tabs).toHaveLength(1);
     expect(store.getState().activeTabId).not.toBe(onlyTab.id);
   });
 
-  it('при закрытии неактивной активная не меняется', () => {
+  it('closing an inactive tab does not change the active one', () => {
     const store = makeStore();
     createTab(store);
     const activeId = store.getState().activeTabId;
@@ -80,7 +80,7 @@ describe('closeTab', () => {
 });
 
 describe('reopenTab', () => {
-  it('восстанавливает последнюю закрытую вкладку', () => {
+  it('restores the last closed tab', () => {
     const store = makeStore();
     createTab(store);
     const secondId = store.getState().activeTabId;
@@ -90,19 +90,19 @@ describe('reopenTab', () => {
     expect(tabs).toHaveLength(2);
   });
 
-  it('без закрытых вкладок — состояние не меняется', () => {
+  it('with no closed tabs — state does not change', () => {
     const store = makeStore();
-    // _closed пуст — reopenTab вернёт {} из setState
+    // _closed is empty — reopenTab returns {} from setState
     const prev = store.getState();
     reopenTab(store);
-    // tabs может не измениться, но setState всё равно вызывается
-    // Проверяем что количество вкладок не увеличилось
+    // tabs may stay the same, but setState is still called
+    // Check that the number of tabs did not increase
     expect(store.getState().tabs.length).toBeGreaterThanOrEqual(prev.tabs.length);
   });
 });
 
 describe('splitTab', () => {
-  it('включает вторую панель', () => {
+  it('enables the second pane', () => {
     const store = makeStore();
     splitTab(store);
     const tab = getActiveTab(store.getState());
@@ -110,18 +110,18 @@ describe('splitTab', () => {
     expect(tab.panes.right).toBeDefined();
   });
 
-  it('повторный split не меняет состояние', () => {
+  it('a repeated split does not change state', () => {
     const store = makeStore();
     splitTab(store);
     const tab1 = getActiveTab(store.getState());
     splitTab(store);
     const tab2 = getActiveTab(store.getState());
-    expect(tab1).toBe(tab2); // тот же объект — setState вернул {}
+    expect(tab1).toBe(tab2); // same object — setState returned {}
   });
 });
 
 describe('closeSplit', () => {
-  it('закрывает правую панель', () => {
+  it('closes the right pane', () => {
     const store = makeStore();
     splitTab(store);
     closeSplit(store);
@@ -130,9 +130,9 @@ describe('closeSplit', () => {
     expect(tab.activeSide).toBe('left');
   });
 
-  it('закрывает левую панель — правая становится левой', () => {
+  it('closes the left pane — the right becomes the left', () => {
     const store = makeStore();
-    // Навигируем правую панель
+    // Navigate the right pane
     splitTab(store);
     const tab = getActiveTab(store.getState());
     const rightPath = '/home/right';
@@ -145,14 +145,14 @@ describe('closeSplit', () => {
 });
 
 describe('tabTitle', () => {
-  it('без split — имя левой панели', () => {
+  it('without split — the left pane name', () => {
     const store = makeStore();
     const tab = getActiveTab(store.getState());
     tab.panes.left.path = '/home/user/docs';
     expect(tabTitle(tab)).toBe('docs');
   });
 
-  it('со split — «левая / правая»', () => {
+  it('with split — "left / right"', () => {
     const store = makeStore();
     splitTab(store);
     const tab = getActiveTab(store.getState());

@@ -5,7 +5,24 @@ import { assignTag, removeTag, tagsForPaths } from '../api/tags.js';
 import { TAGS } from '../config/tags.js';
 import { t, tagLabel } from '../lib/i18n.js';
 
-function buildItems() {
+/** Tags shared by EVERY path (intersection). A dot lights up only when all
+ *  selected files already carry the tag; a path absent from `map` has no tags. */
+function commonTags(map, paths) {
+  let common = null;
+  for (const p of paths) {
+    const tags = new Set(map[p] || []);
+    if (common === null) common = tags;
+    else common = new Set([...common].filter((id) => tags.has(id)));
+    if (common.size === 0) break;
+  }
+  return common || new Set();
+}
+
+function buildItems(empty) {
+  if (empty) {
+    // Background (empty-area) menu — only actions that need no target entry.
+    return [{ label: t('ctx.newFolder'), action: 'new-folder' }];
+  }
   return [
     { label: t('ctx.open'), action: 'open' },
     { label: t('ctx.newFolder'), action: 'new-folder' },
@@ -40,8 +57,9 @@ export class ContextMenu extends Component {
     this.on(document, 'wheel', () => this.close(), { passive: true });
   }
 
-  openAt({ x, y, entry, side }) {
-    this._ctx = { entry, side };
+  openAt({ x, y, entry, side, paths }) {
+    const targets = paths && paths.length ? paths : entry ? [entry.path] : [];
+    this._ctx = { entry: entry || null, side, paths: targets, empty: !entry };
     this._entryTags = new Set();
     this.render();
 
@@ -52,11 +70,12 @@ export class ContextMenu extends Component {
     menu.style.left = `${Math.max(4, px)}px`;
     menu.style.top = `${Math.max(4, py)}px`;
     this._open = true;
+    if (!targets.length) return; // background menu — no target, nothing to highlight
 
-    // Подтянуть текущие теги и подсветить активные точки.
-    tagsForPaths([entry.path])
+    // Highlight a dot only if EVERY target already has that tag (intersection).
+    tagsForPaths(targets)
       .then((map) => {
-        this._entryTags = new Set((map && map[entry.path]) || []);
+        this._entryTags = commonTags(map || {}, targets);
         this.mount.querySelectorAll('.ctx-tag').forEach((d) => {
           d.classList.toggle('is-on', this._entryTags.has(d.dataset.tag));
         });
@@ -71,7 +90,7 @@ export class ContextMenu extends Component {
     this.mount.innerHTML = '';
   }
 
-  /** Перерисовка при смене языка (если меню открыто). Сохраняет цель и позицию. */
+  /** Re-render on language change (if the menu is open). Preserves target and position. */
   applyLang() {
     if (!this._open || !this._ctx) return;
     const menu = this.mount.firstElementChild;
@@ -83,7 +102,7 @@ export class ContextMenu extends Component {
       if (prevLeft) newMenu.style.left = prevLeft;
       if (prevTop) newMenu.style.top = prevTop;
     }
-    // Восстанавливаем подсветку активных тегов.
+    // Restore the highlight of the active tags.
     this.mount.querySelectorAll('.ctx-tag').forEach((d) => {
       d.classList.toggle('is-on', this._entryTags.has(d.dataset.tag));
     });
@@ -91,27 +110,35 @@ export class ContextMenu extends Component {
 
   render() {
     this.mount.innerHTML = '';
-    const menu = el('div', { class: 'ctx-menu', onClick: (e) => e.stopPropagation() });
-
-    // Полоска тегов
-    const strip = el('div', { class: 'ctx-menu__tags' });
-    for (const tag of TAGS) {
-      strip.append(
-        el('button', {
-          class: 'ctx-tag',
-          dataset: { tag: tag.id },
-          title: tagLabel(tag.id),
-          style: `background:${tag.color}`,
-          onClick: (e) => {
-            e.stopPropagation(); // не закрывать меню — можно навесить несколько
-            this.toggleTag(tag.id, e.currentTarget);
-          },
-        }),
-      );
+        const menu = el('div', { class: 'ctx-menu', onClick: (e) => e.stopPropagation() });
+        const empty = !!(this._ctx && this._ctx.empty);
+    
+    // Tag strip + count — only when acting on a file (the background menu has no target).
+    if (!empty) {
+      const strip = el('div', { class: 'ctx-menu__tags' });
+      for (const tag of TAGS) {
+        strip.append(
+          el('button', {
+            class: 'ctx-tag',
+            dataset: { tag: tag.id },
+            title: tagLabel(tag.id),
+            style: `background:${tag.color}`,
+            onClick: (e) => {
+              e.stopPropagation(); // don't close the menu — several can be applied
+              this.toggleTag(tag.id, e.currentTarget);
+            },
+          }),
+        );
+      }
+      const count = this._ctx ? this._ctx.paths.length : 1;
+      if (count > 1) {
+        menu.append(strip, el('div', { class: 'ctx-menu__count' }, t('ctx.multi', { n: count })), el('div', { class: 'ctx-menu__sep' }));
+      } else {
+        menu.append(strip, el('div', { class: 'ctx-menu__sep' }));
+      }
     }
-    menu.append(strip, el('div', { class: 'ctx-menu__sep' }));
-
-    for (const item of buildItems()) {
+    
+    for (const item of buildItems(empty)) {
       if (item.sep) {
         menu.append(el('div', { class: 'ctx-menu__sep' }));
         continue;
@@ -131,21 +158,19 @@ export class ContextMenu extends Component {
   }
 
   async toggleTag(id, dotEl) {
-    const entry = this._ctx?.entry;
-    if (!entry) return;
+    const paths = this._ctx?.paths || [];
+    if (!paths.length) return;
+    // `on` means every selected file currently has the tag → remove from all.
+    // Otherwise assign to all (assign/remove are idempotent on the Rust side).
     const on = this._entryTags.has(id);
     try {
-      if (on) {
-        await removeTag(entry.path, id);
-        this._entryTags.delete(id);
-      } else {
-        await assignTag(entry.path, id);
-        this._entryTags.add(id);
-      }
+      await Promise.all(paths.map((p) => (on ? removeTag(p, id) : assignTag(p, id))));
+      if (on) this._entryTags.delete(id);
+      else this._entryTags.add(id);
       dotEl.classList.toggle('is-on', !on);
-      this.bus.emit('tags:changed', { paths: [entry.path] });
+      this.bus.emit('tags:changed', { paths });
     } catch (err) {
-      this.bus.emit('shortcut:hint', err.message);
+      this.bus.emit('shortcut:hint', { text: err.message, type: 'error' });
     }
   }
 
@@ -162,7 +187,7 @@ export class ContextMenu extends Component {
         break;
       case 'reveal':
         revealInExplorer(ctx.entry.path).catch((err) =>
-          this.bus.emit('shortcut:hint', err.message),
+          this.bus.emit('shortcut:hint', { text: err.message, type: 'error' }),
         );
         break;
       case 'rename':

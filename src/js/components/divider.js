@@ -4,13 +4,13 @@ import { setSplitRatio } from '../state/ui.js';
 const MIN = 0.15;
 const MAX = 0.85;
 
-// Разделитель: при перетаскивании обновляет splitRatio в ui-состоянии.
-// Ширину колонок применяет контроллер раскладки (main.syncLayout),
-// реагируя на изменение splitRatio — так раскладка в одном месте.
+// Divider: while dragging it updates splitRatio in the UI state.
+// Column widths are applied by the layout controller (main.syncLayout),
+// reacting to splitRatio changes — so the layout lives in one place.
 export class Divider extends Component {
   constructor(ctx) {
     super(ctx);
-    this.workspace = ctx.workspace; // для измерения ширины при перетаскивании
+    this.workspace = ctx.workspace; // for measuring width while dragging
     this._dragging = false;
   }
 

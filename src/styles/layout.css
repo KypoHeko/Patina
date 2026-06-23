@@ -78,13 +78,13 @@
   width: 16px;
   height: 16px;
 }
-/* Кнопка языка — текстовая (двухбуквенный код), в габаритах icon-btn. */
+/* Language button — text-based (a two-letter code), sized like an icon-btn. */
 .lang-btn {
   font: 700 11px/1 var(--font, system-ui, sans-serif);
   letter-spacing: 0.06em;
 }
 
-/* Боковая панель */
+/* Sidebar */
 .sidebar {
   grid-area: sidebar;
   width: 220px;
@@ -98,11 +98,11 @@
   width: 52px;
 }
 
-/* ── Компактный режим: текст плавно скрывается через clip ── */
+/* ── Compact mode: text is smoothly hidden via clipping ── */
 
-/* Текстовые элементы плавно исчезают через max-width → 0,
-   а не через display:none, поэтому при разворачивании текст
-   аккуратно «выезжает» из-за границы обрезки. */
+/* Text elements fade out smoothly via max-width → 0,
+   not via display:none, so on expansion the text
+   neatly "slides out" from behind the clip boundary. */
 #app.sidebar-compact .sidebar__title,
 #app.sidebar-compact .sidebar__label,
 #app.sidebar-compact .sidebar__count,
@@ -119,14 +119,14 @@
   max-width: 0;
 }
 
-/* Прогресс-бар хранилища плавно схлопывается */
+/* The storage progress bar collapses smoothly */
 #app.sidebar-compact .sidebar__bar {
   max-width: 0;
   margin: 0;
 }
 
 #app.sidebar-compact .sidebar__compact-arrow {
-  display: inline-block; /* показываем стрелку-разделитель групп */
+  display: inline-block; /* show the group-separator arrow */
 }
 
 #app.sidebar-compact .sidebar__head {
@@ -140,12 +140,12 @@
   padding: 6px;
 }
 
-/* Увеличиваем расстояние между индикаторами в свёрнутом состоянии */
+/* Increase the spacing between indicators in the collapsed state */
 #app.sidebar-compact .sidebar__body {
   gap: 2px;
 }
 
-/* Основная область: вкладки · рабочая область · статус */
+/* Main area: tabs · workspace · status */
 .main {
   grid-area: main;
   display: grid;
@@ -207,7 +207,7 @@
   background: transparent;
   cursor: col-resize;
 }
-/* тонкая визуальная линия по центру зоны захвата */
+/* a thin visual line at the center of the grab zone */
 .pane-divider::after {
   content: '';
   position: absolute;
@@ -222,7 +222,7 @@
 .pane-divider:hover::after {
   background: color-mix(in srgb, var(--accent) 55%, transparent);
 }
-/* грип-кнопка по центру — показывает, что разделитель тянется */
+/* a grip handle at the center — shows that the divider is draggable */
 .pane-divider::before {
   content: '';
   position: absolute;
@@ -314,8 +314,17 @@ body.is-resizing .pane {
 .status__hint {
   color: var(--accent);
 }
+.status__hint--warn {
+  color: var(--tag-progress);
+  font-weight: 500;
+}
+.status__hint--error {
+  color: var(--tag-urgent);
+  font-weight: 600;
+  font-size: calc(1em + 2px);
+}
 
-/* Поиск на верхней панели */
+/* Search in the top bar */
 .topbar-search {
   width: 260px;
   max-width: 34vw;

@@ -2,8 +2,8 @@ import { Component } from '../core/component.js';
 import { THEMES, getTheme, setTheme } from '../lib/theme.js';
 import { t } from '../lib/i18n.js';
 
-// Меню выбора палитры. Открывается из кнопки топбара (событие 'theme:open'),
-// рисуется поповером под ней. Выбор применяется мгновенно и сохраняется.
+// Palette selection menu. Opened from the topbar button (the 'theme:open' event),
+// rendered as a popover beneath it. The choice applies instantly and is saved.
 export class ThemeMenu extends Component {
   init() {
     this._open = false;
@@ -44,7 +44,7 @@ export class ThemeMenu extends Component {
     this.close();
   }
 
-  /** Перерисовка при смене языка (если меню открыто). */
+  /** Re-render on language change (if the menu is open). */
   applyLang() {
     if (!this._open) return;
     this.render();

@@ -59,3 +59,27 @@ export function pathCrumbs(path) {
     });
   return crumbs;
 }
+
+/**
+ * Case- and separator-insensitive comparison key for a path.
+ *
+ * Mirrors the backend index key (path_key::normalize): unify separators to "\",
+ * collapse repeats, drop the trailing separator (except roots), keep the UNC
+ * "\\" prefix. Unlike the backend it ALWAYS folds case: this key is only used to
+ * compare paths in memory (e.g. matching folder entries against the tag index,
+ * whose stored keys are already case-folded on Windows). It is applied to BOTH
+ * sides of a comparison, so off-Windows the only effect is that the comparison
+ * becomes case-insensitive — acceptable for a filter view.
+ */
+export function pathKey(path) {
+  const str = String(path);
+  const unc = /^[\\/]{2}/.test(str);
+  let s = str.replace(/[\\/]+/g, '\\'); // unify + collapse separators
+  if (unc) s = '\\' + s; // restore the second leading UNC separator
+  if (s.length > 1 && s.endsWith('\\')) {
+    const driveRoot = /^[A-Za-z]:\\$/.test(s);
+    const bareRoot = unc ? s.length <= 2 : s.length <= 1;
+    if (!driveRoot && !bareRoot) s = s.slice(0, -1);
+  }
+  return s.toLowerCase();
+}

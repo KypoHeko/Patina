@@ -25,3 +25,18 @@ export async function invoke(cmd, args = {}) {
     throw new Error(`[${cmd}] ${message}`);
   }
 }
+
+/**
+ * Turn an absolute file path into a URL the webview can load directly through
+ * Tauri's asset protocol. Far cheaper than streaming bytes over IPC + base64,
+ * and the result is cached by the web engine.
+ * Returns '' when the API is unavailable (outside a Tauri window / in tests).
+ */
+export function assetUrl(path) {
+  if (!path || !tauri?.core?.convertFileSrc) return '';
+  try {
+    return tauri.core.convertFileSrc(path);
+  } catch {
+    return '';
+  }
+}

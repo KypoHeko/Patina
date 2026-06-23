@@ -139,6 +139,9 @@ pub struct Preview {
     name: String,
     text: Option<String>,
     data_url: Option<String>,
+    /// Absolute path to a cached thumbnail, served to the webview via the asset
+    /// protocol (avoids base64 + a large IPC payload). None for non-images.
+    thumb_path: Option<String>,
     /// File size in bytes
     size: u64,
     /// Modification time (Unix ms)
@@ -188,20 +191,7 @@ fn file_times(meta: &std::fs::Metadata) -> (i64, i64) {
 
 fn none_preview(name: String, meta: &std::fs::Metadata) -> Preview {
     let (modified, created) = file_times(meta);
-    Preview { kind: "none".into(), name, text: None, data_url: None, size: meta.len(), modified, created }
-}
-
-fn image_jpeg(name: String, bytes: &[u8], meta: &std::fs::Metadata) -> Preview {
-    let (modified, created) = file_times(meta);
-    Preview {
-        kind: "image".into(),
-        name,
-        text: None,
-        data_url: Some(format!("data:image/jpeg;base64,{}", b64(bytes))),
-        size: meta.len(),
-        modified,
-        created,
-    }
+    Preview { kind: "none".into(), name, text: None, data_url: None, thumb_path: None, size: meta.len(), modified, created }
 }
 
 /// Synchronous preview implementation. Called from `read_preview` inside
@@ -231,6 +221,7 @@ fn build_preview(thumbs_dir: &Path, path: &str) -> Result<Preview> {
             name,
             text: None,
             data_url: Some(format!("data:image/svg+xml;base64,{}", b64(&bytes))),
+            thumb_path: None,
             size: meta.len(),
             modified,
             created,
@@ -249,21 +240,29 @@ fn build_preview(thumbs_dir: &Path, path: &str) -> Result<Preview> {
             .to_hex()
             .to_string();
         let cache = thumbs_dir.join(format!("{key}.jpg"));
+        let (modified, created) = file_times(&meta);
 
-        if let Ok(bytes) = std::fs::read(&cache) {
-            return Ok(image_jpeg(name, &bytes, &meta));
-        }
-        if let Ok(img) = image::open(path) {
-            let thumb = img.thumbnail(1024, 1024);
-            let rgb = image::DynamicImage::ImageRgb8(thumb.to_rgb8());
-            let mut bytes = Vec::new();
-            if rgb
-                .write_to(&mut Cursor::new(&mut bytes), image::ImageFormat::Jpeg)
-                .is_ok()
-            {
-                let _ = std::fs::write(&cache, &bytes);
-                return Ok(image_jpeg(name, &bytes, &meta));
-            }
+        // Generate the thumbnail once; later opens reuse the cached file, which
+        // the webview loads directly via the asset protocol.
+        let ready = cache.exists()
+            || image::open(path).is_ok_and(|img| {
+                let rgb = image::DynamicImage::ImageRgb8(img.thumbnail(1024, 1024).to_rgb8());
+                let mut bytes = Vec::new();
+                rgb.write_to(&mut Cursor::new(&mut bytes), image::ImageFormat::Jpeg).is_ok()
+                    && std::fs::write(&cache, &bytes).is_ok()
+            });
+
+        if ready {
+            return Ok(Preview {
+                kind: "image".into(),
+                name,
+                text: None,
+                data_url: None,
+                thumb_path: Some(cache.to_string_lossy().into_owned()),
+                size: meta.len(),
+                modified,
+                created,
+            });
         }
         return Ok(none_preview(name, &meta));
     }
@@ -279,6 +278,7 @@ fn build_preview(thumbs_dir: &Path, path: &str) -> Result<Preview> {
             name,
             text: Some(String::from_utf8_lossy(&buf).into_owned()),
             data_url: None,
+            thumb_path: None,
             size: meta.len(),
             modified,
             created,

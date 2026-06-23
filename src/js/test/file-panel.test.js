@@ -5,7 +5,7 @@ import { createEventBus } from '../core/event-bus.js';
 import { initialTabsState, getActiveTab } from '../state/tabs.js';
 import { updatePane, selectInPane, recordHistory } from '../state/panes.js';
 
-// Мокаем все API-вызовы (Tauri IPC)
+// Mock all API calls (Tauri IPC)
 vi.mock('../api/fs.js', () => ({
   listDir: vi.fn().mockResolvedValue([
     { path: '/home/docs', name: 'docs', kind: 'folder', size: 0, modified: 1000, extension: '' },
@@ -50,7 +50,7 @@ function makePanel(side = 'left') {
   return { panel, mount, store, bus };
 }
 
-// ─── Сортировка ────────────────────────────────────
+// ─── Sorting ────────────────────────────────────
 
 describe('FilePanel — sortedEntries', () => {
   let panel;
@@ -66,7 +66,7 @@ describe('FilePanel — sortedEntries', () => {
     panel = ctx.panel;
   });
 
-  it('папки идут перед файлами при сортировке по имени (asc)', () => {
+  it('folders come before files when sorting by name (asc)', () => {
     panel._sort = { key: 'name', dir: 'asc' };
     const sorted = panel.sortedEntries(entries);
     const kinds = sorted.map((e) => e.kind);
@@ -75,7 +75,7 @@ describe('FilePanel — sortedEntries', () => {
     expect(lastFolderIdx).toBeLessThan(firstFileIdx);
   });
 
-  it('числовая сортировка имён: file2 < file10', () => {
+  it('numeric name sorting: file2 < file10', () => {
     const numEntries = [
       { name: 'file10.txt', kind: 'file', size: 0, modified: 0, extension: 'txt', path: '/f10' },
       { name: 'file2.txt', kind: 'file', size: 0, modified: 0, extension: 'txt', path: '/f2' },
@@ -86,41 +86,41 @@ describe('FilePanel — sortedEntries', () => {
     expect(sorted.map((e) => e.name)).toEqual(['file1.txt', 'file2.txt', 'file10.txt']);
   });
 
-  it('сортировка по размеру (asc)', () => {
+  it('sorting by size (asc)', () => {
     panel._sort = { key: 'size', dir: 'asc' };
     const sorted = panel.sortedEntries(entries);
     const sizes = sorted.filter((e) => e.kind === 'file').map((e) => e.size);
     expect(sizes).toEqual([...sizes].sort((a, b) => a - b));
   });
 
-  it('сортировка по размеру (desc)', () => {
+  it('sorting by size (desc)', () => {
     panel._sort = { key: 'size', dir: 'desc' };
     const sorted = panel.sortedEntries(entries);
     const sizes = sorted.filter((e) => e.kind === 'file').map((e) => e.size);
     expect(sizes).toEqual([...sizes].sort((a, b) => b - a));
   });
 
-  it('сортировка по типу (extension)', () => {
+  it('sorting by type (extension)', () => {
     panel._sort = { key: 'type', dir: 'asc' };
     const sorted = panel.sortedEntries(entries);
     const exts = sorted.filter((e) => e.kind === 'file').map((e) => e.extension);
     expect(exts).toEqual([...exts].sort());
   });
 
-  it('переключение направления: повторный клик по тому же ключу', () => {
+  it('toggling direction: clicking the same key again', () => {
     panel._sort = { key: 'name', dir: 'asc' };
     panel._sort = { key: panel._sort.key, dir: panel._sort.dir === 'asc' ? 'desc' : 'asc' };
     expect(panel._sort).toEqual({ key: 'name', dir: 'desc' });
   });
 
-  it('смена ключа сбрасывает направление в asc', () => {
+  it('changing the key resets the direction to asc', () => {
     panel._sort = { key: 'name', dir: 'desc' };
     panel._sort = { key: 'size', dir: 'asc' };
     expect(panel._sort).toEqual({ key: 'size', dir: 'asc' });
   });
 });
 
-// ─── Фильтрация ────────────────────────────────────
+// ─── Filtering ────────────────────────────────────
 
 describe('FilePanel — filterList', () => {
   let panel;
@@ -136,42 +136,42 @@ describe('FilePanel — filterList', () => {
     panel = ctx.panel;
   });
 
-  it('пустой фильтр возвращает весь список', () => {
+  it('empty filter returns the whole list', () => {
     panel._filter = '';
     expect(panel.filterList(entries)).toEqual(entries);
   });
 
-  it('подстрока фильтрует по имени', () => {
+  it('substring filters by name', () => {
     panel._filter = 'read';
     const result = panel.filterList(entries);
     expect(result).toHaveLength(1);
     expect(result[0].name).toBe('readme.md');
   });
 
-  it('regex фильтрует по имени', () => {
+  it('regex filters by name', () => {
     panel._filter = '\\.(rs|md)$';
     const result = panel.filterList(entries);
     expect(result).toHaveLength(2);
     expect(result.map((e) => e.name).sort()).toEqual(['main.rs', 'readme.md']);
   });
 
-  it('фильтр нечувствителен к регистру', () => {
+  it('filter is case-insensitive', () => {
     panel._filter = 'README';
     const result = panel.filterList(entries);
     expect(result).toHaveLength(1);
     expect(result[0].name).toBe('readme.md');
   });
 
-  it('нет совпадений — пустой список', () => {
+  it('no matches → empty list', () => {
     panel._filter = 'zzzzz';
     const result = panel.filterList(entries);
     expect(result).toHaveLength(0);
   });
 });
 
-// ─── Выбор ─────────────────────────────────────────
+// ─── Selection ─────────────────────────────────────────
 
-describe('FilePanel — выбор / курсор', () => {
+describe('FilePanel — selection / cursor', () => {
   let panel, store, listEl;
 
   const entries = [
@@ -190,12 +190,12 @@ describe('FilePanel — выбор / курсор', () => {
     panel._lastPane = getActiveTab(store.getState()).panes.left;
     panel._view = entries;
     panel._sort = { key: 'name', dir: 'asc' };
-    // Мокаем ensureVisible (зависит от DOM-геометрии)
+    // Mock ensureVisible (depends on DOM geometry)
     panel.ensureVisible = vi.fn();
     panel.renderWindow = vi.fn();
   });
 
-  it('moveCursor ArrowDown сдвигает курсор вниз', () => {
+  it('moveCursor ArrowDown moves the cursor down', () => {
     panel._cursor = 0;
     panel._anchor = '/a';
     panel.moveCursor('ArrowDown', false);
@@ -203,7 +203,7 @@ describe('FilePanel — выбор / курсор', () => {
     expect(pane.selected).toEqual(['/b']);
   });
 
-  it('moveCursor ArrowUp не уходит выше нуля', () => {
+  it('moveCursor ArrowUp does not go above zero', () => {
     panel._cursor = 0;
     panel._anchor = '/a';
     panel.moveCursor('ArrowUp', false);
@@ -211,7 +211,7 @@ describe('FilePanel — выбор / курсор', () => {
     expect(pane.selected).toEqual(['/a']);
   });
 
-  it('moveCursor Home — первый элемент', () => {
+  it('moveCursor Home → first item', () => {
     panel._cursor = 3;
     panel._anchor = '/d';
     panel.moveCursor('Home', false);
@@ -219,7 +219,7 @@ describe('FilePanel — выбор / курсор', () => {
     expect(pane.selected).toEqual(['/a']);
   });
 
-  it('moveCursor End — последний элемент', () => {
+  it('moveCursor End → last item', () => {
     panel._cursor = 0;
     panel._anchor = '/a';
     panel.moveCursor('End', false);
@@ -227,7 +227,7 @@ describe('FilePanel — выбор / курсор', () => {
     expect(pane.selected).toEqual(['/d']);
   });
 
-  it('Shift+ArrowDown расширяет выделение', () => {
+  it('Shift+ArrowDown extends the selection', () => {
     panel._cursor = 0;
     panel._anchor = '/a';
     panel.moveCursor('ArrowDown', true);
@@ -235,7 +235,7 @@ describe('FilePanel — выбор / курсор', () => {
     expect(pane.selected).toEqual(['/a', '/b']);
   });
 
-  it('Shift+ArrowDown дважды расширяет дальше', () => {
+  it('Shift+ArrowDown twice extends further', () => {
     panel._cursor = 0;
     panel._anchor = '/a';
     panel.moveCursor('ArrowDown', true);
@@ -244,13 +244,13 @@ describe('FilePanel — выбор / курсор', () => {
     expect(pane.selected).toEqual(['/a', '/b', '/c']);
   });
 
-  it('cursorIndex возвращает индекс последнего выделенного', () => {
+  it('cursorIndex returns the index of the last selected item', () => {
     selectInPane(store, 'left', ['/b', '/d']);
     panel._lastPane = getActiveTab(store.getState()).panes.left;
-    expect(panel.cursorIndex()).toBe(3); // /d — index 3
+    expect(panel.cursorIndex()).toBe(3); // /d → index 3
   });
 
-  it('cursorIndex без выделения — _cursor', () => {
+  it('cursorIndex without a selection → _cursor', () => {
     selectInPane(store, 'left', []);
     panel._lastPane = getActiveTab(store.getState()).panes.left;
     panel._cursor = 2;
@@ -281,37 +281,37 @@ describe('FilePanel — typeAhead', () => {
     panel._anchor = entries[0].path;
     panel._taBuf = '';
     panel._taTime = 0;
-    // Мокаем ensureVisible (зависит от DOM-геометрии)
+    // Mock ensureVisible (depends on DOM geometry)
     panel.ensureVisible = vi.fn();
     panel.renderWindow = vi.fn();
   });
 
-  it('находит файл по первой букве', () => {
+  it('finds a file by its first letter', () => {
     panel.typeAhead('g');
     const pane = getActiveTab(store.getState()).panes.left;
     expect(pane.selected).toEqual(['/g']);
   });
 
-  it('находит файл по нескольким буквам', () => {
+  it('finds a file by several letters', () => {
     panel.typeAhead('a');
     panel.typeAhead('l');
     panel.typeAhead('p');
     const pane = getActiveTab(store.getState()).panes.left;
-    // 'alp' совпадает с 'alpha.txt' — начинается с текущей позиции +1
-    // поэтому первый результат — alpha2.txt (index 3), потом alpha.txt (index 0)
+    // 'alp' matches 'alpha.txt' — starts from the current position +1
+    // so the first result is alpha2.txt (index 3), then alpha.txt (index 0)
     expect(pane.selected[0]).toMatch(/^\/a2?$/);
   });
 
-  it('не находит — выделение не меняется', () => {
-    // Установим начальное выделение
+  it('finds nothing → selection unchanged', () => {
+    // Set an initial selection
     selectInPane(store, 'left', ['/a']);
     panel._lastPane = getActiveTab(store.getState()).panes.left;
     panel.typeAhead('z');
     const pane = getActiveTab(store.getState()).panes.left;
-    // typeAhead не нашёл — выделил /a (fallback: ничего не меняется в выделении,
-    // но setInPane не вызывается — значит selected = ['/a'])
-    // На самом деле typeAhead не вызывает selectInPane если не нашёл —
-    // выделение остаётся прежним
+    // typeAhead found nothing — selected /a (fallback: the selection is unchanged,
+    // but setInPane is not called — so selected = ['/a'])
+    // In fact typeAhead does not call selectInPane when nothing is found —
+    // the selection stays the same
     expect(pane.selected).toContain('/a');
   });
 });
@@ -330,19 +330,19 @@ describe('FilePanel — dotsHtml', () => {
     };
   });
 
-  it('путь с тегами — рендерит точки', () => {
+  it('path with tags → renders dots', () => {
     const html = panel.dotsHtml('/a');
     expect(html).toContain('tag-dot');
     expect(html).toContain('Срочно');
     expect(html).toContain('Готово');
   });
 
-  it('путь с одним тегом', () => {
+  it('path with a single tag', () => {
     const html = panel.dotsHtml('/b');
     expect(html).toContain('В работе');
   });
 
-  it('путь без тегов — пустая строка', () => {
+  it('path without tags → empty string', () => {
     const html = panel.dotsHtml('/c');
     expect(html).toBe('');
   });

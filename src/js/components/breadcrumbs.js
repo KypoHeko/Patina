@@ -7,15 +7,15 @@ import { t, tagLabel } from '../lib/i18n.js';
 const TAG_BY_ID = Object.fromEntries(TAGS.map((t) => [t.id, t]));
 import { getPane } from '../state/panes.js';
 
-// Шапка панели: кнопка «Назад» (по истории) + хлебные крошки.
-// Подъём на уровень выше теперь делается кликом по сегменту крошек или
-// через адресную строку (клик по свободному месту шапки).
+// Panel header: a "Back" button (through history) + breadcrumbs.
+// Going up a level is now done by clicking a breadcrumb segment or via the
+// address bar (clicking the empty area of the header).
 export class Breadcrumbs extends Component {
   constructor(ctx) {
     super(ctx);
     this.side = ctx.side;
-    this.onNavigate = ctx.onNavigate; // перейти по пути
-    this.onBack = ctx.onBack; // шаг назад по истории
+    this.onNavigate = ctx.onNavigate; // navigate to a path
+    this.onBack = ctx.onBack; // step back through history
     this._path = null;
     this._canBack = false;
     this._editing = false;
@@ -44,8 +44,8 @@ export class Breadcrumbs extends Component {
     if (e.target.closest('[data-back]')) return this.onBack();
     const crumb = e.target.closest('[data-crumb]');
     if (crumb) return this.onNavigate(crumb.dataset.crumb);
-    if ((this._path || '').startsWith('tag:')) return; // в тег-папке адрес не редактируем
-    this.enterEdit(); // клик по свободному месту — адресная строка
+    if ((this._path || '').startsWith('tag:')) return; // in a tag folder the address is not editable
+    this.enterEdit(); // click on empty space — address bar
   }
 
   enterEdit() {
@@ -70,7 +70,7 @@ export class Breadcrumbs extends Component {
     }
   }
 
-  /** Перерисовка при смене языка (обновляет title кнопки «Назад» и подпись тега). */
+  /** Re-render on language change (updates the "Back" button title and the tag label). */
   applyLang() {
     if (this._editing) return;
     this.render();

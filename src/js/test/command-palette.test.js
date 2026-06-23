@@ -4,8 +4,9 @@ import { createStore } from '../core/store.js';
 import { createEventBus } from '../core/event-bus.js';
 import { initialTabsState } from '../state/tabs.js';
 import { updatePane, recordHistory } from '../state/panes.js';
+import { pathKey } from '../lib/paths.js';
 
-// Мокаем все API-вызовы
+// Mock all API calls
 vi.mock('../api/fs.js', () => ({
   searchFiles: vi.fn().mockResolvedValue([
     { name: 'main.rs', path: '/home/src/main.rs', kind: 'file', extension: 'rs' },
@@ -73,19 +74,19 @@ describe('CommandPalette — filtered', () => {
     palette._query = '';
   });
 
-  it('без запроса — все записи', () => {
+  it('no query → all entries', () => {
     palette._query = '';
     expect(palette.filtered()).toHaveLength(folderEntries.length);
   });
 
-  it('подстрока фильтрует по имени (нечувствительно)', () => {
+  it('substring filters by name (case-insensitive)', () => {
     palette._query = 'main';
     const result = palette.filtered();
     expect(result).toHaveLength(1);
     expect(result[0].name).toBe('main.rs');
   });
 
-  it('regex-режим фильтрует по имени', () => {
+  it('regex mode filters by name', () => {
     palette._regex = true;
     palette._query = '\\.(rs|md)$';
     const result = palette.filtered();
@@ -93,36 +94,36 @@ describe('CommandPalette — filtered', () => {
     expect(result.map((e) => e.name).sort()).toEqual(['main.rs', 'readme.md']);
   });
 
-  it('опасный regex деградирует — показывает все записи', () => {
+  it('dangerous regex degrades → shows all entries', () => {
     palette._regex = true;
     palette._query = '(a+)+';
     const result = palette.filtered();
-    // (a+)+ — вложенный квантификатор, safeRegExp отклонит → не фильтруем
+    // (a+)+ — nested quantifier, safeRegExp rejects it → no filtering
     expect(result).toHaveLength(folderEntries.length);
   });
 
-  it('тег-фильтр пересекает результаты', () => {
-    palette._tagFilter = new Set(['/home/readme.md', '/home/main.rs']);
+  it('tag filter intersects results', () => {
+    palette._tagFilter = new Set(['/home/readme.md', '/home/main.rs'].map(pathKey));
     palette._query = '';
     const result = palette.filtered();
     expect(result).toHaveLength(2);
   });
 
-  it('тег-фильтр + подстрока = двойная фильтрация', () => {
-    palette._tagFilter = new Set(['/home/readme.md', '/home/main.rs']);
+  it('tag filter + substring = double filtering', () => {
+    palette._tagFilter = new Set(['/home/readme.md', '/home/main.rs'].map(pathKey));
     palette._query = 'read';
     const result = palette.filtered();
     expect(result).toHaveLength(1);
     expect(result[0].name).toBe('readme.md');
   });
 
-  it('content scope — тег-фильтр применяется', () => {
+  it('content scope — tag filter applies', () => {
     palette._scope = 'content';
     palette._entries = [
       { name: 'main.rs', path: '/home/main.rs', kind: 'file', snippet: 'fn main()' },
       { name: 'lib.rs', path: '/home/lib.rs', kind: 'file', snippet: 'pub fn' },
     ];
-    palette._tagFilter = new Set(['/home/main.rs']);
+    palette._tagFilter = new Set(['/home/main.rs'].map(pathKey));
     palette._query = '';
     const result = palette.filtered();
     expect(result).toHaveLength(1);
@@ -149,7 +150,7 @@ describe('CommandPalette — setScope', () => {
     palette._activeTags = new Set();
     palette._regex = false;
     palette._tags = {};
-    // Мокаем DOM-элементы
+    // Mock DOM elements
     palette._scopeFolderBtn = { classList: { toggle: vi.fn() } };
     palette._scopeTreeBtn = { classList: { toggle: vi.fn() } };
     palette._scopeContentBtn = { classList: { toggle: vi.fn() } };
@@ -157,7 +158,7 @@ describe('CommandPalette — setScope', () => {
     palette._resultsEl = { innerHTML: '', querySelectorAll: vi.fn().mockReturnValue([]) };
   });
 
-  it('переключение на folder — entries = folderEntries', () => {
+  it('switching to folder — entries = folderEntries', () => {
     palette._scope = 'tree';
     palette._entries = [];
     palette.setScope('folder');
@@ -165,20 +166,20 @@ describe('CommandPalette — setScope', () => {
     expect(palette._entries).toBe(folderEntries);
   });
 
-  it('переключение на tree — не доступно для tag-папки', () => {
+  it('switching to tree — not available for a tag-folder', () => {
     palette._root = 'tag:urgent';
     palette.setScope('tree');
     expect(palette._scope).toBe('folder');
   });
 
-  it('переключение на content доступно для tag-папки (поиск по содержимому)', () => {
+  it('switching to content is available for a tag-folder (content search)', () => {
     palette._root = 'tag:urgent';
     palette.setScope('content');
     // Content search is allowed even for tag-folders
     expect(palette._scope).toBe('content');
   });
 
-  it('повторная установка той же области — без изменений', () => {
+  it('setting the same scope again — no changes', () => {
     const prevScope = palette._scope;
     palette.setScope('folder');
     expect(palette._scope).toBe(prevScope);
@@ -196,21 +197,21 @@ describe('CommandPalette — relParent', () => {
     palette._root = '/home';
   });
 
-  it('путь внутри root — возвращает относительную папку', () => {
+  it('path inside root — returns the relative folder', () => {
     expect(palette.relParent('/home/src/main.rs')).toBe('src');
   });
 
-  it('глубокая вложенность', () => {
+  it('deep nesting', () => {
     expect(palette.relParent('/home/src/core/store.js')).toBe('src/core');
   });
 
-  it('файл в корне — пустая строка', () => {
+  it('file at the root — empty string', () => {
     expect(palette.relParent('/home/readme.md')).toBe('');
   });
 
-  it('путь вне root — относительный путь от корня', () => {
-    // relParent для путей вне _root всё равно удаляет префикс,
-    // но если путь не начинается с _root, то rel = path целиком
+  it('path outside root — relative path from the root', () => {
+    // relParent still strips the prefix for paths outside _root,
+    // but if the path does not start with _root, rel = the whole path
     expect(palette.relParent('/other/file.txt')).toBe('other');
   });
 });
@@ -225,7 +226,7 @@ describe('CommandPalette — _resultsSig', () => {
     palette = ctx.palette;
   });
 
-  it('одинаковые списки дают одинаковую сигнатуру', () => {
+  it('identical lists produce the same signature', () => {
     const list = [
       { path: '/a', snippet: 'hello' },
       { path: '/b', snippet: 'world' },
@@ -233,13 +234,13 @@ describe('CommandPalette — _resultsSig', () => {
     expect(palette._resultsSig(list)).toBe(palette._resultsSig(list));
   });
 
-  it('разные списки дают разные сигнатуры', () => {
+  it('different lists produce different signatures', () => {
     const a = [{ path: '/a', snippet: 'x' }];
     const b = [{ path: '/b', snippet: 'x' }];
     expect(palette._resultsSig(a)).not.toBe(palette._resultsSig(b));
   });
 
-  it('разные сниппеты — разные сигнатуры', () => {
+  it('different snippets — different signatures', () => {
     const a = [{ path: '/a', snippet: 'x' }];
     const b = [{ path: '/a', snippet: 'y' }];
     expect(palette._resultsSig(a)).not.toBe(palette._resultsSig(b));
@@ -257,41 +258,41 @@ describe('CommandPalette — onKey', () => {
     palette._open = true;
     palette._results = folderEntries;
     palette._sel = 0;
-    // Мокаем renderResults (зависит от DOM-геометрии/innerHTML)
+    // Mock renderResults (depends on DOM geometry/innerHTML)
     palette.renderResults = vi.fn();
   });
 
-  it('ArrowDown сдвигает выделение', () => {
+  it('ArrowDown moves the selection', () => {
     const prevSel = palette._sel;
     palette.onKey({ key: 'ArrowDown', preventDefault: vi.fn() });
     expect(palette._sel).toBe(prevSel + 1);
   });
 
-  it('ArrowDown не выходит за пределы', () => {
+  it('ArrowDown does not go out of bounds', () => {
     palette._sel = folderEntries.length - 1;
     palette.onKey({ key: 'ArrowDown', preventDefault: vi.fn() });
     expect(palette._sel).toBe(folderEntries.length - 1);
   });
 
-  it('ArrowUp сдвигает выделение вверх', () => {
+  it('ArrowUp moves the selection up', () => {
     palette._sel = 2;
     palette.onKey({ key: 'ArrowUp', preventDefault: vi.fn() });
     expect(palette._sel).toBe(1);
   });
 
-  it('ArrowUp не уходит ниже нуля', () => {
+  it('ArrowUp does not go below zero', () => {
     palette._sel = 0;
     palette.onKey({ key: 'ArrowUp', preventDefault: vi.fn() });
     expect(palette._sel).toBe(0);
   });
 
-  it('Escape закрывает палитру', () => {
+  it('Escape closes the palette', () => {
     const e = { key: 'Escape', preventDefault: vi.fn() };
     palette.onKey(e);
     expect(palette._open).toBe(false);
   });
 
-  it('Enter вызывает activate и закрывает', () => {
+  it('Enter triggers activate and closes', () => {
     const spy = vi.fn();
     palette.bus.on('file:activate', spy);
     palette.onKey({ key: 'Enter', preventDefault: vi.fn() });
@@ -310,17 +311,17 @@ describe('CommandPalette — treeAllowed', () => {
     palette = ctx.palette;
   });
 
-  it('обычный путь — разрешено', () => {
+  it('normal path — allowed', () => {
     palette._root = '/home/user';
     expect(palette.treeAllowed).toBe(true);
   });
 
-  it('tag-путь — запрещено', () => {
+  it('tag path — forbidden', () => {
     palette._root = 'tag:urgent';
     expect(palette.treeAllowed).toBe(false);
   });
 
-  it('пустой путь — запрещено', () => {
+  it('empty path — forbidden', () => {
     palette._root = '';
     expect(palette.treeAllowed).toBe(false);
   });
@@ -340,15 +341,15 @@ describe('CommandPalette — dotsHtml', () => {
     };
   });
 
-  it('путь с тегами — рендерит точки', () => {
+  it('path with tags → renders dots', () => {
     const html = palette.dotsHtml('/b');
     expect(html).toContain('tag-dot');
-    // Два тега — два span с tag-dot
+    // Two tags — two spans with tag-dot
     const count = (html.match(/tag-dot/g) || []).length;
     expect(count).toBe(2);
   });
 
-  it('путь без тегов — пустая строка', () => {
+  it('path without tags → empty string', () => {
     expect(palette.dotsHtml('/c')).toBe('');
   });
 });

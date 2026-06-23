@@ -1,7 +1,7 @@
-// Глобальная настройка тестов: моки для Tauri IPC и ResizeObserver,
-// которые отсутствуют в jsdom.
+// Global test setup: mocks for Tauri IPC and ResizeObserver,
+// which are absent in jsdom.
 
-// Мокаем window.__TAURI__ — единая граница IPC; все вызовы идут через api/invoke.js
+// Mock window.__TAURI__ — the single IPC boundary; all calls go through api/invoke.js
 window.__TAURI__ = {
   core: {
     invoke: vi.fn().mockResolvedValue(undefined),
@@ -11,7 +11,7 @@ window.__TAURI__ = {
   },
 };
 
-// ResizeObserver отсутствует в jsdom
+// ResizeObserver is absent in jsdom
 global.ResizeObserver = class ResizeObserver {
   constructor() {}
   observe() {}
@@ -19,8 +19,8 @@ global.ResizeObserver = class ResizeObserver {
   disconnect() {}
 };
 
-// getComputedStyle в jsdom возвращает пустые значения; подменяем
-// только для --row-h, который нужен FilePanel
+// getComputedStyle returns empty values in jsdom; we override it
+// only for --row-h, which FilePanel needs
 const origGetComputedStyle = window.getComputedStyle;
 window.getComputedStyle = function (el, ...rest) {
   const style = origGetComputedStyle.call(this, el, ...rest);

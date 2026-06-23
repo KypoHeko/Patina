@@ -2,20 +2,20 @@ import { describe, it, expect } from 'vitest';
 import { pathToColor, textColorFor } from '../lib/path-color.js';
 
 describe('pathToColor', () => {
-  it('возвращает валидный 7-символьный hex-цвет', () => {
+  it('returns a valid 7-character hex color', () => {
     const c = pathToColor('C:\\Users\\me\\project');
     expect(c).toMatch(/^#[0-9a-f]{6}$/);
   });
 
-  it('детерминирован: один путь — один цвет', () => {
+  it('deterministic: one path → one color', () => {
     expect(pathToColor('/home/a')).toBe(pathToColor('/home/a'));
   });
 
-  it('разные пути обычно дают разные цвета', () => {
+  it('different paths usually produce different colors', () => {
     expect(pathToColor('/home/a')).not.toBe(pathToColor('/home/b'));
   });
 
-  it('каждый канал лежит в смешанном диапазоне 60..225 (без слишком тёмных/слепящих)', () => {
+  it('each channel lies in the mixed range 60..225 (no too-dark/too-bright values)', () => {
     for (const p of ['', 'x', '/very/long/path/here', 'D:\\data', 'пример/кириллица']) {
       const c = pathToColor(p);
       for (let i = 1; i < 7; i += 2) {
@@ -26,24 +26,24 @@ describe('pathToColor', () => {
     }
   });
 
-  it('пустая строка не падает и даёт валидный цвет', () => {
+  it('empty string does not crash and yields a valid color', () => {
     expect(pathToColor('')).toMatch(/^#[0-9a-f]{6}$/);
   });
 });
 
 describe('textColorFor', () => {
-  it('тёмный текст на светлом фоне', () => {
+  it('dark text on a light background', () => {
     expect(textColorFor('#ffffff')).toBe('#0a0a0f');
   });
 
-  it('светлый текст на тёмном фоне', () => {
+  it('light text on a dark background', () => {
     expect(textColorFor('#000000')).toBe('#f5f5f5');
   });
 
-  it('усредняет яркость нескольких цветов', () => {
-    // два белых → светло → тёмный текст
+  it('averages the brightness of several colors', () => {
+    // two whites → bright → dark text
     expect(textColorFor('#ffffff', '#ffffff')).toBe('#0a0a0f');
-    // белый + чёрный → среднее ~127 (< 150) → светлый текст
+    // white + black → average ~127 (< 150) → light text
     expect(textColorFor('#ffffff', '#000000')).toBe('#f5f5f5');
   });
 });

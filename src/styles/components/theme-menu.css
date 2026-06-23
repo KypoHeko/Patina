@@ -1,4 +1,4 @@
-/* Меню выбора палитры (поповер под кнопкой топбара) */
+/* Palette selection menu (popover under the topbar button) */
 .theme-menu__backdrop {
   position: fixed;
   inset: 0;

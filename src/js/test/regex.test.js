@@ -7,56 +7,56 @@ import {
 } from '../lib/regex.js';
 
 describe('safeRegExp', () => {
-  it('простой паттерн компилируется', () => {
+  it('a simple pattern compiles', () => {
     const res = safeRegExp('hello');
     expect(res.ok).toBe(true);
     expect(res.re).toBeInstanceOf(RegExp);
     expect(res.reason).toBeNull();
   });
 
-  it('пустой паттерн отклонён', () => {
+  it('an empty pattern is rejected', () => {
     const res = safeRegExp('');
     expect(res.ok).toBe(false);
     expect(res.reason).toBe('empty');
   });
 
-  it('слишком длинный паттерн отклонён', () => {
+  it('a too-long pattern is rejected', () => {
     const long = 'a'.repeat(MAX_PATTERN_LENGTH + 1);
     const res = safeRegExp(long);
     expect(res.ok).toBe(false);
     expect(res.reason).toBe('too-long');
   });
 
-  it('вложенные квантификаторы отклонены: (a+)+', () => {
+  it('nested quantifiers are rejected: (a+)+', () => {
     const res = safeRegExp('(a+)+');
     expect(res.ok).toBe(false);
     expect(res.reason).toBe('nested-quantifier');
   });
 
-  it('вложенные квантификаторы отклонены: (.*)*', () => {
+  it('nested quantifiers are rejected: (.*)*', () => {
     const res = safeRegExp('(.*)*');
     expect(res.ok).toBe(false);
     expect(res.reason).toBe('nested-quantifier');
   });
 
-  it('гигантский повтор отклонён: a{9999}', () => {
+  it('a huge repeat is rejected: a{9999}', () => {
     const res = safeRegExp('a{9999}');
     expect(res.ok).toBe(false);
     expect(res.reason).toBe('huge-repeat');
   });
 
-  it('невалидный синтаксис отклонён', () => {
+  it('invalid syntax is rejected', () => {
     const res = safeRegExp('[invalid');
     expect(res.ok).toBe(false);
     expect(res.reason).toBe('invalid-syntax');
   });
 
-  it('простые чередования разрешены: (a|b)*', () => {
+  it('simple alternations are allowed: (a|b)*', () => {
     const res = safeRegExp('(a|b)*');
     expect(res.ok).toBe(true);
   });
 
-  it('флаги передаются', () => {
+  it('flags are passed through', () => {
     const res = safeRegExp('test', 'i');
     expect(res.ok).toBe(true);
     expect(res.re.flags).toContain('i');
@@ -68,12 +68,12 @@ describe('hasNestedQuantifier', () => {
     ['(a+)+', true],
     ['(.*)*', true],
     ['((a+))+', true],
-    ['(a+)', false],       // группа с квантификатором, но сама не квантифицирована безгранично
-    ['(a|b)*', false],    // альтернация без вложенного квантификатора
-    ['a+b+', false],      // последовательные — не вложенные
-    ['(a*)+', true],      // a* внутри + — вложенный
-    ['(\\()+', false],    // экранированная скобка — не группа
-    ['[a+b]*', false],    // внутри класса символов — литералы
+    ['(a+)', false],       // group with a quantifier, but not itself unboundedly quantified
+    ['(a|b)*', false],    // alternation without a nested quantifier
+    ['a+b+', false],      // sequential — not nested
+    ['(a*)+', true],      // a* inside + — nested
+    ['(\\()+', false],    // escaped parenthesis — not a group
+    ['[a+b]*', false],    // inside a character class — literals
   ];
 
   for (const [pattern, expected] of cases) {
@@ -84,36 +84,36 @@ describe('hasNestedQuantifier', () => {
 });
 
 describe('makeMatcher', () => {
-  it('пустой запрос пропускает всё', () => {
+  it('an empty query passes everything', () => {
     const match = makeMatcher('');
     expect(match('anything')).toBe(true);
     expect(match('')).toBe(true);
   });
 
-  it('подстрока по умолчанию (regex: true, но безопасный паттерн)', () => {
+  it('substring by default (regex: true, but a safe pattern)', () => {
     const match = makeMatcher('test');
     expect(match('my test file')).toBe(true);
-    expect(match('MY TEST FILE')).toBe(true); // флаг 'i'
+    expect(match('MY TEST FILE')).toBe(true); // 'i' flag
     expect(match('other')).toBe(false);
   });
 
-  it('regex: false — поиск по подстроке', () => {
+  it('regex: false — substring search', () => {
     const match = makeMatcher('foo', { regex: false });
     expect(match('foobar')).toBe(true);
     expect(match('FOOBAR')).toBe(true);
     expect(match('baz')).toBe(false);
   });
 
-  it('опасный regex деградирует до подстроки', () => {
+  it('a dangerous regex degrades to substring', () => {
     const match = makeMatcher('(a+)+b', { regex: true });
-    // (a+)+ — вложенный квантификатор, деградация до поиска подстроки "(a+)+b"
-    // В режиме подстроки ищет буквальное совпадение "(a+)+b" в тексте (регистронезависимо)
+    // (a+)+ — nested quantifier, degrades to substring search for "(a+)+b"
+    // In substring mode it looks for a literal match of "(a+)+b" in the text (case-insensitive)
     expect(match('(a+)+b')).toBe(true);
-    expect(match('(A+)+B')).toBe(true); // регистронезависимо
+    expect(match('(A+)+B')).toBe(true); // case-insensitive
     expect(match('xyz')).toBe(false);
   });
 
-  it('безопасный regex работает как regex', () => {
+  it('a safe regex works as a regex', () => {
     const match = makeMatcher('^test\\d+', { regex: true });
     expect(match('test123')).toBe(true);
     expect(match('atest123')).toBe(false);

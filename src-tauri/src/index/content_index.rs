@@ -75,7 +75,7 @@ pub fn search(conn: &Connection, root: &str, query: &str, limit: usize) -> Resul
     for row in rows {
         let (path, snippet) = row?;
         let name = path
-            .rsplit(|c| c == '\\' || c == '/')
+            .rsplit(['\\', '/'])
             .next()
             .unwrap_or(&path)
             .to_string();

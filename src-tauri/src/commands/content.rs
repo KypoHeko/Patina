@@ -15,6 +15,30 @@ const TEXT_EXTS: &[&str] = &[
 const MAX_FILE: u64 = 1_048_576;
 const MAX_FILES: usize = 5_000;
 
+/// Best-effort read of up to `cap` bytes from the head of a file.
+fn read_head(path: &std::path::Path, cap: usize) -> Vec<u8> {
+    use std::io::Read;
+    let mut buf = Vec::new();
+    if let Ok(f) = std::fs::File::open(path) {
+        let _ = f.take(cap as u64).read_to_end(&mut buf);
+    }
+    buf
+}
+
+/// Heuristic: a head sample with no NUL byte and few stray control characters
+/// is treated as text — lets unlisted *text* files (e.g. a `.dat` full of
+/// digits) be indexed while keeping binaries out.
+fn sample_looks_textual(sample: &[u8]) -> bool {
+    if sample.is_empty() || sample.contains(&0) {
+        return false;
+    }
+    let control = sample
+        .iter()
+        .filter(|&&b| b < 0x20 && !matches!(b, b'\t' | b'\n' | b'\r' | 0x0c))
+        .count();
+    control * 10 < sample.len() * 3
+}
+
 #[tauri::command]
 pub async fn reindex_content(app: AppHandle, root: String) -> Result<usize> {
     tauri::async_runtime::spawn_blocking(move || -> Result<usize> {
@@ -39,7 +63,7 @@ pub async fn reindex_content(app: AppHandle, root: String) -> Result<usize> {
                 .extension()
                 .map(|e| e.to_string_lossy().to_ascii_lowercase())
                 .unwrap_or_default();
-            if !TEXT_EXTS.contains(&ext.as_str()) {
+            if !TEXT_EXTS.contains(&ext.as_str()) && !sample_looks_textual(&read_head(path, 8192)) {
                 continue;
             }
             let bytes = match std::fs::read(path) {

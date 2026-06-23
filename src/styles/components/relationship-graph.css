@@ -68,7 +68,7 @@
   max-height: 78vh;
 }
 
-/* ── Тело: полотно + боковая панель ─────────────────── */
+/* ── Body: canvas + side panel ─────────────────── */
 .graph__body {
   display: flex;
   align-items: stretch;
@@ -103,7 +103,7 @@
   text-overflow: ellipsis;
 }
 
-/* ── Легенда и переключатель связывания ─────────────── */
+/* ── Legend and linking toggle ─────────────── */
 .graph__legend {
   flex: 1;
   display: flex;
@@ -139,7 +139,7 @@
   border-color: var(--accent);
 }
 
-/* ── Группы / списки ────────────────────────────────── */
+/* ── Groups / lists ────────────────────────────────── */
 .graph__group {
   margin-bottom: 12px;
 }
@@ -187,18 +187,18 @@
   background: transparent;
 }
 
-/* ── Граф как плавающее окно: перетаскивание за заголовок + угловой ресайз ── */
+/* ── Graph as a floating window: drag by the title bar + corner resize ── */
 .graph--window {
   top: 0;
   left: 0;
-  transform: none; /* позицию задаёт JS (left/top), центрирование при открытии */
+  transform: none; /* JS sets the position (left/top), centering on open */
   width: min(1100px, 92vw);
   height: min(760px, 86vh);
   min-width: 520px;
   min-height: 380px;
   display: flex;
   flex-direction: column;
-  resize: both; /* тянем за нижний-правый угол */
+  resize: both; /* drag the bottom-right corner */
   overflow: hidden;
 }
 .graph--window .graph__head {
@@ -239,7 +239,7 @@
   overflow-y: auto;
 }
 
-/* ── Индикаторы загрузки и хеширования ─────────────── */
+/* ── Loading and hashing indicators ─────────────── */
 .graph__loading,
 .graph__hashing {
   position: absolute;
@@ -260,7 +260,7 @@
   color: var(--text-dim);
   white-space: nowrap;
 }
-/* Состояние «готово»: спиннер скрыт, вместо него галочка акцентного цвета. */
+/* "Done" state: the spinner is hidden, replaced by an accent-colored checkmark. */
 .graph__loading.is-done .graph__spinner {
   display: none;
 }

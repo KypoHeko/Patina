@@ -6,23 +6,23 @@ describe('drag state', () => {
     clearDrag();
   });
 
-  it('изначально null', () => {
+  it('initially null', () => {
     expect(getDrag()).toBeNull();
   });
 
-  it('startDrag устанавливает состояние', () => {
+  it('startDrag sets the state', () => {
     startDrag(['/a', '/b'], 'left');
     const drag = getDrag();
     expect(drag).toEqual({ paths: ['/a', '/b'], sourceSide: 'left' });
   });
 
-  it('clearDrag сбрасывает в null', () => {
+  it('clearDrag resets to null', () => {
     startDrag(['/x'], 'right');
     clearDrag();
     expect(getDrag()).toBeNull();
   });
 
-  it('последний startDrag перезаписывает предыдущий', () => {
+  it('the last startDrag overwrites the previous one', () => {
     startDrag(['/a'], 'left');
     startDrag(['/b', '/c'], 'right');
     expect(getDrag().paths).toEqual(['/b', '/c']);

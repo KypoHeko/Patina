@@ -15,7 +15,7 @@ function makeStore() {
 }
 
 describe('getPane', () => {
-  it('возвращает левую панель активной вкладки', () => {
+  it('returns the left pane of the active tab', () => {
     const store = makeStore();
     const pane = getPane(store.getState(), 'left');
     expect(pane).toBeDefined();
@@ -24,7 +24,7 @@ describe('getPane', () => {
 });
 
 describe('updatePane', () => {
-  it('обновляет свойства панели', () => {
+  it('updates pane properties', () => {
     const store = makeStore();
     updatePane(store, 'left', { path: '/home', loading: true });
     const pane = getPane(store.getState(), 'left');
@@ -32,7 +32,7 @@ describe('updatePane', () => {
     expect(pane.loading).toBe(true);
   });
 
-  it('не затрагивает другую панель', () => {
+  it('does not affect the other pane', () => {
     const store = makeStore();
     updatePane(store, 'left', { path: '/home/left' });
     const right = getPane(store.getState(), 'right');
@@ -41,23 +41,23 @@ describe('updatePane', () => {
 });
 
 describe('setActivePane', () => {
-  it('переключает активную сторону', () => {
+  it('toggles the active side', () => {
     const store = makeStore();
     setActivePane(store, 'right');
     const tab = store.getState().tabs[0];
     expect(tab.activeSide).toBe('right');
   });
 
-  it('не мутирует если уже активна', () => {
+  it('does not mutate if already active', () => {
     const store = makeStore();
     const before = store.getState();
     setActivePane(store, 'left');
-    expect(store.getState()).toBe(before); // тот же объект — setState вернул {}
+    expect(store.getState()).toBe(before); // same object — setState returned {}
   });
 });
 
 describe('selectInPane', () => {
-  it('устанавливает выделение', () => {
+  it('sets the selection', () => {
     const store = makeStore();
     selectInPane(store, 'left', ['/a', '/b']);
     const pane = getPane(store.getState(), 'left');
@@ -66,7 +66,7 @@ describe('selectInPane', () => {
 });
 
 describe('recordHistory', () => {
-  it('добавляет путь в историю', () => {
+  it('adds a path to history', () => {
     const store = makeStore();
     recordHistory(store, 'left', '/home');
     const pane = getPane(store.getState(), 'left');
@@ -74,7 +74,7 @@ describe('recordHistory', () => {
     expect(pane.historyIndex).toBe(0);
   });
 
-  it('дубликаты подряд не добавляются', () => {
+  it('consecutive duplicates are not added', () => {
     const store = makeStore();
     recordHistory(store, 'left', '/home');
     recordHistory(store, 'left', '/home');
@@ -82,14 +82,14 @@ describe('recordHistory', () => {
     expect(pane.history).toHaveLength(1);
   });
 
-  it('хвост «вперёд» обрезается при новом переходе', () => {
+  it('the "forward" tail is truncated on a new navigation', () => {
     const store = makeStore();
     recordHistory(store, 'left', '/a');
     recordHistory(store, 'left', '/b');
     recordHistory(store, 'left', '/c');
-    // шаг назад
+    // step back
     stepHistory(store, 'left', -1);
-    // новый переход — хвост /c обрезается
+    // new navigation — tail /c is truncated
     recordHistory(store, 'left', '/d');
     const pane = getPane(store.getState(), 'left');
     expect(pane.history).toEqual(['/a', '/b', '/d']);
@@ -97,7 +97,7 @@ describe('recordHistory', () => {
 });
 
 describe('stepHistory', () => {
-  it('шаг назад возвращает предыдущий путь', () => {
+  it('step back returns the previous path', () => {
     const store = makeStore();
     recordHistory(store, 'left', '/a');
     recordHistory(store, 'left', '/b');
@@ -105,7 +105,7 @@ describe('stepHistory', () => {
     expect(result).toBe('/a');
   });
 
-  it('шаг вперёд после шага назад', () => {
+  it('step forward after a step back', () => {
     const store = makeStore();
     recordHistory(store, 'left', '/a');
     recordHistory(store, 'left', '/b');
@@ -114,7 +114,7 @@ describe('stepHistory', () => {
     expect(result).toBe('/b');
   });
 
-  it('за пределами истории — null', () => {
+  it('beyond history bounds → null', () => {
     const store = makeStore();
     recordHistory(store, 'left', '/a');
     expect(stepHistory(store, 'left', -1)).toBeNull();
