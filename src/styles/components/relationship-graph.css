@@ -231,6 +231,49 @@
 .graph--window .graph__canvas:active {
   cursor: grabbing;
 }
+
+/* Scan-limit readout in the corner */
+.graph__limits {
+  position: absolute;
+  top: 10px;
+  left: 12px;
+  text-align: left;
+  white-space: pre-line;
+  font-family: var(--font-mono, ui-monospace, "SF Mono", Menlo, monospace);
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--text-faint);
+  pointer-events: none;
+  user-select: none;
+}
+
+/* Header view toggles (labels / deps / .gitignore / replay) */
+.graph__tools {
+  display: flex;
+  gap: 6px;
+  margin-left: auto;
+}
+.graph__toggle {
+  font: inherit;
+  font-size: 12px;
+  color: var(--text-faint);
+  background: transparent;
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.12));
+  border-radius: 7px;
+  padding: 3px 9px;
+  cursor: pointer;
+}
+.graph__toggle:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.06);
+}
+.graph__toggle.is-on {
+  color: var(--accent, #10b981);
+  border-color: var(--accent, #10b981);
+}
+.graph__tools + .graph__rebuild {
+  margin-left: 6px;
+}
 .graph--window .graph__aside {
   flex: 0 0 260px;
   width: 260px;
