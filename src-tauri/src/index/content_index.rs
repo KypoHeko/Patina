@@ -59,9 +59,20 @@ pub fn search(conn: &Connection, root: &str, query: &str, limit: usize) -> Resul
     let root = root.as_str();
     let match_q = build_match(query);
     if match_q.is_empty() {
+        eprintln!("[patina:content] search: empty match_q for query={query}");
         return Ok(Vec::new());
     }
     let (_, prefix, upper) = subtree_bounds(root);
+    eprintln!("[patina:content] search: match_q={match_q} prefix={prefix} upper={upper}");
+    // Diagnostic: how many rows in content_fts for this root?
+    let total: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM content_fts WHERE path = ?1 OR (path >= ?2 AND path < ?3)",
+            (root, &prefix, &upper),
+            |r| r.get(0),
+        )
+        .unwrap_or(-1);
+    eprintln!("[patina:content] search: {total} total rows in content_fts for root={root}");
     let mut stmt = conn.prepare(
         "SELECT path, snippet(content_fts, 1, '[', ']', '…', 12)
          FROM content_fts
@@ -104,6 +115,28 @@ fn build_match(q: &str) -> String {
         .map(|w| format!("\"{w}\"*"))
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+/// Read all `ContentRow`s of a subtree from the content index (for edge
+/// rebuilding without re-walking the filesystem). Returns rows ordered by path.
+pub fn read_subtree(conn: &Connection, root: &str) -> Result<Vec<ContentRow>> {
+    let root = normalize(root);
+    let root = root.as_str();
+    let (_, prefix, upper) = subtree_bounds(root);
+    let mut stmt = conn.prepare(
+        "SELECT path, body FROM content_fts WHERE path = ?1 OR (path >= ?2 AND path < ?3) ORDER BY path",
+    )?;
+    let rows = stmt.query_map((root, &prefix, &upper), |r| {
+        Ok(ContentRow {
+            path: r.get(0)?,
+            body: r.get(1)?,
+        })
+    })?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r?);
+    }
+    Ok(out)
 }
 
 /// Update a single file's contents in place (delete+insert: FTS5 has no upsert).

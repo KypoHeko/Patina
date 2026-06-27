@@ -13,6 +13,7 @@
 import { Component } from '../core/component.js';
 import { escapeHtml } from '../core/dom.js';
 import { fileGraph } from '../api/relationships.js';
+import { rebuildEdges } from '../api/indexing.js';
 import { listDir } from '../api/fs.js';
 import { getPane } from '../state/panes.js';
 import { getActiveSide } from '../state/tabs.js';
@@ -24,6 +25,16 @@ import { assetUrl } from '../api/invoke.js';
 
 const MAX_DEPTH = 10; // scan safety caps (shown in the corner)
 const MAX_NODES = 10000;
+
+// Heavy build / VCS / dependency directories pruned whenever the .gitignore
+// toggle is on, regardless of whether a .gitignore could be read. Keeps a huge
+// tree (e.g. Rust `target/`) from stalling the scan with thousands of listDir
+// round-trips. Toggle the button off to include everything.
+const ALWAYS_IGNORE_DIRS = new Set([
+  '.git', 'node_modules', 'target', 'dist', '.next', '.nuxt', '.svelte-kit',
+  '.cache', '.turbo', '.parcel-cache', '__pycache__', '.venv', 'venv',
+  'vendor', '.gradle', '.idea', '.vs', 'coverage',
+]);
 
 const C_CENTER = '#10b981'; // focus (emerald)
 const C_FOLDER = '#eab308'; // folder rings (amber)
@@ -138,7 +149,13 @@ export class RelationshipGraph extends Component {
   }
 
   rebuild() {
-    if (this._open) this.scan();
+    if (!this._open) return;
+    // Re-read the active pane's current folder (it may have changed since the
+    // graph was opened) so "Rebuild" actually re-roots on where the user is now.
+    const state = this.store.getState();
+    this._side = getActiveSide(state);
+    this._root = getPane(state, this._side).path || '';
+    this.scan();
   }
 
   /** Header toggles. Labels/deps just redraw; .gitignore re-scans the tree. */
@@ -171,38 +188,42 @@ export class RelationshipGraph extends Component {
   async scan() {
     const seq = ++this._scanSeq;
     this.setLoading(true);
-    const ignore = this._useGitignore ? await this.loadIgnore(this._root) : null;
-    if (seq !== this._scanSeq || !this._open) return;
-    let res;
     try {
-      res = await buildDirTree(listDir, this._root, { maxDepth: MAX_DEPTH, maxNodes: MAX_NODES, ignore });
-    } catch {
-      res = null;
-    }
-    if (seq !== this._scanSeq || !this._open) return; // stale or closed
+      const ignore = this._useGitignore ? await this.loadIgnore(this._root) : null;
+      if (seq !== this._scanSeq || !this._open) return;
+      let res;
+      try {
+        res = await buildDirTree(listDir, this._root, { maxDepth: MAX_DEPTH, maxNodes: MAX_NODES, ignore });
+      } catch {
+        res = null;
+      }
+      if (seq !== this._scanSeq || !this._open) return; // stale or closed
 
-    if (!res) {
-      this._nodes = [];
+      if (!res) {
+        this._nodes = [];
+        this._byPath = new Map();
+        this._edges = [];
+        this.draw();
+        return;
+      }
+
+      this._counts = { files: res.files, folders: res.folders, depth: res.depth, truncated: res.truncated };
+      this._nodes = radialLayout(res.root, { maxDepth: MAX_DEPTH, weighted: true });
       this._byPath = new Map();
-      this._edges = [];
-      this.setLoading(false);
-      this.draw();
-      return;
-    }
+      for (const n of this._nodes) {
+        this._byPath.set(n.path, n);
+        n.x = 0; n.y = 0; n.vx = 0; n.vy = 0; // start at center → unfold outward
+      }
+      this.layout();
+      this.updateLimits();
+      this.startSim();
 
-    this._counts = { files: res.files, folders: res.folders, depth: res.depth, truncated: res.truncated };
-    this._nodes = radialLayout(res.root, { maxDepth: MAX_DEPTH, weighted: true });
-    this._byPath = new Map();
-    for (const n of this._nodes) {
-      this._byPath.set(n.path, n);
-      n.x = 0; n.y = 0; n.vx = 0; n.vy = 0; // start at center → unfold outward
+      this.fetchDeps(seq); // dependency overlay, best-effort
+    } finally {
+      // Always clear the spinner for the current scan — even on early return,
+      // a thrown error, or a failed .gitignore read. Stale scans leave it alone.
+      if (seq === this._scanSeq) this.setLoading(false);
     }
-    this.layout();
-    this.updateLimits();
-    this.setLoading(false);
-    this.startSim();
-
-    this.fetchDeps(seq); // dependency overlay, best-effort
   }
 
   /** Read the focus folder's .gitignore (via the asset protocol) and return an
@@ -213,21 +234,28 @@ export class RelationshipGraph extends Component {
     let match = null;
     const sep = root.includes('\\') ? '\\' : '/';
     const path = root.replace(/[\\/]+$/, '') + sep + '.gitignore';
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 2500); // never let this block the scan
     try {
       const url = assetUrl(path);
       if (url) {
-        const res = await fetch(url);
+        const res = await fetch(url, { signal: ctrl.signal });
         if (res.ok) {
           const text = await res.text();
           if (text.trim()) match = gitignoreMatcher(text);
         }
       }
     } catch {
-      /* no readable .gitignore — fall through to just hiding .git */
+      /* no readable .gitignore — baseline ignores below still apply */
+    } finally {
+      clearTimeout(timer);
     }
     return (rel, isDir) => {
       const name = rel.slice(rel.lastIndexOf('/') + 1);
-      if (isDir && name === '.git') return true;
+      // Baseline: always prune heavy build/VCS/dependency dirs so a huge tree
+      // (e.g. Rust `target/`) never stalls the scan, even if .gitignore can't
+      // be read. Toggle the button off to see everything.
+      if (isDir && ALWAYS_IGNORE_DIRS.has(name)) return true;
       return match ? match(rel, isDir) : false;
     };
   }
@@ -251,8 +279,19 @@ export class RelationshipGraph extends Component {
     if (!files.length) return;
     let data;
     try {
+      // Rebuild derived edges from the content index before querying them.
+      // Without this, the graph only reads whatever was stored in file_edges
+      // at the last index build — which may be stale or empty if the user
+      // hasn't triggered a full rebuild since editing files.
+      console.log('[patina:graph] fetchDeps: calling rebuildEdges for root=', this._root);
+      await rebuildEdges(this._root);
+      console.log('[patina:graph] fetchDeps: querying fileGraph with', Math.min(files.length, DEP_SEED_CAP), 'seeds');
       data = await fileGraph(files.slice(0, DEP_SEED_CAP), 1);
-    } catch {
+      console.log('[patina:graph] fetchDeps: fileGraph returned',
+        data?.edges?.length ?? 0, 'edges,',
+        data?.nodes?.length ?? 0, 'nodes');
+    } catch (err) {
+      console.error('[patina:graph] fetchDeps error:', err);
       return;
     }
     if (seq !== this._scanSeq || !this._open) return;
@@ -262,6 +301,8 @@ export class RelationshipGraph extends Component {
       const b = this._byPath.get(e.dst);
       if (a && b && a !== b) edges.push([a, b]);
     }
+    console.log('[patina:graph] fetchDeps: matched', edges.length, 'edges to visible nodes (',
+      this._byPath.size, 'nodes in map)');
     this._edges = edges;
     this.draw();
   }

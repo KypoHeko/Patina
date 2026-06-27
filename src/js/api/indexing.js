@@ -6,3 +6,10 @@ import { invoke } from './invoke.js';
 export function startIndex(root, content = false, force = false) {
   return invoke('start_index', { root, content, force });
 }
+
+/** Rebuild only the derived edges (links/imports/mentions) for a subtree,
+ *  reading existing content and file_index rows from the DB instead of
+ *  re-walking the filesystem. Returns when the edges are up to date. */
+export function rebuildEdges(root) {
+  return invoke('rebuild_edges', { root });
+}

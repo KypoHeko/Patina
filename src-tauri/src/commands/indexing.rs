@@ -17,7 +17,7 @@ use crate::state::AppState;
 
 const TEXT_EXTS: &[&str] = &[
     "txt", "md", "markdown", "rs", "js", "mjs", "ts", "jsx", "tsx", "json", "toml", "yaml", "yml",
-    "ini", "cfg", "conf", "log", "csv", "tsv", "html", "htm", "css", "xml", "sh", "bat", "py", "go",
+    "ini", "cfg", "conf", "log", "csv", "tsv", "dat", "html", "htm", "css", "xml", "sh", "bat", "py", "go",
     "java", "c", "h", "cpp", "hpp", "sql", "kt", "swift", "rb", "php", "lua", "vue", "svelte",
 ];
 const MAX_FILE: u64 = 1_048_576; // 1 MB
@@ -36,7 +36,7 @@ fn is_ignored_name(name: &str) -> bool {
     )
 }
 
-fn is_ignored_dir(e: &walkdir::DirEntry) -> bool {
+pub(crate) fn is_ignored_dir(e: &walkdir::DirEntry) -> bool {
     e.file_type().is_dir() && is_ignored_name(e.file_name().to_str().unwrap_or(""))
 }
 
@@ -97,24 +97,35 @@ fn ext_lower(path: &str) -> String {
 /// Explicit outgoing edges of a single file from its body (links/imports,
 /// resolved to existing paths). The mention layer is NOT built here — it
 /// requires a shared name map and is rebuilt on a full reindex.
-fn explicit_out_edges(src_path: &str, body: &str) -> Vec<(String, String)> {
+pub(crate) fn explicit_out_edges(src_path: &str, body: &str) -> Vec<(String, String)> {
     let ext = ext_lower(src_path);
     let kind = links::kind_for(&ext);
     let mut seen: HashSet<String> = HashSet::new();
     let mut out = Vec::new();
-    for raw in links::extract_targets(&ext, body) {
+    let raw_targets = links::extract_targets(&ext, body);
+    let raw_count = raw_targets.len();
+    let mut resolved_count = 0usize;
+    for raw in raw_targets {
         if let Some(dst) = links::resolve(src_path, &raw) {
             if dst != src_path && seen.insert(dst.clone()) {
                 out.push((dst, kind.to_string()));
+                resolved_count += 1;
             }
         }
+    }
+    // [DEBUG LOG] Per-file edge extraction stats — shows which files produce
+    // zero edges (likely a link extraction gap) vs. which have unresolvable targets.
+    if raw_count > 0 {
+        eprintln!(
+            "[patina:edges] explicit_out_edges: src={src_path} ext={ext} raw={raw_count} resolved={resolved_count}"
+        );
     }
     out
 }
 
 /// The full set of subtree edges: explicit links/imports + a mention layer by
 /// unique file name (discovery). Built from the already-read bodies.
-fn build_edges(
+pub(crate) fn build_edges(
     app: &AppHandle,
     root: &str,
     content_rows: &[content_index::ContentRow],
@@ -140,13 +151,23 @@ fn build_edges(
     let mut seen: HashSet<(String, String)> = HashSet::new();
 
     // 1) Explicit links/imports.
+    let mut explicit_count = 0usize;
     for cr in content_rows {
         for (dst, kind) in explicit_out_edges(&cr.path, &cr.body) {
             if seen.insert((cr.path.clone(), dst.clone())) {
                 out.push((cr.path.clone(), dst, kind));
+                explicit_count += 1;
             }
         }
     }
+
+    // [DEBUG LOG] Summary after explicit edge extraction.
+    eprintln!(
+        "[patina:edges] build_edges phase 1 (explicit): {} edges from {} content_rows for root={}",
+        explicit_count,
+        content_rows.len(),
+        root
+    );
 
     // 2) Mentions by unique name (the discovery layer). We take only names
     //    WITH AN EXTENSION (containing '.') and length ≥ 4: this filters out
@@ -158,6 +179,13 @@ fn build_edges(
         .filter_map(|(name, p)| p.map(|path| (name, path)))
         .filter(|(name, _)| name.len() >= 4 && name.contains('.'))
         .collect();
+
+    // [DEBUG LOG] Mention layer: how many unique filenames qualify.
+    eprintln!(
+        "[patina:edges] build_edges phase 2 (mentions): {} unique named files for root={}",
+        unique.len(),
+        root
+    );
 
     if unique.is_empty() {
         return out;
@@ -222,6 +250,16 @@ fn build_edges(
             );
         }
     }
+
+    // [DEBUG LOG] Final edge count.
+    let mention_count = out.len() - explicit_count;
+    eprintln!(
+        "[patina:edges] build_edges DONE: total={} (explicit={} + mentions={}) for root={}",
+        out.len(),
+        explicit_count,
+        mention_count,
+        root
+    );
 
     out
 }
@@ -308,6 +346,11 @@ fn build_all(app: &AppHandle, root: &str, content: bool) -> Result<()> {
         file_index::replace_subtree(&mut conn, root, &rows)?;
     }
     if content {
+        eprintln!(
+            "[patina:build] build_all: {} total rows, {} content_rows for root={root}",
+            rows.len(),
+            content_rows.len()
+        );
         // Building edges can take noticeable time — a separate UI phase;
         // build_edges emits incremental progress internally.
         let _ = app.emit(
@@ -363,7 +406,7 @@ pub async fn start_index(
     }
 
     // Update flags; find out whether the root changed and whether content must be built for the first time.
-    let (root_changed, need_content_build) = {
+    let (root_changed, need_content_build, content_active) = {
         let mut info = state.index_info()?;
         let was_content = info.content_active;
         if content {
@@ -371,7 +414,7 @@ pub async fn start_index(
         }
         let changed = info.root.as_deref() != Some(root.as_str());
         info.root = Some(root.clone());
-        (changed, content && !was_content)
+        (changed, content && !was_content, info.content_active)
     };
     
     let app2 = app.clone();
@@ -386,11 +429,12 @@ pub async fn start_index(
             });
         }
         IndexPlan::Rescan => {
-            // Same root, not a force: only file_index, without content (it was
-            // already built earlier). No USN shortcut — a rescan is cheap under
-            // SCAN_LIMIT and does not risk a stale index.
+            // Same root, not a force: rebuild file_index AND content+edges when
+            // the content index is active. Previously this was `content: false`,
+            // which meant derived edges (links/mentions) were never refreshed on
+            // a rescan — the graph showed stale or no relationships.
             tauri::async_runtime::spawn_blocking(move || {
-                let _ = build_all(&app2, &root2, false);
+                let _ = build_all(&app2, &root2, content_active);
                 let _ = app2.emit("index:ready", &root2);
             });
         }
@@ -425,6 +469,42 @@ pub async fn start_index(
     }
 
     Ok(())
+}
+
+/// Rebuild derived edges (links/imports/mentions) for a subtree by walking the
+/// filesystem with `is_ignored_dir` filtering. Always scans from disk — the
+/// content index DB may be stale or may contain unfiltered junk (e.g. target/
+/// files from a prior `reindex_content`). Also populates content_fts and
+/// file_index so subsequent operations are fast.
+#[tauri::command]
+pub async fn rebuild_edges(app: AppHandle, root: String) -> Result<()> {
+    if root.is_empty() || root.starts_with("tag:") {
+        return Ok(());
+    }
+    eprintln!("[patina:edges] rebuild_edges: starting full disk scan for root={root}");
+    tauri::async_runtime::spawn_blocking(move || {
+            build_all(&app, &root, true)?;
+        // [DEBUG LOG] Verify: count edges in DB after rebuild.
+        let state = app.state::<AppState>();
+        if let Ok(conn) = state.db_read() {
+            let (_, prefix, upper) = crate::index::path_bounds::subtree_bounds(
+                &crate::index::path_key::normalize(&root),
+            );
+            let count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM file_edges WHERE src = ?1 OR (src >= ?2 AND src < ?3) OR dst = ?1 OR (dst >= ?2 AND dst < ?3)",
+                    (&crate::index::path_key::normalize(&root), &prefix, &upper),
+                    |r| r.get(0),
+                )
+                .unwrap_or(0);
+            eprintln!(
+                "[patina:edges] rebuild_edges: DONE — {count} total edges in DB for root={root}"
+            );
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|e| Error::Operation(format!("rebuild_edges interrupted: {e}")))?
 }
 
 #[cfg(test)]

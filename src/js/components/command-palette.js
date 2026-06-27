@@ -44,6 +44,7 @@ export class CommandPalette extends Component {
     this._treeBase = null;
     this._treeTimer = null;
     this._contentIndexed = new Set();
+    this._contentReady = new Set();
     this._contentTimer = null;
     this._idxTimer = null;
     this._lastSig = '';
@@ -51,7 +52,7 @@ export class CommandPalette extends Component {
     this.listen('palette:open', () => (this._open ? this.close() : this.open()));
     // Index freshness is now maintained by the backend (recursive watcher); on an
     // event we just re-run the current query.
-    onEvent('index:ready', () => this.onIndexEvent());
+    onEvent('index:ready', (root) => this.onIndexReady(root));
     onEvent('index:changed', () => this.onIndexEvent());
     this.on(document, 'keydown', (e) => {
       if (this._open) this.onKey(e);
@@ -185,6 +186,7 @@ export class CommandPalette extends Component {
     if (this._scope === 'content') {
       startIndex(root, true, true).catch(() => {});
       this._contentIndexed.add(root);
+      this._contentReady.delete(root);
       this.runContentQuery();
       return;
     }
@@ -199,12 +201,74 @@ export class CommandPalette extends Component {
     clearTimeout(this._contentTimer);
     this._contentTimer = setTimeout(() => this.runContentQuery(), 220);
   }
-
-  ensureContentIndexed(root) {
-    if (this._contentIndexed.has(root)) return Promise.resolve();
-    this._contentIndexed.add(root);
-    return startIndex(root, true).catch(() => {});
-  }
+  
+    /// Ensure the content index is built and READY for the given root.
+    /// Unlike the simple version, this waits for the backend `index:ready`
+    /// event before resolving, so that the subsequent search actually finds
+    /// results instead of running against an empty table.
+    ensureContentIndexed(root) {
+      // If we already know the content index is ready, skip.
+      if (this._contentReady.has(root)) return Promise.resolve();
+  
+      // Mark as "requested" so we don't fire startIndex multiple times.
+      const alreadyStarted = this._contentIndexed.has(root);
+      this._contentIndexed.add(root);
+  
+      // Start the index build if we haven't yet.
+      const buildPromise = alreadyStarted
+        ? Promise.resolve()
+        : startIndex(root, true).catch(() => {});
+  
+      // Wait for the build AND for the index:ready event.
+      return buildPromise.then(() => this.waitForContentReady(root));
+    }
+  
+    /// Returns a Promise that resolves when `index:ready` fires for the given
+    /// root (or immediately if already marked ready). Has a 15-second timeout
+    /// so the UI doesn't hang forever if the event never arrives.
+    waitForContentReady(root) {
+      if (this._contentReady.has(root)) return Promise.resolve();
+  
+      return new Promise((resolve) => {
+        const timeout = setTimeout(() => {
+          // Timed out — resolve anyway so the search can proceed (against
+          // whatever is in the index right now). The index:ready handler
+          // will trigger a re-search when it eventually arrives.
+          console.warn('[patina:palette] waitForContentReady timed out for', root);
+          resolve();
+        }, 15000);
+  
+        // Store the resolver so onIndexReady can call it.
+        if (!this._contentReadyResolvers) this._contentReadyResolvers = new Map();
+        const existing = this._contentReadyResolvers.get(root);
+        if (existing) {
+          // Chain: resolve the previous waiter too.
+          const prev = existing;
+          this._contentReadyResolvers.set(root, () => { prev(); resolve(); clearTimeout(timeout); });
+        } else {
+          this._contentReadyResolvers.set(root, () => { resolve(); clearTimeout(timeout); });
+        }
+      });
+    }
+  
+    /// Called when the backend emits `index:ready`. Resolves any pending
+    /// waitForContentReady promises and triggers a re-search if the palette
+    /// is open in content scope.
+    onIndexReady(root) {
+      if (root) this._contentReady.add(root);
+  
+      // Resolve any waiting promises.
+      if (this._contentReadyResolvers) {
+        const resolve = this._contentReadyResolvers.get(root);
+        if (resolve) {
+          this._contentReadyResolvers.delete(root);
+          resolve();
+        }
+      }
+  
+      // Re-run query if palette is open in content/tree scope.
+      this.onIndexEvent();
+    }
 
   // Signature of the result set: paths + snippets. If unchanged, we skip the
   // re-render (removes flicker on index events).
@@ -242,11 +306,19 @@ export class CommandPalette extends Component {
       this._loading = true;
       this.renderResults();
     }
+    console.log('[patina:palette] runContentQuery: root=', root, 'query=', q, 'silent=', silent);
     this.ensureContentIndexed(root)
-      .then(() => searchContent(root, q, 200))
-      .then((hits) => this.commitResults((hits || []).map((h) => ({ ...h, kind: 'file' })), seq))
-      .catch(() => {
-        if (seq !== this._scanSeq || !this._open || silent) return;
+          .then(() => {
+            console.log('[patina:palette] content index ready, searching for:', q);
+            return searchContent(root, q, 200);
+          })
+          .then((hits) => {
+            console.log('[patina:palette] searchContent returned:', (hits || []).length, 'hits');
+            this.commitResults((hits || []).map((h) => ({ ...h, kind: 'file' })), seq);
+          })
+          .catch((err) => {
+            console.error('[patina:palette] content search error:', err);
+            if (seq !== this._scanSeq || !this._open || silent) return;
         this._loading = false;
         this._entries = [];
         this._lastSig = this._resultsSig([]);

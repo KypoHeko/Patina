@@ -69,6 +69,7 @@ pub fn run() {
             commands::content::reindex_content,
             commands::content::search_content,
             commands::indexing::start_index,
+            commands::indexing::rebuild_edges,
             commands::dir_size::compute_dir_sizes,
             commands::dir_size::dir_sizes,
         ])
