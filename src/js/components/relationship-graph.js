@@ -277,19 +277,15 @@ export class RelationshipGraph extends Component {
   async fetchDeps(seq) {
     const files = this._nodes.filter((n) => !n.dir && n._depth > 0).map((n) => n.path);
     if (!files.length) return;
+
     let data;
     try {
       // Rebuild derived edges from the content index before querying them.
       // Without this, the graph only reads whatever was stored in file_edges
       // at the last index build — which may be stale or empty if the user
       // hasn't triggered a full rebuild since editing files.
-      console.log('[patina:graph] fetchDeps: calling rebuildEdges for root=', this._root);
       await rebuildEdges(this._root);
-      console.log('[patina:graph] fetchDeps: querying fileGraph with', Math.min(files.length, DEP_SEED_CAP), 'seeds');
       data = await fileGraph(files.slice(0, DEP_SEED_CAP), 1);
-      console.log('[patina:graph] fetchDeps: fileGraph returned',
-        data?.edges?.length ?? 0, 'edges,',
-        data?.nodes?.length ?? 0, 'nodes');
     } catch (err) {
       console.error('[patina:graph] fetchDeps error:', err);
       return;
@@ -301,8 +297,6 @@ export class RelationshipGraph extends Component {
       const b = this._byPath.get(e.dst);
       if (a && b && a !== b) edges.push([a, b]);
     }
-    console.log('[patina:graph] fetchDeps: matched', edges.length, 'edges to visible nodes (',
-      this._byPath.size, 'nodes in map)');
     this._edges = edges;
     this.draw();
   }

@@ -234,7 +234,6 @@ export class CommandPalette extends Component {
           // Timed out — resolve anyway so the search can proceed (against
           // whatever is in the index right now). The index:ready handler
           // will trigger a re-search when it eventually arrives.
-          console.warn('[patina:palette] waitForContentReady timed out for', root);
           resolve();
         }, 15000);
   
@@ -306,14 +305,9 @@ export class CommandPalette extends Component {
       this._loading = true;
       this.renderResults();
     }
-    console.log('[patina:palette] runContentQuery: root=', root, 'query=', q, 'silent=', silent);
     this.ensureContentIndexed(root)
-          .then(() => {
-            console.log('[patina:palette] content index ready, searching for:', q);
-            return searchContent(root, q, 200);
-          })
+          .then(() => searchContent(root, q, 200))
           .then((hits) => {
-            console.log('[patina:palette] searchContent returned:', (hits || []).length, 'hits');
             this.commitResults((hits || []).map((h) => ({ ...h, kind: 'file' })), seq);
           })
           .catch((err) => {

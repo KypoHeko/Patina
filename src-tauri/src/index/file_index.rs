@@ -129,34 +129,6 @@ pub fn upsert_one(conn: &Connection, row: &IndexRow) -> Result<()> {
     Ok(())
 }
 
-/// Read all `IndexRow`s of a subtree from the index (for edge rebuilding
-/// without re-walking the filesystem). Returns rows ordered by path.
-pub fn read_subtree_rows(conn: &Connection, root: &str) -> Result<Vec<IndexRow>> {
-    let root = normalize(root);
-    let root = root.as_str();
-    let (_, prefix, upper) = subtree_bounds(root);
-    let mut stmt = conn.prepare(
-        "SELECT path, name, is_dir, size, mtime, ext FROM file_index
-         WHERE path = ?1 OR (path >= ?2 AND path < ?3)
-         ORDER BY path",
-    )?;
-    let rows = stmt.query_map((root, &prefix, &upper), |r| {
-        Ok(IndexRow {
-            path: r.get(0)?,
-            name: r.get(1)?,
-            is_dir: r.get::<_, i64>(2)? != 0,
-            size: r.get::<_, i64>(3)? as u64,
-            mtime: r.get::<_, Option<i64>>(4)?.map(|m| m as u64),
-            ext: r.get(5)?,
-        })
-    })?;
-    let mut out = Vec::new();
-    for r in rows {
-        out.push(r?);
-    }
-    Ok(out)
-}
-
 /// Delete a path and its subtree (if it was a folder) from the index.
 pub fn delete_path(conn: &Connection, path: &str) -> Result<()> {
     let path = normalize(path);

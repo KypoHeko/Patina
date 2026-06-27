@@ -2,6 +2,7 @@
 //! No regex (manual parsing) to avoid pulling in a dependency. Targets are
 //! resolved relative to the file's folder and accepted only if they really exist.
 
+use std::collections::HashSet;
 use std::path::{Component, Path, PathBuf};
 
 /// The derived edge kind based on the source's extension.
@@ -128,7 +129,6 @@ fn js_targets(body: &str) -> Vec<String> {
     out.extend(quoted_following(body, "require ("));
     // import './path' (side-effect import, no `from`)
     out.extend(quoted_following(body, "import "));
-    out.extend(quoted_following(body, "import("));
     // Dynamic imports: import('./path')
     out.extend(quoted_following(body, "import("));
     // Also catch generic pathlike strings as a last resort (template literals
@@ -179,7 +179,7 @@ fn rs_targets(body: &str) -> Vec<String> {
                 if let Some(end) = s.find(')') {
                     s = s[end + 1..].trim_start();
                 } else {
-                    continue; // malformed — skip this line
+                    continue;
                 }
             }
         }
@@ -319,10 +319,26 @@ fn normalize(p: &Path) -> PathBuf {
     out
 }
 
+/// Check whether a normalized path exists: first try the in-memory set of
+/// known paths (O(1)), then fall back to `fs::metadata` for paths outside
+/// the scanned subtree (e.g. newly created files, or incremental watcher
+/// updates where no set is available).
+fn path_exists(normalized: &Path, known: Option<&HashSet<String>>) -> bool {
+    if let Some(set) = known {
+        set.contains(normalized.to_string_lossy().as_ref())
+    } else {
+        std::fs::metadata(normalized).is_ok()
+    }
+}
+
 /// Resolve a raw target to an absolute path relative to `src_path`'s folder.
 /// External links/protocols and anchors are dropped. A path is accepted only if
 /// the file exists (for extensionless imports, common extensions are tried).
-pub fn resolve(src_path: &str, raw: &str) -> Option<String> {
+///
+/// `known_paths`: when provided (during a full build), path existence is
+/// checked against this in-memory set instead of hitting the filesystem for
+/// every candidate — this eliminates thousands of `stat` syscalls.
+pub fn resolve(src_path: &str, raw: &str, known_paths: Option<&HashSet<String>>) -> Option<String> {
     let t = raw.trim();
     let t = t.split(['#', '?']).next().unwrap_or("").trim();
     if t.is_empty() || t.starts_with("//") || t.contains("://") {
@@ -336,47 +352,34 @@ pub fn resolve(src_path: &str, raw: &str) -> Option<String> {
     }
 
     let base = Path::new(src_path).parent()?;
+
+    // Direct path
     let direct = normalize(&base.join(t));
-    if std::fs::metadata(&direct).is_ok() {
+    if path_exists(&direct, known_paths) {
         return Some(direct.to_string_lossy().into_owned());
     }
-
-    // Rust module convention: `mod foo;` produces candidates "foo.rs" and
-    // "foo/mod.rs". These are resolved relative to the SOURCE FILE's directory,
-    // not its parent. For `src/commands/mod.rs` declaring `mod content;` the
-    // candidates become `src/commands/content.rs` and `src/commands/content/mod.rs`.
-    // The `base.join()` above already does this for "foo.rs" (since base is
-    // the file's parent dir), but "foo/mod.rs" needs the "foo" directory to
-    // exist. Let's also try the parent's parent for `mod.rs` candidates,
-    // because `base.join("foo/mod.rs")` = `<parent>/foo/mod.rs` which is correct.
-    // Already covered by the direct join above — no extra logic needed.
 
     // Extensionless import: ./mod -> ./mod.ts, ./mod/index.ts, etc.
     if Path::new(t).extension().is_none() {
         for ext in ["js", "ts", "jsx", "tsx", "mjs", "json", "css", "md", "sql", "rs"] {
             let cand = normalize(&base.join(format!("{t}.{ext}")));
-            if std::fs::metadata(&cand).is_ok() {
+            if path_exists(&cand, known_paths) {
                 return Some(cand.to_string_lossy().into_owned());
             }
         }
         for ext in ["js", "ts", "jsx", "tsx", "rs"] {
             let cand = normalize(&base.join(t).join(format!("index.{ext}")));
-            if std::fs::metadata(&cand).is_ok() {
+            if path_exists(&cand, known_paths) {
                 return Some(cand.to_string_lossy().into_owned());
             }
         }
         // Rust module convention: mod foo -> foo/mod.rs
         let cand = normalize(&base.join(t).join("mod.rs"));
-        if std::fs::metadata(&cand).is_ok() {
+        if path_exists(&cand, known_paths) {
             return Some(cand.to_string_lossy().into_owned());
         }
     }
-
-    // [DEBUG LOG] Target not resolved — helps find why links are missing.
-    eprintln!(
-        "[patina:links] resolve MISS: src={src_path} raw={raw} tried={}",
-        direct.to_string_lossy()
-    );
+    
     None
 }
 
@@ -548,8 +551,8 @@ fn test_search() {
 
     #[test]
     fn resolve_rejects_urls_and_anchors() {
-        assert_eq!(resolve("/x/a.md", "https://example.com"), None);
-        assert_eq!(resolve("/x/a.md", "#section"), None);
-        assert_eq!(resolve("/x/a.md", "mailto:n@e.co"), None);
+        assert_eq!(resolve("/x/a.md", "https://example.com", None), None);
+        assert_eq!(resolve("/x/a.md", "#section", None), None);
+        assert_eq!(resolve("/x/a.md", "mailto:n@e.co", None), None);
     }
 }

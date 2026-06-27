@@ -12,113 +12,34 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use crate::error::{Error, Result};
 use crate::index::file_index::{self, IndexRow};
 use crate::index::{content_index, edges};
+use crate::index::text_detect;
 use crate::indexer::{build_row, links};
 use crate::state::AppState;
 
-const TEXT_EXTS: &[&str] = &[
-    "txt", "md", "markdown", "rs", "js", "mjs", "ts", "jsx", "tsx", "json", "toml", "yaml", "yml",
-    "ini", "cfg", "conf", "log", "csv", "tsv", "dat", "html", "htm", "css", "xml", "sh", "bat", "py", "go",
-    "java", "c", "h", "cpp", "hpp", "sql", "kt", "swift", "rb", "php", "lua", "vue", "svelte",
-];
-const MAX_FILE: u64 = 1_048_576; // 1 MB
 const SCAN_LIMIT: usize = 50_000;
-const MENTION_SCAN_CAP: usize = 200_000; // upper bound of the body for the mention scan
-
-/// Folders we do NOT index or scan: VCS, build artifacts, caches.
-/// Otherwise the index/graph fills up with junk (.git/**, target/**,
-/// node_modules/**) and a rebuild takes seconds for nothing.
-fn is_ignored_name(name: &str) -> bool {
-    matches!(
-        name,
-        ".git" | ".svn" | ".hg" | "node_modules" | "target" | "dist" | "build"
-            | ".next" | ".nuxt" | ".cache" | "__pycache__" | ".venv" | "venv"
-            | ".idea" | ".vscode" | ".gradle" | ".tox"
-    )
-}
-
-pub(crate) fn is_ignored_dir(e: &walkdir::DirEntry) -> bool {
-    e.file_type().is_dir() && is_ignored_name(e.file_name().to_str().unwrap_or(""))
-}
-
-fn is_ignored_path(p: &Path) -> bool {
-    p.components()
-        .any(|c| is_ignored_name(c.as_os_str().to_str().unwrap_or("")))
-}
-
-fn is_text(path: &Path, len: u64) -> bool {
-    if len == 0 || len > MAX_FILE {
-        return false;
-    }
-    if let Some(ext) = path
-        .extension()
-        .map(|e| e.to_string_lossy().to_ascii_lowercase())
-    {
-        if TEXT_EXTS.contains(&ext.as_str()) {
-            return true;
-        }
-    }
-    // Unknown / no extension: sniff the head so text-but-unlisted files (e.g. a
-    // `.dat` full of digits) are still searchable, while binaries are skipped.
-    sample_looks_textual(&read_head(path, 8192))
-}
-
-/// Best-effort read of up to `cap` bytes from the head of a file.
-fn read_head(path: &Path, cap: usize) -> Vec<u8> {
-    use std::io::Read;
-    let mut buf = Vec::new();
-    if let Ok(f) = std::fs::File::open(path) {
-        let _ = f.take(cap as u64).read_to_end(&mut buf);
-    }
-    buf
-}
-
-/// Heuristic: a head sample with no NUL byte and few stray control characters
-/// is treated as text. Keeps binaries (including binary `.dat`/`.bin`) out of
-/// the content index while letting unlisted *text* files through.
-fn sample_looks_textual(sample: &[u8]) -> bool {
-    if sample.is_empty() || sample.contains(&0) {
-        return false;
-    }
-    let control = sample
-        .iter()
-        .filter(|&&b| b < 0x20 && !matches!(b, b'\t' | b'\n' | b'\r' | 0x0c))
-        .count();
-    // Allow normal whitespace; reject if too many stray control bytes (binary).
-    control * 10 < sample.len() * 3
-}
-
-fn ext_lower(path: &str) -> String {
-    Path::new(path)
-        .extension()
-        .map(|e| e.to_string_lossy().to_ascii_lowercase())
-        .unwrap_or_default()
-}
+const MENTION_SCAN_CAP: usize = 100_000; // upper bound of the body for the mention scan
 
 /// Explicit outgoing edges of a single file from its body (links/imports,
 /// resolved to existing paths). The mention layer is NOT built here — it
 /// requires a shared name map and is rebuilt on a full reindex.
-pub(crate) fn explicit_out_edges(src_path: &str, body: &str) -> Vec<(String, String)> {
+///
+/// `known_paths`: set of all normalized file paths in the subtree — used for
+/// O(1) existence checks in `resolve()` instead of `fs::metadata` per candidate.
+pub(crate) fn explicit_out_edges(
+    src_path: &str,
+    body: &str,
+    known_paths: Option<&HashSet<String>>,
+) -> Vec<(String, String)> {
     let ext = ext_lower(src_path);
     let kind = links::kind_for(&ext);
     let mut seen: HashSet<String> = HashSet::new();
     let mut out = Vec::new();
-    let raw_targets = links::extract_targets(&ext, body);
-    let raw_count = raw_targets.len();
-    let mut resolved_count = 0usize;
-    for raw in raw_targets {
-        if let Some(dst) = links::resolve(src_path, &raw) {
+    for raw in links::extract_targets(&ext, body) {
+        if let Some(dst) = links::resolve(src_path, &raw, known_paths) {
             if dst != src_path && seen.insert(dst.clone()) {
                 out.push((dst, kind.to_string()));
-                resolved_count += 1;
             }
         }
-    }
-    // [DEBUG LOG] Per-file edge extraction stats — shows which files produce
-    // zero edges (likely a link extraction gap) vs. which have unresolvable targets.
-    if raw_count > 0 {
-        eprintln!(
-            "[patina:edges] explicit_out_edges: src={src_path} ext={ext} raw={raw_count} resolved={resolved_count}"
-        );
     }
     out
 }
@@ -131,7 +52,10 @@ pub(crate) fn build_edges(
     content_rows: &[content_index::ContentRow],
     rows: &[IndexRow],
 ) -> Vec<(String, String, String)> {
-    use aho_corasick::AhoCorasick;
+    use aho_corasick::AhoCorasickBuilder;
+
+    // Build an in-memory set of all normalized file paths in the subtree.
+    let known_paths: HashSet<String> = rows.iter().map(|r| r.path.clone()).collect();
 
     // basename(lower) -> the unique path (None if the name is not unique).
     let mut by_name: HashMap<String, Option<String>> = HashMap::new();
@@ -151,23 +75,13 @@ pub(crate) fn build_edges(
     let mut seen: HashSet<(String, String)> = HashSet::new();
 
     // 1) Explicit links/imports.
-    let mut explicit_count = 0usize;
     for cr in content_rows {
-        for (dst, kind) in explicit_out_edges(&cr.path, &cr.body) {
+        for (dst, kind) in explicit_out_edges(&cr.path, &cr.body, Some(&known_paths)) {
             if seen.insert((cr.path.clone(), dst.clone())) {
                 out.push((cr.path.clone(), dst, kind));
-                explicit_count += 1;
             }
         }
     }
-
-    // [DEBUG LOG] Summary after explicit edge extraction.
-    eprintln!(
-        "[patina:edges] build_edges phase 1 (explicit): {} edges from {} content_rows for root={}",
-        explicit_count,
-        content_rows.len(),
-        root
-    );
 
     // 2) Mentions by unique name (the discovery layer). We take only names
     //    WITH AN EXTENSION (containing '.') and length ≥ 4: this filters out
@@ -180,13 +94,6 @@ pub(crate) fn build_edges(
         .filter(|(name, _)| name.len() >= 4 && name.contains('.'))
         .collect();
 
-    // [DEBUG LOG] Mention layer: how many unique filenames qualify.
-    eprintln!(
-        "[patina:edges] build_edges phase 2 (mentions): {} unique named files for root={}",
-        unique.len(),
-        root
-    );
-
     if unique.is_empty() {
         return out;
     }
@@ -195,7 +102,10 @@ pub(crate) fn build_edges(
     // single pass (O(body length + number of matches)) instead of iterating all
     // names over every body — this removes the former quadratic cost.
     let patterns: Vec<&str> = unique.iter().map(|(name, _)| name.as_str()).collect();
-    let ac = match AhoCorasick::new(&patterns) {
+    let ac = match AhoCorasickBuilder::new()
+        .ascii_case_insensitive(true)
+        .build(&patterns) 
+    {
         Ok(ac) => ac,
         Err(_) => return out,
     };
@@ -212,21 +122,21 @@ pub(crate) fn build_edges(
         } else {
             &body[..]
         };
-        let hay = slice.to_lowercase();
-        let hb = hay.as_bytes();
+        // Search the original-case slice directly — no to_lowercase() allocation.
+        let hb = slice.as_bytes();
         // A match counts only as a SEPARATE token: the name must not be part of
         // a longer word/name. Otherwise "pt.js" is caught inside "scri[pt.js]"
         // — hence a false edge index.html -> pt.js.
         let nameish = |c: u8| c.is_ascii_alphanumeric() || c == b'.' || c == b'_' || c == b'-';
         let mut matched: HashSet<usize> = HashSet::new();
-        for m in ac.find_iter(hay.as_str()) {
+        for m in ac.find_iter(slice) {
             let (s, e) = (m.start(), m.end());
             let left_ok = s == 0 || !nameish(hb[s - 1]);
             let right_ok = e >= hb.len() || !nameish(hb[e]);
             if left_ok && right_ok {
                 matched.insert(m.pattern().as_usize());
                 if matched.len() == unique.len() {
-                    break; // all names already found — no point scanning the body further
+                    break; // all names already found — no point scanning further
                 }
             }
         }
@@ -251,16 +161,6 @@ pub(crate) fn build_edges(
         }
     }
 
-    // [DEBUG LOG] Final edge count.
-    let mention_count = out.len() - explicit_count;
-    eprintln!(
-        "[patina:edges] build_edges DONE: total={} (explicit={} + mentions={}) for root={}",
-        out.len(),
-        explicit_count,
-        mention_count,
-        root
-    );
-
     out
 }
 
@@ -268,14 +168,14 @@ pub(crate) fn build_edges(
 /// swallowed — this is background maintenance, and any drift is fixed by the
 /// next full rebuild.
 fn apply_change(app: &AppHandle, content_active: bool, path: &Path) {
-    if is_ignored_path(path) {
-        return; // .git/target/node_modules etc. — we neither index nor react
+    if text_detect::is_ignored_path(path) {
+        return;
     }
     let state = app.state::<AppState>();
     let pstr = path.to_string_lossy().into_owned();
     if path.exists() {
         if let Some(row) = build_row(path) {
-            let text_file = !row.is_dir && is_text(path, row.size);
+            let text_file = !row.is_dir && text_detect::is_text(path, row.size);
             if let Ok(conn) = state.db() {
                 let _ = file_index::upsert_one(&conn, &row);
             }
@@ -287,7 +187,9 @@ fn apply_change(app: &AppHandle, content_active: bool, path: &Path) {
                         let _ = content_index::upsert_one(&conn, &pstr, &body);
                         // Incrementally update only the explicit outgoing edges
                         // (the mention layer is rebuilt on a full reindex).
-                        let edges = explicit_out_edges(&pstr, &body);
+                        // No known_paths set available here — resolve() falls
+                        // back to fs::metadata for each candidate.
+                        let edges = explicit_out_edges(&pstr, &body, None);
                         let _ = edges::replace_derived_for_src(&conn, &pstr, &edges);
                     }
                 }
@@ -303,9 +205,7 @@ fn apply_change(app: &AppHandle, content_active: bool, path: &Path) {
 }
 
 /// Full (re)build of the root index — runs in the background.
-/// After a successful build it saves the current USN position so that on the
-/// next launch the incremental USN Journal update starts from the right point.
-fn build_all(app: &AppHandle, root: &str, content: bool) -> Result<()> {
+pub(crate) fn build_all(app: &AppHandle, root: &str, content: bool) -> Result<()> {
     let state = app.state::<AppState>();
     let mut rows: Vec<IndexRow> = Vec::new();
     let mut content_rows: Vec<content_index::ContentRow> = Vec::new();
@@ -313,7 +213,7 @@ fn build_all(app: &AppHandle, root: &str, content: bool) -> Result<()> {
     for entry in walkdir::WalkDir::new(root)
         .min_depth(1)
         .into_iter()
-        .filter_entry(|e| !is_ignored_dir(e))
+        .filter_entry(|e| !text_detect::is_ignored_dir(e))
         .filter_map(|e| e.ok())
     {
         if rows.len() >= SCAN_LIMIT {
@@ -321,7 +221,7 @@ fn build_all(app: &AppHandle, root: &str, content: bool) -> Result<()> {
         }
         let path = entry.path();
         if let Some(row) = build_row(path) {
-            if content && !row.is_dir && is_text(path, row.size) {
+            if content && !row.is_dir && text_detect::is_text(path, row.size) {
                 if let Ok(bytes) = std::fs::read(path) {
                     content_rows.push(content_index::ContentRow {
                         path: row.path.clone(),
@@ -330,7 +230,7 @@ fn build_all(app: &AppHandle, root: &str, content: bool) -> Result<()> {
                 }
             }
             rows.push(row);
-            // Live progress for the UI (the graph shows a counter instead of a "hanging" badge).
+            // Live progress for the UI.
             since_emit += 1;
             if since_emit >= 200 {
                 since_emit = 0;
@@ -346,11 +246,6 @@ fn build_all(app: &AppHandle, root: &str, content: bool) -> Result<()> {
         file_index::replace_subtree(&mut conn, root, &rows)?;
     }
     if content {
-        eprintln!(
-            "[patina:build] build_all: {} total rows, {} content_rows for root={root}",
-            rows.len(),
-            content_rows.len()
-        );
         // Building edges can take noticeable time — a separate UI phase;
         // build_edges emits incremental progress internally.
         let _ = app.emit(
@@ -372,17 +267,14 @@ fn build_all(app: &AppHandle, root: &str, content: bool) -> Result<()> {
 enum IndexPlan {
     /// Full build: a new root, a force, or content requested for the first time.
     FullBuild,
-    /// Same root and not a force — a light file_index rescan (content already built).
+    /// Same root and not a force — a rescan with content_active flag.
     Rescan,
 }
 
 /// The decision is extracted into a pure function for testability.
 ///
 /// IMPORTANT: reopening the same root is ALWAYS a rescan, with no incremental
-/// "fast path". USN Journal sync is disabled in 0.1: reconstructing paths from
-/// the journal and tracking the next USN position are not finished, so a
-/// "successful" USN could mark the index fresh without applying anything and
-/// miss edits made while the app was closed. See indexer/usn_journal.rs.
+/// "fast path". USN Journal sync is disabled in 0.1. See indexer/usn_journal.rs.
 fn plan_index(root_changed: bool, force: bool, need_content_build: bool) -> IndexPlan {
     if root_changed || force || need_content_build {
         IndexPlan::FullBuild
@@ -405,7 +297,6 @@ pub async fn start_index(
         return Ok(());
     }
 
-    // Update flags; find out whether the root changed and whether content must be built for the first time.
     let (root_changed, need_content_build, content_active) = {
         let mut info = state.index_info()?;
         let was_content = info.content_active;
@@ -472,44 +363,31 @@ pub async fn start_index(
 }
 
 /// Rebuild derived edges (links/imports/mentions) for a subtree by walking the
-/// filesystem with `is_ignored_dir` filtering. Always scans from disk — the
-/// content index DB may be stale or may contain unfiltered junk (e.g. target/
-/// files from a prior `reindex_content`). Also populates content_fts and
-/// file_index so subsequent operations are fast.
+/// filesystem with `is_ignored_dir` filtering. Always scans from disk.
 #[tauri::command]
 pub async fn rebuild_edges(app: AppHandle, root: String) -> Result<()> {
     if root.is_empty() || root.starts_with("tag:") {
         return Ok(());
     }
-    eprintln!("[patina:edges] rebuild_edges: starting full disk scan for root={root}");
     tauri::async_runtime::spawn_blocking(move || {
             build_all(&app, &root, true)?;
-        // [DEBUG LOG] Verify: count edges in DB after rebuild.
-        let state = app.state::<AppState>();
-        if let Ok(conn) = state.db_read() {
-            let (_, prefix, upper) = crate::index::path_bounds::subtree_bounds(
-                &crate::index::path_key::normalize(&root),
-            );
-            let count: i64 = conn
-                .query_row(
-                    "SELECT COUNT(*) FROM file_edges WHERE src = ?1 OR (src >= ?2 AND src < ?3) OR dst = ?1 OR (dst >= ?2 AND dst < ?3)",
-                    (&crate::index::path_key::normalize(&root), &prefix, &upper),
-                    |r| r.get(0),
-                )
-                .unwrap_or(0);
-            eprintln!(
-                "[patina:edges] rebuild_edges: DONE — {count} total edges in DB for root={root}"
-            );
-        }
         Ok(())
     })
     .await
     .map_err(|e| Error::Operation(format!("rebuild_edges interrupted: {e}")))?
 }
 
+fn ext_lower(path: &str) -> String {
+    Path::new(path)
+        .extension()
+        .map(|e| e.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default()
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{plan_index, sample_looks_textual, IndexPlan};
+    use super::{plan_index, IndexPlan};
+    use crate::index::text_detect::sample_looks_textual;
 
     #[test]
     fn sample_looks_textual_separates_text_from_binary() {
@@ -526,9 +404,6 @@ mod tests {
     
     #[test]
     fn reopen_same_root_always_rescans() {
-        // same root, not a force, content already built → rescan,
-        // NOT an incremental fast path. If someone brings back a USN shortcut
-        // as a separate branch, this test should force a policy review.
         assert_eq!(plan_index(false, false, false), IndexPlan::Rescan);
     }
 
