@@ -1,0 +1,80 @@
+.tab-bar {
+  background: var(--bg-1);
+  border-bottom: 1px solid var(--border);
+}
+.tabs {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  padding: 4px 6px 0;
+  overflow-x: auto;
+}
+.tabs::-webkit-scrollbar {
+  height: 0;
+}
+
+.tab {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 90px;
+  max-width: 220px;
+  padding: 6px 8px 6px 11px;
+  background: var(--bg-2);
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+  color: var(--text-dim);
+  cursor: pointer;
+  user-select: none;
+}
+.tab:hover {
+  color: var(--text);
+}
+.tab.is-active {
+  background: var(--bg-0);
+  color: var(--text);
+  border-color: var(--border-strong);
+}
+/* A colored tab has a gradient background (see has-color); make the text more readable. */
+.tab.has-color {
+  color: #fff;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+  border-color: transparent;
+}
+
+.tab__title {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tab__close {
+  border: none;
+  background: transparent;
+  color: inherit;
+  opacity: 0.55;
+  padding: 0 4px;
+  line-height: 1;
+  font-size: 15px;
+  border-radius: 4px;
+}
+.tab__close:hover {
+  opacity: 1;
+  background: var(--bg-3);
+}
+
+.tab-add {
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  padding: 4px 12px;
+  align-self: center;
+  font-size: 15px;
+}
+.tab-add:hover {
+  color: var(--text);
+  background: var(--bg-2);
+}
+
+.tab.is-dragging {
+  opacity: 0.4;
+}

@@ -1,0 +1,90 @@
+/* Patina design tokens. Palettes are switched via the data-theme attribute on <html>.
+   :root — the default theme (dark emerald). Each palette overrides only the colors;
+   geometry and typography are shared (below, outside the palettes). */
+:root {
+  /* Background: layers from deep to light */
+  --bg-0: #0a0a0f;
+  --bg-1: #12121a;
+  --bg-2: #1a1a28;
+  --bg-3: #22222f;
+
+  /* Accents */
+  --accent: #10b981;   /* emerald */
+  --accent-2: #14b8a6; /* teal */
+
+  /* Text */
+  --text: #e5e7eb;
+  --text-dim: #9ca3af;
+  --text-faint: #6b7280;
+
+  /* Lines and separators */
+  --border: rgba(255, 255, 255, 0.06);
+  --border-strong: rgba(255, 255, 255, 0.12);
+
+  /* Tag colors (for the urgent/in-progress/done/reference/archive system) */
+  --tag-urgent: #ef4444;
+  --tag-progress: #f59e0b;
+  --tag-done: #22c55e;
+  --tag-reference: #06b6d4;
+  --tag-archive: #6b7280;
+
+  /* Geometry and typography (shared across all palettes) */
+  --radius: 8px;
+  --radius-sm: 6px;
+  --row-h: 30px;
+  --font-ui: 13px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: 12px/1.4 ui-monospace, "Cascadia Code", "Consolas", monospace;
+}
+
+/* ── Palette: warm gold (inspired by the Nexus concept) ───────────────── */
+:root[data-theme="gold"] {
+  --bg-0: #161210;
+  --bg-1: #1c1810;
+  --bg-2: #211e12;
+  --bg-3: #2e2818;
+
+  --accent: #c9a85c;   /* gold */
+  --accent-2: #7ecfb8; /* teal — a restrained secondary accent */
+
+  --text: #f2e8cc;
+  --text-dim: #c8b882;
+  --text-faint: #8a7a52;
+
+  --border: #433a22;
+  --border-strong: #5a4f30;
+
+  --tag-urgent: #e07060;
+  --tag-progress: #e8b050;
+  --tag-done: #3d9e84;
+  --tag-reference: #7ecfb8;
+  --tag-archive: #5a4e32;
+}
+
+/* ── Palette: light blue (like the Windows default) ───────────────── */
+:root[data-theme="light"] {
+  /* Surfaces: the window base is light, popup elements are whiter.
+     bg-3 — slightly dark blue for hover/selection (in the light theme contrast
+     comes from darkening, not lightening). */
+  --bg-0: #f3f3f3;
+  --bg-1: #fbfbfb;
+  --bg-2: #ffffff;
+  --bg-3: #e8edf4;
+
+  --accent: #0067c0;   /* Windows accent blue */
+  --accent-2: #0091f7; /* lighter, secondary accent */
+
+  --text: #1b1b1b;
+  --text-dim: #5a5a5a;
+  --text-faint: #8a8a8a;
+
+  /* In the light theme lines are dark with low alpha (in the dark theme they were white). */
+  --border: rgba(0, 0, 0, 0.08);
+  --border-strong: rgba(0, 0, 0, 0.16);
+
+  /* Tags — slightly deeper so they read well on a light background. */
+  --tag-urgent: #d13438;
+  --tag-progress: #c07a0a;
+  --tag-done: #0f7b33;
+  --tag-reference: #0277bd;
+  --tag-archive: #6b7280;
+}

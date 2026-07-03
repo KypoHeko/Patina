@@ -1,0 +1,351 @@
+#app {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  grid-template-rows: auto 1fr;
+  grid-template-areas:
+    "topbar topbar"
+    "sidebar main";
+  height: 100vh;
+  background: var(--bg-0);
+}
+
+.topbar {
+  grid-area: topbar;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 14px;
+  background: var(--bg-1);
+  border-bottom: 1px solid var(--border);
+}
+.topbar__spacer {
+  flex: 1;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.brand__mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  color: #04140d;
+}
+.brand__mark svg {
+  width: 15px;
+  height: 15px;
+}
+.brand__name {
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.split-btn {
+  font-size: 12px;
+  padding: 5px 10px;
+}
+.split-btn:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 30px;
+  padding: 0;
+  color: var(--text-dim);
+}
+.icon-btn.is-on {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.icon-btn:hover {
+  color: var(--text);
+  border-color: var(--border-strong);
+  background: var(--bg-2);
+}
+.icon-btn svg {
+  width: 16px;
+  height: 16px;
+}
+/* Language button — text-based (a two-letter code), sized like an icon-btn. */
+.lang-btn {
+  font: 700 11px/1 var(--font, system-ui, sans-serif);
+  letter-spacing: 0.06em;
+}
+
+/* Sidebar */
+.sidebar {
+  grid-area: sidebar;
+  width: 220px;
+  background: var(--bg-1);
+  border-right: 1px solid var(--border);
+  overflow-y: auto;
+  padding-bottom: 10px;
+  transition: width 0.16s ease;
+}
+#app.sidebar-compact .sidebar {
+  width: 52px;
+}
+
+/* ── Compact mode: text is smoothly hidden via clipping ── */
+
+/* Text elements fade out smoothly via max-width → 0,
+   not via display:none, so on expansion the text
+   neatly "slides out" from behind the clip boundary. */
+#app.sidebar-compact .sidebar__title,
+#app.sidebar-compact .sidebar__label,
+#app.sidebar-compact .sidebar__count,
+#app.sidebar-compact .sidebar__store-name,
+#app.sidebar-compact .sidebar__store-kind,
+#app.sidebar-compact .sidebar__store-size {
+  max-width: 0;
+  padding: 0;
+  margin: 0;
+  border-width: 0;
+}
+
+#app.sidebar-compact .sidebar__chevron {
+  max-width: 0;
+}
+
+/* The storage progress bar collapses smoothly */
+#app.sidebar-compact .sidebar__bar {
+  max-width: 0;
+  margin: 0;
+}
+
+#app.sidebar-compact .sidebar__compact-arrow {
+  display: inline-block; /* show the group-separator arrow */
+}
+
+#app.sidebar-compact .sidebar__head {
+  justify-content: center;
+}
+
+#app.sidebar-compact .sidebar__item,
+#app.sidebar-compact .sidebar__store,
+#app.sidebar-compact .sidebar__tagrow {
+  justify-content: center;
+  padding: 6px;
+}
+
+/* Increase the spacing between indicators in the collapsed state */
+#app.sidebar-compact .sidebar__body {
+  gap: 2px;
+}
+
+/* Main area: tabs · workspace · status */
+.main {
+  grid-area: main;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 0 0;
+  grid-template-rows: auto 1fr auto;
+  grid-template-areas:
+    "tabbar tabbar tabbar"
+    "workspace dup dock"
+    "status status status";
+  min-width: 0;
+  overflow: hidden;
+  transition: grid-template-columns 0.16s ease;
+}
+.main__dock {
+  grid-area: dock;
+  min-width: 0;
+  overflow: hidden;
+}
+.main.has-dup {
+  grid-template-columns: minmax(0, 1fr) 340px 0;
+}
+.main.has-dock {
+  grid-template-columns: minmax(0, 1fr) 0 360px;
+}
+.main.has-dup.has-dock {
+  grid-template-columns: minmax(0, 1fr) 340px 360px;
+}
+.main__dock--dup {
+  grid-area: dup;
+  min-width: 0;
+  overflow: hidden;
+}
+.tab-bar {
+  grid-area: tabbar;
+}
+.workspace {
+  grid-area: workspace;
+}
+.statusbar {
+  grid-area: status;
+}
+
+.workspace {
+  display: grid;
+  grid-template-columns: 1fr;
+  overflow: hidden;
+}
+.pane {
+  overflow: hidden;
+  min-width: 0;
+}
+.workspace:not(.is-split) .pane-divider,
+.workspace:not(.is-split) #pane-right {
+  display: none;
+}
+
+.pane-divider {
+  position: relative;
+  background: transparent;
+  cursor: col-resize;
+}
+/* a thin visual line at the center of the grab zone */
+.pane-divider::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 2px;
+  transform: translateX(-50%);
+  background: var(--border);
+  transition: background 0.12s;
+}
+.pane-divider:hover::after {
+  background: color-mix(in srgb, var(--accent) 55%, transparent);
+}
+/* a grip handle at the center — shows that the divider is draggable */
+.pane-divider::before {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 4px;
+  height: 30px;
+  transform: translate(-50%, -50%);
+  border-radius: 3px;
+  background: var(--border-strong);
+  transition: background 0.12s;
+  z-index: 1;
+}
+.pane-divider:hover::before {
+  background: color-mix(in srgb, var(--accent) 70%, transparent);
+}
+body.is-resizing {
+  cursor: col-resize;
+}
+body.is-resizing .pane {
+  pointer-events: none;
+}
+
+.statusbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 4px 12px;
+  background: var(--bg-1);
+  border-top: 1px solid var(--border);
+  color: var(--text-faint);
+  font-size: 11px;
+}
+.status__left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+.status__right {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+.status__group {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.status__group--path {
+  min-width: 0;
+}
+.status__ico {
+  display: inline-flex;
+  color: var(--text-faint);
+}
+.status__ico svg {
+  width: 12px;
+  height: 12px;
+}
+.status__path {
+  color: var(--text-dim);
+  font: var(--font-mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.status__counts {
+  flex-shrink: 0;
+}
+.status__sep {
+  opacity: 0.45;
+  margin: 0 1px;
+}
+.status__sel {
+  color: var(--accent);
+}
+.status__kbd {
+  font: var(--font-mono);
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--bg-2);
+  color: var(--text-dim);
+}
+.status__hint {
+  color: var(--accent);
+}
+.status__hint--warn {
+  color: var(--tag-progress);
+  font-weight: 500;
+}
+.status__hint--error {
+  color: var(--tag-urgent);
+  font-weight: 600;
+  font-size: calc(1em + 2px);
+}
+
+/* Search in the top bar */
+.topbar-search {
+  width: 260px;
+  max-width: 34vw;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font: inherit;
+  padding: 5px 10px;
+  margin-left: 14px;
+}
+.topbar-search::placeholder {
+  color: var(--text-faint);
+}
+.topbar-search:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+@media (prefers-reduced-motion: reduce) {
+  .main,
+  .sidebar {
+    transition: none;
+  }
+}
