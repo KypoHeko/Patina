@@ -6,6 +6,8 @@
 
 `0.1` · Windows 10 · Rust + Tauri 2 · vanilla HTML/CSS/JS
 
+![alt text](images/readme.png)
+
 </div>
 
 ---
