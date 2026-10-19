@@ -59,7 +59,19 @@ impl Drop for ComGuard {
 // Native COM call, works correctly with UAC and long paths
 // A single Explorer progress dialog (if needed)
 // Support for UNC paths and symbolic links
+//
+// Runs on a dedicated thread: the calling thread comes from the async
+// runtime's blocking pool and may already have COM initialized in another
+// apartment mode (CoInitializeEx would fail with RPC_E_CHANGED_MODE and the
+// whole deletion with it). A fresh thread always gets its own STA.
 pub fn delete_to_recycle_bin(paths: &[String]) -> Result<()> {
+    let paths = paths.to_vec();
+    std::thread::spawn(move || delete_on_sta_thread(&paths))
+        .join()
+        .map_err(|_| Error::Operation("recycle-bin thread panicked".into()))?
+}
+
+fn delete_on_sta_thread(paths: &[String]) -> Result<()> {
     use windows::Win32::System::Com::{
         CoInitializeEx, CLSCTX_ALL, COINIT_APARTMENTTHREADED,
     };
@@ -79,34 +91,44 @@ pub fn delete_to_recycle_bin(paths: &[String]) -> Result<()> {
         // drop in reverse declaration order).
         let _com = ComGuard;
 
-            let op: IFileOperation = CoCreateInstance(&FileOperation, None, CLSCTX_ALL)
-                    .map_err(|e| Error::Operation(format!("CoCreateInstance IFileOperation: {e}")))?;
+        let op: IFileOperation = CoCreateInstance(&FileOperation, None, CLSCTX_ALL)
+            .map_err(|e| Error::Operation(format!("CoCreateInstance IFileOperation: {e}")))?;
 
-            op.SetOperationFlags(
-                FOF_ALLOWUNDO       // To the Trash, not permanently
-                | FOF_NOCONFIRMATION // Do not ask for confirmation
-                | FOF_NOERRORUI      // Do not show error dialogs
-                | FOF_SILENT         // No progress bar
-                | FOF_WANTNUKEWARNING, // Warn if the file is too big for the Trash
+        op.SetOperationFlags(
+            FOF_ALLOWUNDO          // To the Trash, not permanently
+            | FOF_NOCONFIRMATION   // Do not ask for confirmation
+            | FOF_NOERRORUI        // Do not show error dialogs
+            | FOF_SILENT           // No progress bar
+            | FOF_WANTNUKEWARNING, // Warn if the file is too big for the Trash
+        )
+        .map_err(|e| Error::Operation(format!("SetOperationFlags: {e}")))?;
+
+        for path_str in paths {
+            let wide = to_wide(path_str);
+            let item: windows::Win32::UI::Shell::IShellItem = SHCreateItemFromParsingName(
+                windows::core::PCWSTR(wide.as_ptr()),
+                None,
             )
-            .map_err(|e| Error::Operation(format!("SetOperationFlags: {e}")))?;
+            .map_err(|e| Error::Operation(format!("SHCreateItemFromParsingName({path_str}): {e}")))?;
 
-            for path_str in paths {
-                let wide = to_wide(path_str);
-                let item: windows::Win32::UI::Shell::IShellItem = SHCreateItemFromParsingName(
-                    windows::core::PCWSTR(wide.as_ptr()),
-                    None,
-                )
-                .map_err(|e| Error::Operation(format!("SHCreateItemFromParsingName({path_str}): {e}")))?;
+            op.DeleteItem(&item, None)
+                .map_err(|e| Error::Operation(format!("DeleteItem({path_str}): {e}")))?;
+        }
 
-                op.DeleteItem(&item, None)
-                    .map_err(|e| Error::Operation(format!("DeleteItem({path_str}): {e}")))?;
-            }
+        op.PerformOperations()
+            .map_err(|e| Error::Operation(format!("PerformOperations: {e}")))?;
 
-            op.PerformOperations()
-                .map_err(|e| Error::Operation(format!("PerformOperations: {e}")))?;
+        // PerformOperations succeeds even when the user declined the "too big
+        // for the Recycle Bin, delete permanently?" prompt or an item failed:
+        // that is only reported here. The caller drops metadata only for paths
+        // that are really gone.
+        if op.GetAnyOperationsAborted().map(|b| b.as_bool()).unwrap_or(false) {
+            return Err(Error::Operation(
+                "some items were not moved to the Recycle Bin (cancelled or failed)".into(),
+            ));
+        }
 
-            Ok(())
+        Ok(())
         // `op` drops here (releases IFileOperation), then `_com` drops
         // (CoUninitialize) — the required order.
     }

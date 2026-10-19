@@ -109,13 +109,16 @@ pub async fn move_entries(
 #[tauri::command]
 pub async fn delete_entries(app: AppHandle, paths: Vec<String>) -> Result<()> {
     tauri::async_runtime::spawn_blocking(move || {
-        operations::delete_entries(&paths)?;
+        let res = operations::delete_entries(&paths);
+        // Drop metadata only for what is really gone: a deletion that was
+        // cancelled or failed for some items must not erase the tags and
+        // links of files that are still there.
         let state = app.state::<AppState>();
         let conn = state.db()?;
-        for p in &paths {
+        for p in paths.iter().filter(|p| !Path::new(p.as_str()).exists()) {
             purge_all(&conn, p);
         }
-        Ok(())
+        res
     })
     .await
     .map_err(|e| Error::Operation(format!("delete_entries interrupted: {e}")))?
