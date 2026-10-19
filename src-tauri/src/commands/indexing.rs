@@ -11,7 +11,9 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::error::{Error, Result};
 use crate::index::file_index::{self, IndexRow};
-use crate::index::{content_index, edges};
+use crate::index::path_bounds::is_within;
+use crate::index::{content_index, edges, path_key, usn_position};
+use crate::platform::{self, UsnRead};
 use crate::index::text_detect;
 use crate::indexer::{build_row, links};
 use crate::state::AppState;
@@ -169,6 +171,12 @@ pub(crate) fn build_edges(
 /// swallowed — this is background maintenance, and any drift is fixed by the
 /// next full rebuild.
 fn apply_change(app: &AppHandle, content_active: bool, path: &Path) {
+    apply_one(app, content_active, path, true);
+}
+
+/// `expand_new_dir`: index the subtree of a folder the index did not know.
+/// The subtree walk itself passes `false` — it already visits every level.
+fn apply_one(app: &AppHandle, content_active: bool, path: &Path, expand_new_dir: bool) {
     if text_detect::is_ignored_path(path) {
         return;
     }
@@ -177,8 +185,28 @@ fn apply_change(app: &AppHandle, content_active: bool, path: &Path) {
     if path.exists() {
         if let Some(row) = build_row(path) {
             let text_file = !row.is_dir && text_detect::is_text(path, row.size);
+            // A folder the index does not know yet (created, or renamed/moved
+            // here) brings its whole subtree with it; without this a renamed
+            // folder's children stayed under the old path only.
+            let new_dir = expand_new_dir
+                && row.is_dir
+                && state
+                    .db()
+                    .ok()
+                    .is_some_and(|conn| !file_index::contains(&conn, &row.path).unwrap_or(true));
             if let Ok(conn) = state.db() {
                 let _ = file_index::upsert_one(&conn, &row);
+            }
+            if new_dir {
+                for entry in walkdir::WalkDir::new(path)
+                    .min_depth(1)
+                    .into_iter()
+                    .filter_entry(|e| !text_detect::is_ignored_dir(e))
+                    .filter_map(|e| e.ok())
+                    .take(SCAN_LIMIT)
+                {
+                    apply_one(app, content_active, entry.path(), false);
+                }
             }
             if content_active && text_file && let Ok(bytes) = std::fs::read(path) {
                 let body = String::from_utf8_lossy(&bytes).into_owned();
@@ -206,6 +234,9 @@ fn apply_change(app: &AppHandle, content_active: bool, path: &Path) {
 /// Full (re)build of the root index — runs in the background.
 pub(crate) fn build_all(app: &AppHandle, root: &str, content: bool) -> Result<()> {
     let state = app.state::<AppState>();
+    // Journal position taken BEFORE the walk: everything that changes during
+    // the walk is replayed on the next start, so nothing slips between them.
+    let cursor = platform::query_usn_cursor(root);
     let mut rows: Vec<IndexRow> = Vec::new();
     let mut content_rows: Vec<content_index::ContentRow> = Vec::new();
     let mut since_emit = 0usize;
@@ -260,27 +291,64 @@ pub(crate) fn build_all(app: &AppHandle, root: &str, content: bool) -> Result<()
         content_index::replace_subtree(&mut conn, root, &content_rows)?;
         edges::replace_derived_subtree(&mut conn, root, &edges)?;
     }
+    {
+        let conn = state.db()?;
+        match cursor {
+            Some(c) => usn_position::set(&conn, root, c)?,
+            None => usn_position::remove(&conn, root)?,
+        }
+    }
     Ok(())
+}
+
+/// Bring the index of `root` up to date from the USN Journal: re-read only the
+/// paths touched since the saved cursor. Returns false when the journal cannot
+/// be used (no cursor, unavailable, recreated) — the caller does a full build.
+fn sync_from_journal(app: &AppHandle, root: &str, content_active: bool) -> bool {
+    let state = app.state::<AppState>();
+    let saved = match state.db().and_then(|c| usn_position::get(&c, root)) {
+        Ok(Some(c)) => c,
+        _ => return false,
+    };
+    match platform::read_usn_journal(root, saved) {
+        UsnRead::Changes { paths, cursor } => {
+            let root_key = path_key::normalize(root);
+            for p in paths.iter().filter(|p| is_within(&path_key::normalize(p), &root_key)) {
+                apply_change(app, content_active, Path::new(p));
+            }
+            if let Ok(conn) = state.db() {
+                let _ = usn_position::set(&conn, root, cursor);
+            }
+            true
+        }
+        UsnRead::Reset | UsnRead::Unavailable => false,
+    }
 }
 
 /// The index (re)build strategy when `start_index` is called for a root.
 #[derive(Debug, PartialEq, Eq)]
 enum IndexPlan {
-    /// Full build: a new root, a force, or content requested for the first time.
+    /// Full walk: forced, content requested for the first time, or no saved
+    /// journal position for this root.
     FullBuild,
-    /// Same root and not a force — a rescan with content_active flag.
-    Rescan,
+    /// The root was indexed before (saved USN cursor): replay the journal,
+    /// falling back to a full walk if it is unavailable.
+    Incremental,
+    /// The same root is already live in this session — its recursive watcher
+    /// keeps it fresh, nothing to rebuild.
+    UpToDate,
 }
 
 /// The decision is extracted into a pure function for testability.
-///
-/// IMPORTANT: reopening the same root is ALWAYS a rescan, with no incremental
-/// "fast path". USN Journal sync is disabled in 0.1. See indexer/usn_journal.rs.
-fn plan_index(root_changed: bool, force: bool, need_content_build: bool) -> IndexPlan {
-    if root_changed || force || need_content_build {
+fn plan_index(root_changed: bool, force: bool, need_content_build: bool, has_cursor: bool) -> IndexPlan {
+    if force || need_content_build {
         IndexPlan::FullBuild
+    } else if !root_changed {
+        IndexPlan::UpToDate
+    } else if has_cursor {
+        IndexPlan::Incremental
     } else {
-        IndexPlan::Rescan
+        IndexPlan::FullBuild
     }
 }
 
@@ -309,26 +377,35 @@ pub async fn start_index(
         (changed, content && !was_content, info.content_active)
     };
     
+    let has_cursor = state
+        .db()
+        .and_then(|c| usn_position::get(&c, &root))
+        .ok()
+        .flatten()
+        .is_some();
     let app2 = app.clone();
     let root2 = root.clone();
-    match plan_index(root_changed, force, need_content_build) {
+    match plan_index(root_changed, force, need_content_build, has_cursor) {
         IndexPlan::FullBuild => {
             // build_all is a synchronous blocking walk + transactions: spawn_blocking
             // so we do not occupy an async-runtime worker for the whole index build.
-            tauri::async_runtime::spawn_blocking(move || {
-                let _ = build_all(&app2, &root2, content);
-                let _ = app2.emit("index:ready", &root2);
-            });
-        }
-        IndexPlan::Rescan => {
-            // Same root, not a force: rebuild file_index AND content+edges when
-            // the content index is active. Previously this was `content: false`,
-            // which meant derived edges (links/mentions) were never refreshed on
-            // a rescan — the graph showed stale or no relationships.
+            // `content_active`, not `content`: a forced rebuild of a root whose
+            // content index is live must refresh the content index too.
             tauri::async_runtime::spawn_blocking(move || {
                 let _ = build_all(&app2, &root2, content_active);
                 let _ = app2.emit("index:ready", &root2);
             });
+        }
+        IndexPlan::Incremental => {
+            tauri::async_runtime::spawn_blocking(move || {
+                if !sync_from_journal(&app2, &root2, content_active) {
+                    let _ = build_all(&app2, &root2, content_active);
+                }
+                let _ = app2.emit("index:ready", &root2);
+            });
+        }
+        IndexPlan::UpToDate => {
+            let _ = app.emit("index:ready", &root);
         }
     }
 
@@ -404,22 +481,24 @@ mod tests {
     }
     
     #[test]
-    fn reopen_same_root_always_rescans() {
-        assert_eq!(plan_index(false, false, false), IndexPlan::Rescan);
+    fn same_live_root_needs_nothing() {
+        assert_eq!(plan_index(false, false, false, true), IndexPlan::UpToDate);
+        assert_eq!(plan_index(false, false, false, false), IndexPlan::UpToDate);
     }
 
     #[test]
-    fn new_root_builds_fully() {
-        assert_eq!(plan_index(true, false, false), IndexPlan::FullBuild);
+    fn new_root_with_cursor_replays_journal() {
+        assert_eq!(plan_index(true, false, false, true), IndexPlan::Incremental);
     }
 
     #[test]
-    fn force_builds_fully() {
-        assert_eq!(plan_index(false, true, false), IndexPlan::FullBuild);
+    fn new_root_without_cursor_builds_fully() {
+        assert_eq!(plan_index(true, false, false, false), IndexPlan::FullBuild);
     }
 
     #[test]
-    fn first_content_request_builds_fully() {
-        assert_eq!(plan_index(false, false, true), IndexPlan::FullBuild);
+    fn force_or_first_content_request_builds_fully() {
+        assert_eq!(plan_index(false, true, false, true), IndexPlan::FullBuild);
+        assert_eq!(plan_index(false, false, true, true), IndexPlan::FullBuild);
     }
 }

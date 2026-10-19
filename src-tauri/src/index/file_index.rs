@@ -129,6 +129,13 @@ pub fn upsert_one(conn: &Connection, row: &IndexRow) -> Result<()> {
     Ok(())
 }
 
+/// Whether the index already has a row for this exact path.
+pub fn contains(conn: &Connection, path: &str) -> Result<bool> {
+    let key = normalize(path);
+    let n: i64 = conn.query_row("SELECT COUNT(*) FROM file_index WHERE path = ?1", [&key], |r| r.get(0))?;
+    Ok(n > 0)
+}
+
 /// Delete a path and its subtree (if it was a folder) from the index.
 pub fn delete_path(conn: &Connection, path: &str) -> Result<()> {
     let path = normalize(path);

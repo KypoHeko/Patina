@@ -8,7 +8,6 @@ pub mod dups;
 pub mod hasher;
 pub mod links;
 pub mod scanner;
-pub mod usn_journal;
 
 /// Builds a file index row from a filesystem path.
 /// Reads metadata (size, mtime, extension) and returns an `IndexRow`.
@@ -35,10 +34,4 @@ pub fn build_row(path: &Path) -> Option<IndexRow> {
         mtime,
         ext,
     })
-}
-
-/// Public wrapper over `build_row` for use from `usn_journal`.
-/// Takes a string path, returns Option<IndexRow>.
-pub fn build_row_from_path(path: &str) -> Option<IndexRow> {
-    build_row(Path::new(path))
 }

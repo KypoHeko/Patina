@@ -27,6 +27,15 @@ pub fn join_key(base: &str, sep: char, rest: &str) -> String {
     }
 }
 
+/// Whether canonical key `key` equals `base` or lies inside its subtree.
+pub fn is_within(key: &str, base: &str) -> bool {
+    if key == base {
+        return true;
+    }
+    let (_, prefix, upper) = subtree_bounds(base);
+    key >= prefix.as_str() && key < upper.as_str()
+}
+
 /// Remap a path on rename/move `old` -> `new`.
 /// Returns the new path if `path` equals `old` or lies inside its subtree;
 /// otherwise `None` (the path is outside the remap zone — leave it alone). The
@@ -81,6 +90,14 @@ mod tests {
         assert_eq!(remap("C:\\a\\bb\\y.txt", "C:\\a\\b", "C:\\a\\c"), None);
         // completely unrelated path
         assert_eq!(remap("D:\\other", "C:\\a\\b", "C:\\a\\c"), None);
+    }
+
+    #[test]
+    fn is_within_checks_subtree_membership() {
+        assert!(is_within("c:\\a\\b", "c:\\a"));
+        assert!(is_within("c:\\a", "c:\\a"));
+        assert!(!is_within("c:\\ab", "c:\\a"));
+        assert!(is_within("c:\\x", "c:\\"));
     }
 
     #[test]

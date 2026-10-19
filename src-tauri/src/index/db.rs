@@ -22,6 +22,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("schema/0012_version_chunks.sql"),
     include_str!("schema/0013_dict_zstd_count.sql"),
     include_str!("schema/0014_version_deleted_at.sql"),
+    include_str!("schema/0015_usn_journal_id.sql"),
 ];
 
 pub fn open(app: &AppHandle) -> Result<Connection> {

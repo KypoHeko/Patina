@@ -4,11 +4,12 @@
 //! - `delete_to_recycle_bin` — IFileOperation with FO_DELETE + FOF_ALLOWUNDO
 //! - `list_drives_native` — GetVolumeInformation + GetDriveType for volume labels and types
 //! - `get_native_icon` — SHGetFileInfo for extracting file icons
-//! - `read_usn_journal` — FSCTL_READ_USN_JOURNAL for incremental sync
+//! - `query_usn_cursor` / `read_usn_journal` — USN Journal for incremental sync
 
 use crate::error::{Error, Result};
 
-use super::{DriveInfo, NativeIcon, UsnChanges};
+use super::usn::{self, FileRef};
+use super::{DriveInfo, NativeIcon, UsnCursor, UsnRead};
 
 /// NUL-terminated UTF-16 — the string format for WinAPI functions (`*W`).
 fn to_wide(s: &str) -> Vec<u16> {
@@ -482,196 +483,246 @@ unsafe fn icon_to_png(
 }
 
 // ─── USN Journal: incremental index sync ──────────────────────────
+//
+// A USN record holds the file NAME and the reference number of its PARENT
+// directory, not a path. Paths are rebuilt by opening the parent by its id
+// (`OpenFileById`) and asking for its final path; parents are cached because
+// thousands of records usually share a handful of directories.
 
-/// Read changes from an NTFS volume's USN Journal since `last_usn`.
-///
-/// The USN Journal is a log of NTFS filesystem changes maintained by the OS
-/// itself. It lets you detect file creations/deletions/renames without a full
-/// directory rescan — in O(changes), not O(all files).
-///
-/// Returns:
-/// - `Some(UsnChanges)` — if the journal was read successfully
-/// - `None` — if the volume is not NTFS or the USN Journal is unavailable
-///
-/// `last_usn` — the journal position from the previous read (0 = from the start).
-/// After processing, save the new USN for the next call.
-pub fn read_usn_journal(root: &str, last_usn: i64) -> Result<Option<UsnChanges>> {
+/// FSCTL_QUERY_USN_JOURNAL = CTL_CODE(FILE_DEVICE_FILE_SYSTEM, 61, METHOD_BUFFERED, FILE_ANY_ACCESS)
+const FSCTL_QUERY_USN_JOURNAL: u32 = 0x0009_00F4;
+/// FSCTL_READ_USN_JOURNAL = CTL_CODE(FILE_DEVICE_FILE_SYSTEM, 46, METHOD_NEITHER, FILE_ANY_ACCESS)
+const FSCTL_READ_USN_JOURNAL: u32 = 0x0009_00BB;
+
+/// Reasons that change what the index holds for a path.
+const USN_REASON_MASK: u32 = 0x0000_0001 // DATA_OVERWRITE
+    | 0x0000_0002 // DATA_EXTEND
+    | 0x0000_0004 // DATA_TRUNCATION
+    | 0x0000_0100 // FILE_CREATE
+    | 0x0000_0200 // FILE_DELETE
+    | 0x0000_1000 // RENAME_OLD_NAME
+    | 0x0000_2000 // RENAME_NEW_NAME
+    | 0x8000_0000; // CLOSE
+
+/// USN_JOURNAL_DATA_V1 (V0 plus the supported record versions).
+#[repr(C)]
+#[allow(dead_code)] // layout mirrors the WinAPI struct; not every field is read
+#[derive(Default)]
+struct UsnJournalData {
+    journal_id: u64,
+    first_usn: i64,
+    next_usn: i64,
+    lowest_valid_usn: i64,
+    max_usn: i64,
+    maximum_size: u64,
+    allocation_delta: u64,
+    min_supported_major: u16,
+    max_supported_major: u16,
+}
+
+/// READ_USN_JOURNAL_DATA_V1.
+#[repr(C)]
+#[allow(dead_code)] // only passed to the kernel, never read back
+struct ReadUsnJournalData {
+    start_usn: i64,
+    reason_mask: u32,
+    return_only_on_close: u32,
+    timeout: u64,
+    bytes_to_wait_for: u64,
+    usn_journal_id: u64,
+    min_major_version: u16,
+    max_major_version: u16,
+}
+
+/// Open `\\.\X:` for the drive of `root`. Reading the journal needs read
+/// access to the volume, which normally requires administrator rights; without
+/// them this returns None and the caller does a full scan.
+fn open_volume(root: &str) -> Option<HandleGuard> {
     use windows::Win32::Foundation::HANDLE;
     use windows::Win32::Storage::FileSystem::{
-        CreateFileW, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
-        FILE_ATTRIBUTE_NORMAL, FILE_READ_ATTRIBUTES,
+        CreateFileW, FILE_FLAGS_AND_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
     };
-
-    // Determine the drive letter from the root
-    let drive_letter = match root.chars().next() {
-        Some(c) if c.is_ascii_alphabetic() => c,
-        _ => return Ok(None), // Not an NTFS path
-    };
-
-    let device_path = format!("\\\\.\\{}:", drive_letter);
-    let wide = to_wide(&device_path);
-
-    unsafe {
-        let handle = CreateFileW(
+    let mut chars = root.chars();
+    let letter = chars.next().filter(char::is_ascii_alphabetic)?;
+    if chars.next() != Some(':') {
+        return None; // UNC or relative path — no local volume journal
+    }
+    let wide = to_wide(&format!("\\\\.\\{letter}:"));
+    // GENERIC_READ = 0x80000000
+    let handle = unsafe {
+        CreateFileW(
             windows::core::PCWSTR(wide.as_ptr()),
-            FILE_READ_ATTRIBUTES.0,
+            0x8000_0000,
             FILE_SHARE_READ | FILE_SHARE_WRITE,
             None,
             OPEN_EXISTING,
-            FILE_ATTRIBUTE_NORMAL,
+            FILE_FLAGS_AND_ATTRIBUTES(0),
             HANDLE::default(),
-        );
-
-        let handle = match handle {
-            Ok(h) if !h.is_invalid() => h,
-            _ => return Ok(None), // Could not open the device
-        };
-        // The handle is closed on every exit path from here on (RAII).
-        let _handle = HandleGuard(handle);
-
-        read_usn_with_handle(handle, root, last_usn)
+        )
     }
+    .ok()?;
+    if handle.is_invalid() {
+        return None;
+    }
+    Some(HandleGuard(handle))
 }
 
-/// Internal implementation of reading the USN Journal via DeviceIoControl.
-unsafe fn read_usn_with_handle(
-    handle: windows::Win32::Foundation::HANDLE,
-    root: &str,
-    last_usn: i64,
-) -> Result<Option<UsnChanges>> {
+fn query_journal(volume: windows::Win32::Foundation::HANDLE) -> Option<UsnJournalData> {
     use windows::Win32::System::IO::DeviceIoControl;
-
-    // FSCTL_READ_USN_JOURNAL = 0x000900EB
-    const FSCTL_READ_USN_JOURNAL: u32 = 0x000900EB;
-
-    // The USN_REASON codes we care about
-    const USN_REASON_FILE_CREATE: u32 = 0x00000100;
-    const USN_REASON_FILE_DELETE: u32 = 0x00000200;
-    const USN_REASON_DATA_OVERWRITE: u32 = 0x00000001;
-    const USN_REASON_DATA_TRUNCATION: u32 = 0x00000002;
-    const USN_REASON_DATA_EXTEND: u32 = 0x00000004;
-    const USN_REASON_RENAME_NEW_NAME: u32 = 0x00002000;
-    const USN_REASON_CLOSE: u32 = 0x80000000;
-
-    #[repr(C)]
-    struct ReadUsnJournalData {
-        start_usn: i64,        // USN to start reading from
-        reason_mask: u32,      // Reason mask (0 = all)
-        return_only_on_close: u32, // 0 = all records
-        timeout: u64,          // 0 = no waiting
-        bytes_to_wait_for: u64, // 0
-        usn_journal_id: i64,   // Journal ID (0 = autodetect)
-        min_major_version: u16, // 2
-        max_major_version: u16, // 3
-    }
-
-    let query = ReadUsnJournalData {
-        start_usn: last_usn,
-        reason_mask: USN_REASON_FILE_CREATE
-            | USN_REASON_FILE_DELETE
-            | USN_REASON_DATA_OVERWRITE
-            | USN_REASON_DATA_EXTEND
-            | USN_REASON_DATA_TRUNCATION
-            | USN_REASON_RENAME_NEW_NAME
-            | USN_REASON_CLOSE,
-        return_only_on_close: 0,
-        timeout: 0,
-        bytes_to_wait_for: 0,
-        usn_journal_id: 0, // Autodetect
-        min_major_version: 2,
-        max_major_version: 3,
-    };
-
-    let mut out_buf: Vec<u8> = vec![0u8; 65536];
-    let mut bytes_returned = 0u32;
-
-    let ok = unsafe {
+    let mut data = UsnJournalData::default();
+    let mut returned = 0u32;
+    unsafe {
         DeviceIoControl(
-            handle,
-            FSCTL_READ_USN_JOURNAL,
-            Some(&query as *const _ as *const _),
-            std::mem::size_of::<ReadUsnJournalData>() as u32,
-            Some(out_buf.as_mut_ptr() as *mut _),
-            out_buf.len() as u32,
-            Some(&mut bytes_returned),
+            volume,
+            FSCTL_QUERY_USN_JOURNAL,
+            None,
+            0,
+            Some(&mut data as *mut _ as *mut core::ffi::c_void),
+            std::mem::size_of::<UsnJournalData>() as u32,
+            Some(&mut returned),
             None,
         )
+    }
+    .ok()?;
+    // journal_id + first_usn + next_usn + lowest_valid_usn are what we use.
+    (returned >= 32).then_some(data)
+}
+
+/// Current end of the journal for `root`'s volume — saved right before a full
+/// scan so the next start can continue from it.
+pub fn query_usn_cursor(root: &str) -> Option<UsnCursor> {
+    let volume = open_volume(root)?;
+    let info = query_journal(volume.0)?;
+    Some(UsnCursor { journal_id: info.journal_id, next_usn: info.next_usn })
+}
+
+/// Full path of a directory by its file reference number.
+fn path_by_id(volume: windows::Win32::Foundation::HANDLE, id: &FileRef) -> Option<String> {
+    use windows::Win32::Storage::FileSystem::{
+        ExtendedFileIdType, FileIdType, GetFinalPathNameByHandleW, OpenFileById, FILE_FLAG_BACKUP_SEMANTICS,
+        FILE_ID_128, FILE_ID_DESCRIPTOR, FILE_ID_DESCRIPTOR_0, FILE_NAME_NORMALIZED, FILE_SHARE_DELETE,
+        FILE_SHARE_READ, FILE_SHARE_WRITE,
     };
+    let desc = match id {
+        FileRef::V2(frn) => FILE_ID_DESCRIPTOR {
+            dwSize: std::mem::size_of::<FILE_ID_DESCRIPTOR>() as u32,
+            Type: FileIdType,
+            Anonymous: FILE_ID_DESCRIPTOR_0 { FileId: *frn as i64 },
+        },
+        FileRef::V3(bytes) => FILE_ID_DESCRIPTOR {
+            dwSize: std::mem::size_of::<FILE_ID_DESCRIPTOR>() as u32,
+            Type: ExtendedFileIdType,
+            Anonymous: FILE_ID_DESCRIPTOR_0 { ExtendedFileId: FILE_ID_128 { Identifier: *bytes } },
+        },
+    };
+    // Access 0 = metadata only; BACKUP_SEMANTICS is required to open directories.
+    let handle = unsafe {
+        OpenFileById(
+            volume,
+            &desc,
+            0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            None,
+            FILE_FLAG_BACKUP_SEMANTICS,
+        )
+    }
+    .ok()?;
+    let _guard = HandleGuard(handle);
+    let mut buf = vec![0u16; 512];
+    for _ in 0..2 {
+        // FILE_NAME_NORMALIZED | VOLUME_NAME_DOS — both are 0.
+        let n = unsafe { GetFinalPathNameByHandleW(handle, &mut buf, FILE_NAME_NORMALIZED) } as usize;
+        if n == 0 {
+            return None;
+        }
+        if n < buf.len() {
+            return Some(usn::strip_verbatim(&String::from_utf16_lossy(&buf[..n])));
+        }
+        buf.resize(n + 1, 0); // n = required size including the terminator
+    }
+    None
+}
 
-    if ok.is_err() || bytes_returned < 8 {
-        // The USN Journal is unavailable (not NTFS, no permissions, etc.)
-        return Ok(None);
+/// Every path touched on `root`'s volume since `since`, plus the new cursor.
+/// Reads the journal to its current end in 64 KB batches (the old version read
+/// one batch and dropped the rest), checks the journal instance and that the
+/// saved position is still inside the journal.
+pub fn read_usn_journal(root: &str, since: UsnCursor) -> UsnRead {
+    use std::collections::{HashMap, HashSet};
+    use windows::Win32::Foundation::{ERROR_HANDLE_EOF, ERROR_JOURNAL_ENTRY_DELETED, ERROR_JOURNAL_NOT_ACTIVE};
+    use windows::Win32::System::IO::DeviceIoControl;
+
+    let Some(volume) = open_volume(root) else { return UsnRead::Unavailable };
+    let Some(info) = query_journal(volume.0) else { return UsnRead::Unavailable };
+    if info.journal_id != since.journal_id || since.next_usn < info.lowest_valid_usn.max(info.first_usn) {
+        return UsnRead::Reset;
     }
 
-    // The first 8 bytes are the next USN to read from
-    let _next_usn = i64::from_ne_bytes(out_buf[0..8].try_into().unwrap_or([0; 8]));
-
-    let drive_prefix = format!("{}:\\", root.chars().next().unwrap_or('C'));
-    let mut modified = Vec::new();
-    let mut deleted = Vec::new();
-
-    // Parse the USN records
-    let mut offset = 8usize;
-    while offset + 8 < bytes_returned as usize {
-        // USN_RECORD_V2 header:
-        // offset 0: RecordLength (u32)
-        // offset 4: MajorVersion (u16)
-        // offset 6: MinorVersion (u16)
-        // offset 8: FileReferenceNumber (u64)
-        // offset 16: ParentFileReferenceNumber (u64)
-        // offset 24: Usn (i64)
-        // offset 32: Timestamp (i64)
-        // offset 40: Reason (u32)
-        // offset 44: SourceInfo (u32)
-        // offset 48: SecurityId (u32)
-        // offset 52: FileAttributes (u32)
-        // offset 56: FileNameLength (u16)
-        // offset 58: FileNameOffset (u16)
-        // offset 60: FileName (variable)
-
-        if offset + 60 > bytes_returned as usize {
-            break;
-        }
-
-        let record_len = u32::from_ne_bytes(out_buf[offset..offset + 4].try_into().unwrap_or([0; 4])) as usize;
-        if record_len < 60 || offset + record_len > bytes_returned as usize {
-            break;
-        }
-
-        let reason = u32::from_ne_bytes(out_buf[offset + 24 + 16..offset + 24 + 20].try_into().unwrap_or([0; 4]));
-        let file_name_len = u16::from_ne_bytes(out_buf[offset + 56..offset + 58].try_into().unwrap_or([0; 2])) as usize;
-        let file_name_offset = u16::from_ne_bytes(out_buf[offset + 58..offset + 60].try_into().unwrap_or([0; 2])) as usize;
-
-        if file_name_len > 0 && offset + file_name_offset + file_name_len <= bytes_returned as usize {
-            let name_bytes = &out_buf[offset + file_name_offset..offset + file_name_offset + file_name_len];
-            let name = String::from_utf16_lossy(unsafe {
-                std::slice::from_raw_parts(
-                    name_bytes.as_ptr() as *const u16,
-                    file_name_len / 2,
-                )
-            });
-
-            // Build the full path
-            let full_path = if name.starts_with(&drive_prefix) || name.starts_with('\\') {
-                name
-            } else {
-                format!("{}{}", drive_prefix, name)
-            };
-
-            if reason & USN_REASON_FILE_DELETE != 0 {
-                deleted.push(full_path);
-            } else if reason & (USN_REASON_FILE_CREATE | USN_REASON_DATA_OVERWRITE | USN_REASON_DATA_EXTEND | USN_REASON_DATA_TRUNCATION | USN_REASON_RENAME_NEW_NAME | USN_REASON_CLOSE) != 0 {
-                modified.push(full_path);
+    // u64 storage keeps the buffer 8-byte aligned, as the IOCTL expects.
+    let mut storage = vec![0u64; 64 * 1024 / 8];
+    let mut entries: HashSet<usn::UsnEntry> = HashSet::new();
+    let mut start = since.next_usn;
+    while start < info.next_usn {
+        let query = ReadUsnJournalData {
+            start_usn: start,
+            reason_mask: USN_REASON_MASK,
+            return_only_on_close: 0,
+            timeout: 0,
+            bytes_to_wait_for: 0,
+            usn_journal_id: info.journal_id,
+            min_major_version: 2,
+            max_major_version: 3,
+        };
+        let mut returned = 0u32;
+        let res = unsafe {
+            DeviceIoControl(
+                volume.0,
+                FSCTL_READ_USN_JOURNAL,
+                Some(&query as *const _ as *const core::ffi::c_void),
+                std::mem::size_of::<ReadUsnJournalData>() as u32,
+                Some(storage.as_mut_ptr() as *mut core::ffi::c_void),
+                (storage.len() * 8) as u32,
+                Some(&mut returned),
+                None,
+            )
+        };
+        if let Err(e) = res {
+            let code = e.code();
+            if code == ERROR_HANDLE_EOF.to_hresult() {
+                break;
             }
+            if code == ERROR_JOURNAL_ENTRY_DELETED.to_hresult() || code == ERROR_JOURNAL_NOT_ACTIVE.to_hresult() {
+                return UsnRead::Reset;
+            }
+            return UsnRead::Unavailable;
         }
-
-        offset += record_len;
-        if record_len == 0 {
-            break; // Guard against an infinite loop
+        let len = (returned as usize).min(storage.len() * 8);
+        // SAFETY: viewing initialized u64 storage as bytes is always valid.
+        let bytes = unsafe { std::slice::from_raw_parts(storage.as_ptr() as *const u8, len) };
+        if bytes.len() < 8 {
+            break;
         }
+        let next = i64::from_le_bytes(bytes[0..8].try_into().unwrap_or([0; 8]));
+        usn::parse_records(&bytes[8..], &mut entries);
+        if next <= start {
+            break; // no progress — the end of the journal
+        }
+        start = next;
     }
 
-    Ok(Some(UsnChanges { modified, deleted }))
+    let mut parents: HashMap<FileRef, Option<String>> = HashMap::new();
+    let mut paths: HashSet<String> = HashSet::new();
+    for e in entries {
+        let parent = parents.entry(e.parent).or_insert_with(|| path_by_id(volume.0, &e.parent));
+        if let Some(dir) = parent {
+            let sep = if dir.ends_with('\\') { "" } else { "\\" };
+            paths.insert(format!("{dir}{sep}{}", e.name));
+        }
+    }
+    UsnRead::Changes {
+        paths: paths.into_iter().collect(),
+        cursor: UsnCursor { journal_id: info.journal_id, next_usn: start },
+    }
 }
 
 // ─── Known Folders via FOLDERID ───────────────────────────────────

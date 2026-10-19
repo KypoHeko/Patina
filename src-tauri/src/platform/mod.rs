@@ -12,8 +12,11 @@
 //! (re-exported from the windows submodule on Windows, or fallback
 //! implementations on other platforms).
 
+pub mod usn;
 #[cfg(windows)]
 pub mod windows;
+
+pub use usn::{UsnCursor, UsnRead};
 
 // ─── Re-export Windows functions at the platform::* level ─────────
 // On Windows the functions are implemented in windows.rs, but calling code
@@ -25,7 +28,7 @@ pub use windows::{delete_to_recycle_bin, list_drives_native};
 
 // Re-export native icons and the USN Journal for use in commands.
 #[cfg(windows)]
-pub use windows::{get_native_icon, read_usn_journal};
+pub use windows::{get_native_icon, query_usn_cursor, read_usn_journal};
 
 /// Disk/volume information with native OS data.
 #[derive(Debug, serde::Serialize)]
@@ -56,15 +59,6 @@ pub struct NativeIcon {
     pub height: u32,
 }
 
-/// Incremental changes obtained from the USN Journal.
-#[derive(Debug)]
-pub struct UsnChanges {
-    /// Paths of files that were created or modified
-    pub modified: Vec<String>,
-    /// Paths of files that were deleted
-    pub deleted: Vec<String>,
-}
-
 // ─── Fallback implementations for non-Windows ──────────────────────
 
 #[cfg(not(windows))]
@@ -92,8 +86,13 @@ pub fn get_native_icon(_path: &str, _size: u32) -> Option<NativeIcon> {
     None
 }
 
+/// The USN Journal exists only on NTFS/ReFS under Windows.
 #[cfg(not(windows))]
-pub fn read_usn_journal(_root: &str, _last_usn: i64) -> crate::error::Result<Option<UsnChanges>> {
-    // The USN Journal is available only on NTFS/Windows
-    Ok(None)
+pub fn query_usn_cursor(_root: &str) -> Option<UsnCursor> {
+    None
+}
+
+#[cfg(not(windows))]
+pub fn read_usn_journal(_root: &str, _since: UsnCursor) -> UsnRead {
+    UsnRead::Unavailable
 }
