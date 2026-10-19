@@ -114,3 +114,24 @@ describe('buildDirTree', () => {
     expect(baseName('/trailing/')).toBe('trailing');
   });
 });
+
+describe('buildDirTree concurrency', () => {
+  it('lists several folders of a level in parallel but keeps BFS order', async () => {
+    let inFlight = 0;
+    let peak = 0;
+    const tree = { '/r': ['a', 'b', 'c', 'd'].map((n) => ({ name: n, path: `/r/${n}`, kind: 'folder' })) };
+    for (const n of ['a', 'b', 'c', 'd']) tree[`/r/${n}`] = [{ name: 'f', path: `/r/${n}/f`, kind: 'file' }];
+    const listDir = async (p) => {
+      inFlight++;
+      peak = Math.max(peak, inFlight);
+      await new Promise((r) => setTimeout(r, 5));
+      inFlight--;
+      return tree[p] || [];
+    };
+    const r = await buildDirTree(listDir, '/r', { maxDepth: 5, maxNodes: 100 });
+    expect(peak).toBeGreaterThan(1);
+    expect(r.root.children.map((c) => c.name)).toEqual(['a', 'b', 'c', 'd']);
+    expect(r.files).toBe(4);
+    expect(r.folders).toBe(4);
+  });
+});
