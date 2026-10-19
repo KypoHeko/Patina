@@ -41,6 +41,12 @@ pub fn run() {
                 ) {
                     eprintln!("[patina] version GC failed: {e}");
                 }
+                // Thumbnail/icon cache: 30 days, 256 MB at most.
+                fs::cache::prune(
+                    &state.thumbs_dir,
+                    std::time::Duration::from_secs(30 * 86_400),
+                    256 * 1024 * 1024,
+                );
             });
             Ok(())
         })

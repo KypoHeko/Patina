@@ -189,6 +189,9 @@ pub fn b64(data: &[u8]) -> String {
     out
 }
 
+/// Largest SVG inlined into the preview.
+const MAX_SVG_PREVIEW: u64 = 2 * 1024 * 1024;
+
 const RASTER: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "tiff", "tif"];
 
 fn file_times(meta: &std::fs::Metadata) -> (i64, i64) {
@@ -230,8 +233,13 @@ fn build_preview(thumbs_dir: &Path, path: &str) -> Result<Preview> {
         return Ok(none_preview(name, &meta));
     }
 
-    // SVG is a vector — inline it as-is (no rasterization).
+    // SVG is a vector — inline it as-is (no rasterization). Inlined as a data
+    // URL over IPC, so a huge (or hostile) SVG is not previewed at all instead
+    // of being read into memory whole.
     if ext == "svg" {
+        if meta.len() > MAX_SVG_PREVIEW {
+            return Ok(none_preview(name, &meta));
+        }
         let bytes = std::fs::read(path)?;
         let (modified, created) = file_times(&meta);
         return Ok(Preview {
