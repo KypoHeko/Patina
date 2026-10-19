@@ -31,6 +31,26 @@ pub use windows::{delete_to_recycle_bin, list_drives_native};
 #[cfg(windows)]
 pub use windows::{get_native_icon, query_usn_cursor, read_usn_journal};
 
+/// `CTL_CODE` from winioctl.h — IOCTL codes are computed, not typed in as hex:
+/// the hand-written constants here were wrong twice (storage query and USN read).
+#[cfg_attr(not(windows), allow(dead_code))]
+pub const fn ctl_code(device: u32, function: u32, method: u32, access: u32) -> u32 {
+    (device << 16) | (access << 14) | (function << 2) | method
+}
+
+#[cfg(test)]
+mod ioctl_tests {
+    use super::ctl_code;
+
+    #[test]
+    fn known_ioctl_codes() {
+        // FILE_DEVICE_FILE_SYSTEM = 9, IOCTL_STORAGE_BASE = 0x2D
+        assert_eq!(ctl_code(9, 61, 0, 0), 0x0009_00F4); // FSCTL_QUERY_USN_JOURNAL
+        assert_eq!(ctl_code(9, 46, 3, 0), 0x0009_00BB); // FSCTL_READ_USN_JOURNAL
+        assert_eq!(ctl_code(0x2D, 0x500, 0, 0), 0x002D_1400); // IOCTL_STORAGE_QUERY_PROPERTY
+    }
+}
+
 /// Disk/volume information with native OS data.
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]

@@ -338,7 +338,7 @@ fn query_storage_property_bool(root: &str, property_id: u32) -> Option<bool> {
 
         let ok = DeviceIoControl(
             handle,
-            0x0002D140, // IOCTL_STORAGE_QUERY_PROPERTY
+            IOCTL_STORAGE_QUERY_PROPERTY, // was mistyped as 0x0002D140
             Some(&query as *const _ as *const _),
             std::mem::size_of::<StorageQuery>() as u32,
             Some(&mut result as *mut _ as *mut _),
@@ -528,9 +528,11 @@ unsafe fn icon_to_png(
 // thousands of records usually share a handful of directories.
 
 /// FSCTL_QUERY_USN_JOURNAL = CTL_CODE(FILE_DEVICE_FILE_SYSTEM, 61, METHOD_BUFFERED, FILE_ANY_ACCESS)
-const FSCTL_QUERY_USN_JOURNAL: u32 = 0x0009_00F4;
+const FSCTL_QUERY_USN_JOURNAL: u32 = super::ctl_code(9, 61, 0, 0);
 /// FSCTL_READ_USN_JOURNAL = CTL_CODE(FILE_DEVICE_FILE_SYSTEM, 46, METHOD_NEITHER, FILE_ANY_ACCESS)
-const FSCTL_READ_USN_JOURNAL: u32 = 0x0009_00BB;
+const FSCTL_READ_USN_JOURNAL: u32 = super::ctl_code(9, 46, 3, 0);
+/// IOCTL_STORAGE_QUERY_PROPERTY = CTL_CODE(IOCTL_STORAGE_BASE, 0x500, METHOD_BUFFERED, FILE_ANY_ACCESS)
+const IOCTL_STORAGE_QUERY_PROPERTY: u32 = super::ctl_code(0x2D, 0x500, 0, 0);
 
 /// Reasons that change what the index holds for a path.
 const USN_REASON_MASK: u32 = 0x0000_0001 // DATA_OVERWRITE
