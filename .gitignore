@@ -3,6 +3,12 @@ target/
 src-tauri/target/
 src-tauri/gen/
 
+# Node
+node_modules/
+
 # ОС
 .DS_Store
 Thumbs.db
+
+# Local Claude settings
+.claude/settings.local.json

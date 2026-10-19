@@ -94,6 +94,9 @@ export const STRINGS = {
     'dup.delTitle': 'Удалить в корзину',
     'dup.copies': '{n} копий',
     'dup.keepFirst': 'Оставить первый',
+    'dup.confirm.title': 'Удаление дубликатов',
+    'dup.confirm.keepMsg': 'Удалить в корзину {n} копий, оставив первый файл в каждой группе?',
+    'dup.confirm.delMsg': 'Удалить в корзину файл «{name}»?',
 
     // Sidebar
     'sidebar.quick': 'Быстрый доступ',
@@ -124,6 +127,8 @@ export const STRINGS = {
     'pv.btn.add': '＋ Добавить',
     'pv.btn.restore': 'Сменить',
     'pv.btn.delete': 'Удалить',
+    'pv.restoreTitle': 'Восстановление версии',
+    'pv.restoreConfirm': 'Заменить текущее содержимое файла версией «{label}»? Текущее состояние будет сохранено в историю автоматически.',
 
     // Command palette
     'palette.placeholder.folder': 'Поиск в текущей папке…',
@@ -277,6 +282,9 @@ export const STRINGS = {
     'dup.delTitle': 'Move to Trash',
     'dup.copies': '{n} copies',
     'dup.keepFirst': 'Keep first',
+    'dup.confirm.title': 'Delete duplicates',
+    'dup.confirm.keepMsg': 'Move {n} duplicate copy(ies) to Trash, keeping the first file in each group?',
+    'dup.confirm.delMsg': 'Move the file "{name}" to Trash?',
 
     // Sidebar
     'sidebar.quick': 'Quick access',
@@ -307,6 +315,8 @@ export const STRINGS = {
     'pv.btn.add': '＋ Add',
     'pv.btn.restore': 'Switch',
     'pv.btn.delete': 'Delete',
+    'pv.restoreTitle': 'Restore version',
+    'pv.restoreConfirm': 'Replace the current file contents with version "{label}"? The current state will be saved to history automatically.',
 
     // Command palette
     'palette.placeholder.folder': 'Search in current folder…',

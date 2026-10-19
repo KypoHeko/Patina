@@ -178,7 +178,21 @@ export class PreviewPanel extends Component {
     if (e.target.closest('[data-restore]')) {
       const btn = e.target.closest('[data-restore]');
       const id = +btn.dataset.restore;
-      if (id) this.doRestore(id);
+      if (!id) return;
+      // H2 (frontend): restoring a version overwrites the live file. The
+      // backend takes a safety snapshot first (C3 invariant), so the data is
+      // recoverable, but the UI gave no warning — a user browsing old versions
+      // who clicks "Switch" (RU: "Сменить") silently replaced their current
+      // file. Gate the action behind the same confirm dialog used elsewhere.
+      const ver = this._versions.find((v) => v.id === id);
+      const label = ver?.label || '';
+      this.bus.emit('confirm:open', {
+        title: t('pv.restoreTitle'),
+        message: t('pv.restoreConfirm', { label }),
+        confirmLabel: t('pv.btn.restore'),
+        danger: true,
+        onConfirm: () => this.doRestore(id),
+      });
       return;
     }
 

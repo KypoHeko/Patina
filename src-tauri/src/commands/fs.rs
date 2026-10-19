@@ -120,10 +120,10 @@ pub async fn check_conflicts(sources: Vec<String>, dest_dir: String) -> Result<V
     tauri::async_runtime::spawn_blocking(move || -> Result<Vec<String>> {
         let mut out = Vec::new();
         for src in &sources {
-            if let Some(name) = Path::new(src).file_name() {
-                if Path::new(&dest_dir).join(name).exists() {
-                    out.push(name.to_string_lossy().into_owned());
-                }
+            if let Some(name) = Path::new(src).file_name()
+                && Path::new(&dest_dir).join(name).exists()
+            {
+                out.push(name.to_string_lossy().into_owned());
             }
         }
         Ok(out)
@@ -310,6 +310,13 @@ pub async fn read_preview(app: AppHandle, path: String) -> Result<Preview> {
 #[tauri::command]
 pub async fn create_folder(parent: String, name: String) -> Result<String> {
     tauri::async_runtime::spawn_blocking(move || -> Result<String> {
+        // Security: reject separators / traversal components in the name — same
+        // rule as `rename_entry`. Without this, `name = "..\..\evil"` would
+        // escape `parent` via `Path::join` and create a folder anywhere the
+        // user has permission.
+        if name.is_empty() || name.contains('/') || name.contains('\\') {
+            return Err(Error::InvalidPath(format!("invalid folder name: {name}")));
+        }
         let base = Path::new(&parent);
         if !base.is_dir() {
             return Err(Error::NotADirectory(parent));

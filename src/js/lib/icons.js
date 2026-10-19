@@ -305,7 +305,6 @@ export const EXT = {
   exe: ['file', '#64748b'],
   msi: ['file', '#64748b'],
   dll: ['file', '#64748b'],
-  iso: ['file', '#64748b'],
 };
 
 const FOLDER_COLOR = '#eab308';

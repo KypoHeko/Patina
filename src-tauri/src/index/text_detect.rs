@@ -50,10 +50,9 @@ pub fn is_text(path: &Path, len: u64) -> bool {
     if let Some(ext) = path
         .extension()
         .map(|e| e.to_string_lossy().to_ascii_lowercase())
+        && TEXT_EXTS.contains(&ext.as_str())
     {
-        if TEXT_EXTS.contains(&ext.as_str()) {
-            return true;
-        }
+        return true;
     }
     sample_looks_textual(&read_head(path, 8192))
 }

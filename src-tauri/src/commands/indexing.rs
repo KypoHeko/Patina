@@ -35,10 +35,11 @@ pub(crate) fn explicit_out_edges(
     let mut seen: HashSet<String> = HashSet::new();
     let mut out = Vec::new();
     for raw in links::extract_targets(&ext, body) {
-        if let Some(dst) = links::resolve(src_path, &raw, known_paths) {
-            if dst != src_path && seen.insert(dst.clone()) {
-                out.push((dst, kind.to_string()));
-            }
+        if let Some(dst) = links::resolve(src_path, &raw, known_paths)
+            && dst != src_path
+            && seen.insert(dst.clone())
+        {
+            out.push((dst, kind.to_string()));
         }
     }
     out
@@ -152,7 +153,7 @@ pub(crate) fn build_edges(
 
         // Live progress for the relations phase. Adaptive step + always a final
         // emit, otherwise for folders < 200 files the counter froze at 0/total.
-        let step = (total / 20).max(1).min(200);
+        let step = (total / 20).clamp(1, 200);
         if (i + 1) % step == 0 || i + 1 == total {
             let _ = app.emit(
                 "index:progress",
@@ -179,19 +180,17 @@ fn apply_change(app: &AppHandle, content_active: bool, path: &Path) {
             if let Ok(conn) = state.db() {
                 let _ = file_index::upsert_one(&conn, &row);
             }
-            if content_active && text_file {
-                if let Ok(bytes) = std::fs::read(path) {
-                    let body = String::from_utf8_lossy(&bytes).into_owned();
-                    if let Ok(conn) = state.db() {
-                        let _ = content_index::ensure_table(&conn);
-                        let _ = content_index::upsert_one(&conn, &pstr, &body);
-                        // Incrementally update only the explicit outgoing edges
-                        // (the mention layer is rebuilt on a full reindex).
-                        // No known_paths set available here — resolve() falls
-                        // back to fs::metadata for each candidate.
-                        let edges = explicit_out_edges(&pstr, &body, None);
-                        let _ = edges::replace_derived_for_src(&conn, &pstr, &edges);
-                    }
+            if content_active && text_file && let Ok(bytes) = std::fs::read(path) {
+                let body = String::from_utf8_lossy(&bytes).into_owned();
+                if let Ok(conn) = state.db() {
+                    let _ = content_index::ensure_table(&conn);
+                    let _ = content_index::upsert_one(&conn, &pstr, &body);
+                    // Incrementally update only the explicit outgoing edges
+                    // (the mention layer is rebuilt on a full reindex).
+                    // No known_paths set available here — resolve() falls
+                    // back to fs::metadata for each candidate.
+                    let edges = explicit_out_edges(&pstr, &body, None);
+                    let _ = edges::replace_derived_for_src(&conn, &pstr, &edges);
                 }
             }
         }
@@ -221,13 +220,15 @@ pub(crate) fn build_all(app: &AppHandle, root: &str, content: bool) -> Result<()
         }
         let path = entry.path();
         if let Some(row) = build_row(path) {
-            if content && !row.is_dir && text_detect::is_text(path, row.size) {
-                if let Ok(bytes) = std::fs::read(path) {
-                    content_rows.push(content_index::ContentRow {
-                        path: row.path.clone(),
-                        body: String::from_utf8_lossy(&bytes).into_owned(),
-                    });
-                }
+            if content
+                && !row.is_dir
+                && text_detect::is_text(path, row.size)
+                && let Ok(bytes) = std::fs::read(path)
+            {
+                content_rows.push(content_index::ContentRow {
+                    path: row.path.clone(),
+                    body: String::from_utf8_lossy(&bytes).into_owned(),
+                });
             }
             rows.push(row);
             // Live progress for the UI.

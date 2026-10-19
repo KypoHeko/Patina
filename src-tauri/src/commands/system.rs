@@ -35,14 +35,30 @@ pub fn open_path(path: String) -> Result<()> {
 }
 
 /// Reveal a file in the system file manager (with selection on Windows).
+///
+/// Security: NTFS allows `"` in file names. Earlier we built the argument
+/// manually via `raw_arg("/select,\"{}\"", path)` — a name containing `"`
+/// would break out of the quoted region and let `explorer.exe` parse the rest
+/// as a separate argument (potentially an executable path to launch).
+///
+/// Now we (a) reject paths containing `"` outright (defence in depth —
+/// `explorer /select,` cannot legitimately address such a path anyway) and
+/// (b) rely on Rust's `Command::arg`, which applies `CommandLineToArgvW`
+/// quoting rules instead of our own. Together these close the injection.
 #[tauri::command]
 pub fn reveal_in_explorer(path: String) -> Result<()> {
+    if path.contains('"') {
+        return Err(Error::InvalidPath(
+            "path contains a double quote, refusing to pass to explorer".into(),
+        ));
+    }
     #[cfg(windows)]
     {
-        use std::os::windows::process::CommandExt;
         use std::process::Command;
+        // `.arg(...)` lets std apply the standard CommandLineToArgvW quoting.
+        // No manual quotes around the path — std adds them when needed.
         Command::new("explorer")
-            .raw_arg(format!("/select,\"{}\"", path))
+            .arg(format!("/select,{}", path))
             .spawn()?;
         Ok(())
     }

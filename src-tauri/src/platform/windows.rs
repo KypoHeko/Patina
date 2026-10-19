@@ -17,6 +17,39 @@ fn to_wide(s: &str) -> Vec<u16> {
     OsStr::new(s).encode_wide().chain(std::iter::once(0)).collect()
 }
 
+// ─── RAII guards for native handles ───────────────────────────────
+//
+// A manual `CloseHandle` / `CoUninitialize` is correct only as long as no early
+// `return`/`?` slips in between acquiring the resource and releasing it. These
+// guards move the release into `Drop`, so it runs on *every* exit path. The code
+// is already leak-free today; this keeps it that way as the code grows.
+
+/// Closes a Win32 `HANDLE` on drop.
+struct HandleGuard(windows::Win32::Foundation::HANDLE);
+
+impl Drop for HandleGuard {
+    fn drop(&mut self) {
+        // SAFETY: only constructed from a handle that opened successfully and is
+        // not INVALID_HANDLE_VALUE; `CloseHandle` is its documented release.
+        unsafe {
+            let _ = windows::Win32::Foundation::CloseHandle(self.0);
+        }
+    }
+}
+
+/// Balances a successful `CoInitializeEx` with `CoUninitialize` on drop.
+struct ComGuard;
+
+impl Drop for ComGuard {
+    fn drop(&mut self) {
+        // SAFETY: only constructed after `CoInitializeEx` returned a success
+        // code; each successful init must be paired with exactly one uninit.
+        unsafe {
+            windows::Win32::System::Com::CoUninitialize();
+        }
+    }
+}
+
 // ─── Delete to Trash via IFileOperation ───────────────────────────
 
 // Delete files/folders to the Trash via IFileOperation.
@@ -27,7 +60,7 @@ fn to_wide(s: &str) -> Vec<u16> {
 // Support for UNC paths and symbolic links
 pub fn delete_to_recycle_bin(paths: &[String]) -> Result<()> {
     use windows::Win32::System::Com::{
-        CoInitializeEx, CoUninitialize, CLSCTX_ALL,
+        CoInitializeEx, CLSCTX_ALL, COINIT_APARTMENTTHREADED,
     };
     use windows::Win32::UI::Shell::{
         FileOperation, IFileOperation, FOF_ALLOWUNDO, FOF_NOCONFIRMATION,
@@ -35,13 +68,17 @@ pub fn delete_to_recycle_bin(paths: &[String]) -> Result<()> {
     };
 
     unsafe {
-        CoInitializeEx(None, windows::Win32::System::Com::COINIT_APARTMENTTHREADED)
+        CoInitializeEx(None, COINIT_APARTMENTTHREADED)
             .ok()
             .map_err(|e| Error::Operation(format!("CoInitializeEx: {e}")))?;
 
-        let result = (|| -> Result<()> {
-            let op: IFileOperation =
-                CoCreateInstance(&FileOperation, None, CLSCTX_ALL)
+        // Balances the CoInitializeEx above: CoUninitialize runs on scope exit,
+        // including the early `?` returns below. Declared BEFORE `op` so that the
+        // IFileOperation interface is released *before* CoUninitialize (locals
+        // drop in reverse declaration order).
+        let _com = ComGuard;
+
+            let op: IFileOperation = CoCreateInstance(&FileOperation, None, CLSCTX_ALL)
                     .map_err(|e| Error::Operation(format!("CoCreateInstance IFileOperation: {e}")))?;
 
             op.SetOperationFlags(
@@ -69,10 +106,8 @@ pub fn delete_to_recycle_bin(paths: &[String]) -> Result<()> {
                 .map_err(|e| Error::Operation(format!("PerformOperations: {e}")))?;
 
             Ok(())
-        })();
-
-        CoUninitialize();
-        result
+        // `op` drops here (releases IFileOperation), then `_com` drops
+        // (CoUninitialize) — the required order.
     }
 }
 
@@ -226,6 +261,8 @@ fn query_storage_property_bool(root: &str, property_id: u32) -> Option<bool> {
             Ok(h) if !h.is_invalid() => h,
             _ => return None,
         };
+        // From here on the handle is closed on every exit path (RAII).
+        let _handle = HandleGuard(handle);
 
         // STORAGE_PROPERTY_QUERY: PropertyId (u32) + QueryType (u32).
         #[repr(C)]
@@ -265,8 +302,6 @@ fn query_storage_property_bool(root: &str, property_id: u32) -> Option<bool> {
             Some(&mut bytes_returned),
             None,
         );
-
-        let _ = windows::Win32::Foundation::CloseHandle(handle);
 
         match ok {
             // Reliable only if the device actually returned the value field
@@ -491,12 +526,10 @@ pub fn read_usn_journal(root: &str, last_usn: i64) -> Result<Option<UsnChanges>>
             Ok(h) if !h.is_invalid() => h,
             _ => return Ok(None), // Could not open the device
         };
+        // The handle is closed on every exit path from here on (RAII).
+        let _handle = HandleGuard(handle);
 
-        let result = read_usn_with_handle(handle, root, last_usn);
-
-        let _ = windows::Win32::Foundation::CloseHandle(handle);
-
-        result
+        read_usn_with_handle(handle, root, last_usn)
     }
 }
 

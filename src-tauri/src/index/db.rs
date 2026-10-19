@@ -46,19 +46,27 @@ fn run_migrations(conn: &Connection) -> Result<()> {
     let mut version: usize =
         conn.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))? as usize;
     while version < MIGRATIONS.len() {
-        conn.execute_batch("BEGIN")?;
-        let step: Result<()> = conn.execute_batch(MIGRATIONS[version]).map_err(Error::from);
-        match step {
-            Ok(()) => {
-                conn.execute_batch("COMMIT")?;
-                version += 1;
-                conn.pragma_update(None, "user_version", version as i64)?;
-            }
-            Err(e) => {
-                let _ = conn.execute_batch("ROLLBACK");
-                return Err(e);
-            }
+        // Atomicity: the migration's DDL and the PRAGMA user_version update must
+        // land in the SAME transaction. Otherwise a crash between COMMIT and the
+        // separate pragma_update would leave the schema applied but user_version
+        // stale — on the next launch the same migration would re-run and fail
+        // (e.g. ALTER TABLE ADD COLUMN: "duplicate column name"). By concatenating
+        // the migration SQL with the PRAGMA into a single execute_batch under one
+        // BEGIN/COMMIT, both commit (or roll back) together.
+        let next_version = version + 1;
+        let batch = format!(
+            "BEGIN;\n{}\nPRAGMA user_version = {};\nCOMMIT;",
+            MIGRATIONS[version], next_version
+        );
+        if let Err(e) = conn.execute_batch(&batch).map_err(Error::from) {
+            // BEGIN may have opened a transaction that survived the failure
+            // (the error could come from the migration SQL itself, before COMMIT).
+            // Best-effort rollback — ignore the result, the connection is unusable
+            // for the next iteration anyway since we return the error.
+            let _ = conn.execute_batch("ROLLBACK");
+            return Err(e);
         }
+        version = next_version;
     }
     Ok(())
 }

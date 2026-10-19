@@ -287,6 +287,16 @@ fn quoted_following(body: &str, marker: &str) -> Vec<String> {
         while j < b.len() && b[j] == b' ' {
             j += 1;
         }
+        // Skip an optional opening delimiter after the marker (and any spaces
+        // after it): include_str!("x"), include_bytes!["x"], require( "x" ).
+        // Without this, markers like `include_str!` never reached the quote,
+        // because `(` sits between the marker and the string literal.
+        if j < b.len() && (b[j] == b'(' || b[j] == b'[' || b[j] == b'{') {
+            j += 1;
+            while j < b.len() && b[j] == b' ' {
+                j += 1;
+            }
+        }
         if j < b.len() && (b[j] == b'"' || b[j] == b'\'') {
             let q = b[j];
             let vstart = j + 1;

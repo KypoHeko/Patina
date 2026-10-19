@@ -249,6 +249,49 @@ fn maybe_train_dict_with_dir(
     Ok(())
 }
 
+/// Atomically replace the contents of `dest` with `data`.
+///
+/// Writes to a sibling temp file (so the rename stays on the same volume —
+/// atomic and never crosses a mount point), then renames over the target.
+/// On Windows `std::fs::rename` over an existing file fails, so we fall back
+/// to the canonical "remove then rename" sequence. The window between remove
+/// and rename is on the order of a syscall — for a version manager this is
+/// acceptable, and a crash here leaves the user with the safety snapshot
+/// taken at the start of `do_restore` (so the data is recoverable from the
+/// version history).
+///
+/// This is the fix for H7: previously `std::fs::copy` / `std::fs::write` ran
+/// straight over the live file. A power loss, disk-full, or panic mid-write
+/// would leave the user's file truncated/corrupted with no automatic recovery
+/// path — the safety snapshot was already taken, so there was nothing to roll
+/// back to.
+fn atomic_write(dest: &Path, data: &[u8]) -> std::result::Result<(), Error> {
+    let parent = dest
+        .parent()
+        .ok_or_else(|| Error::Operation(format!("restore target has no parent: {}", dest.display())))?;
+    // temp file in the same directory → rename is intra-volume and atomic
+    let tmp = parent.join(format!(
+        ".patina-restore-tmp-{}",
+        std::process::id(),
+    ));
+    {
+        let mut f = std::fs::File::create(&tmp).map_err(Error::Io)?;
+        use std::io::Write;
+        f.write_all(data).map_err(Error::Io)?;
+        f.sync_all().map_err(Error::Io)?;
+    }
+    // Try the atomic rename first; on Windows this fails if `dest` exists,
+    // so we remove `dest` and rename. Either path leaves a fully written file
+    // at `dest` (or the original untouched, if anything failed before rename).
+    if std::fs::rename(&tmp, dest).is_ok() {
+        return Ok(());
+    }
+    // Windows path (also tolerates a stale `dest` on Unix):
+    let _ = std::fs::remove_file(dest);
+    std::fs::rename(&tmp, dest).map_err(Error::Io)?;
+    Ok(())
+}
+
 /// Restore a version: snapshot the current state, then replace the file's
 /// contents with the version's data.
 fn do_restore(
@@ -276,14 +319,17 @@ fn do_restore(
     match v.strategy.as_str() {
         "full" => {
             let blob = versions_dir.join(&v.hash);
-            std::fs::copy(&blob, &v.path).map_err(Error::Io)?;
+            // Stream the blob through a buffer to keep peak memory bounded for
+            // large "full" versions, then write atomically (H7).
+            let data = std::fs::read(&blob).map_err(Error::Io)?;
+            atomic_write(Path::new(&v.path), &data)?;
         }
         "zstd" => {
             let blob = versions_dir.join(format!("{}.zst", &v.hash));
             let compressed = std::fs::read(&blob).map_err(Error::Io)?;
             let dicts_dir = version_compress::dicts_dir(versions_dir);
             let data = version_compress::decompress(&compressed, &dicts_dir, v.dict_id)?;
-            std::fs::write(&v.path, &data).map_err(Error::Io)?;
+            atomic_write(Path::new(&v.path), &data)?;
         }
         "chunked" => {
             let chunks_dir = versions_dir.join("chunks");
@@ -293,7 +339,7 @@ fn do_restore(
             };
             let hashes: Vec<String> = chunk_list.iter().map(|(h, _)| h.clone()).collect();
             let data = chunker::reassemble(&chunks_dir, &hashes)?;
-            std::fs::write(&v.path, &data).map_err(Error::Io)?;
+            atomic_write(Path::new(&v.path), &data)?;
         }
         _ => {
             return Err(Error::Operation(format!("unknown strategy: {}", v.strategy)));

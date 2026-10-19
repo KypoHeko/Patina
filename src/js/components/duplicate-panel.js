@@ -99,11 +99,35 @@ export class DuplicatePanel extends Component {
     const keep = e.target.closest('[data-keepfirst]');
     if (keep) {
       const g = this._groups[+keep.dataset.keepfirst];
-      if (g) this.removePaths(g.paths.slice(1));
+      if (!g) return;
+      const paths = g.paths.slice(1);
+      if (!paths.length) return;
+      // H1 (frontend): "Keep first" silently deletes N-1 files. Route through
+      // the same confirm dialog the rest of the app uses for destructive
+      // operations — a misclick on a long list should not send files to the
+      // Recycle Bin without a chance to cancel.
+      this.bus.emit('confirm:open', {
+        title: t('dup.confirm.title'),
+        message: t('dup.confirm.keepMsg', { n: paths.length }),
+        confirmLabel: t('panel.deleteConfirm'),
+        danger: true,
+        onConfirm: () => this.removePaths(paths),
+      });
       return;
     }
     const del = e.target.closest('[data-del]');
-    if (del) this.removePaths([del.dataset.del]);
+    if (del) {
+      const path = del.dataset.del;
+      // Single-file deletion in a duplicate group. Still destructive (the file
+      // goes to the Recycle Bin), still worth a confirm — but lighter wording.
+      this.bus.emit('confirm:open', {
+        title: t('dup.confirm.title'),
+        message: t('dup.confirm.delMsg', { name: folderName(path) || path }),
+        confirmLabel: t('panel.deleteConfirm'),
+        danger: true,
+        onConfirm: () => this.removePaths([path]),
+      });
+    }
   }
 
   /** Re-render on language change. Preserves the found groups. */

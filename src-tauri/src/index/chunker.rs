@@ -321,7 +321,7 @@ mod tests {
         f.flush().unwrap();
 
         let chunks = chunk_file(f.path().to_str().unwrap()).unwrap();
-        assert!(chunks.len() >= 1, "expect at least one chunk");
+        assert!(!chunks.is_empty(), "expect at least one chunk");
 
         let dir = tempfile::tempdir().unwrap();
         let chunks_dir = dir.path().join("chunks");

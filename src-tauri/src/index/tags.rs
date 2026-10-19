@@ -188,7 +188,7 @@ mod tests {
         t1.sort();
         assert_eq!(t1, vec!["done".to_string(), "urgent".to_string()]);
         assert_eq!(map.get("C:\\a\\2.txt").unwrap(), &vec!["reference".to_string()]);
-        assert!(map.get("C:\\a\\nope.txt").is_none());
+        assert!(!map.contains_key("C:\\a\\nope.txt"));
     }
 
     #[test]
