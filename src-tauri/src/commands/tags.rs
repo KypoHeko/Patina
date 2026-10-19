@@ -21,6 +21,18 @@ pub async fn assign_tag(app: AppHandle, path: String, tag_id: String) -> Result<
     .map_err(|e| Error::Operation(format!("assign_tag interrupted: {e}")))?
 }
 
+/// Tag or untag a whole selection in one call and one transaction.
+#[tauri::command]
+pub async fn set_tag_many(app: AppHandle, paths: Vec<String>, tag_id: String, on: bool) -> Result<()> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let conn = state.db()?;
+        tags::set_many(&conn, &paths, &tag_id, on)
+    })
+    .await
+    .map_err(|e| Error::Operation(format!("set_tag_many interrupted: {e}")))?
+}
+
 #[tauri::command]
 pub async fn remove_tag(app: AppHandle, path: String, tag_id: String) -> Result<()> {
     tauri::async_runtime::spawn_blocking(move || {

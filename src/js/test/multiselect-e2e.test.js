@@ -5,7 +5,7 @@ import { createStore } from '../core/store.js';
 import { createEventBus } from '../core/event-bus.js';
 import { initialTabsState, getActiveTab } from '../state/tabs.js';
 import { updatePane, recordHistory } from '../state/panes.js';
-import { assignTag, removeTag, tagsForPaths } from '../api/tags.js';
+import { setTagMany, tagsForPaths } from '../api/tags.js';
 
 vi.mock('../api/fs.js', () => ({
   listDir: vi.fn().mockResolvedValue([]),
@@ -23,8 +23,7 @@ vi.mock('../api/system.js', () => ({
   revealInExplorer: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock('../api/tags.js', () => ({
-  assignTag: vi.fn().mockResolvedValue(undefined),
-  removeTag: vi.fn().mockResolvedValue(undefined),
+  setTagMany: vi.fn().mockResolvedValue(undefined),
   tagsForPaths: vi.fn().mockResolvedValue({}),
   listTag: vi.fn().mockResolvedValue([]),
 }));
@@ -45,7 +44,7 @@ function rowEl(path) {
 
 describe('Multi-select tagging — FilePanel → ContextMenu end to end', () => {
   it('clicking a tag dot tags EVERY selected file', async () => {
-    assignTag.mockClear();
+    setTagMany.mockClear();
     const store = createStore({ ...initialTabsState(), homePath: '/home' });
     const bus = createEventBus();
 
@@ -82,12 +81,10 @@ describe('Multi-select tagging — FilePanel → ContextMenu end to end', () => 
     const dot = menuMount.querySelector('.ctx-tag');
     expect(dot, 'context menu should render tag dots').toBeTruthy();
     dot.click();
-    await tick(); // toggleTag resolves Promise.all(assignTag...)
+    await tick(); // toggleTag resolves setTagMany
 
     const tagId = dot.dataset.tag;
-    expect(assignTag).toHaveBeenCalledTimes(3);
-    for (const p of ['/a.txt', '/b.txt', '/c.txt']) {
-      expect(assignTag).toHaveBeenCalledWith(p, tagId);
-    }
+    expect(setTagMany).toHaveBeenCalledTimes(1);
+    expect(setTagMany).toHaveBeenCalledWith(['/a.txt', '/b.txt', '/c.txt'], tagId, true);
   });
 });

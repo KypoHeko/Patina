@@ -1,7 +1,7 @@
 import { Component } from '../core/component.js';
 import { el } from '../core/dom.js';
 import { revealInExplorer } from '../api/system.js';
-import { assignTag, removeTag, tagsForPaths } from '../api/tags.js';
+import { setTagMany, tagsForPaths } from '../api/tags.js';
 import { TAGS } from '../config/tags.js';
 import { t, tagLabel } from '../lib/i18n.js';
 
@@ -164,7 +164,9 @@ export class ContextMenu extends Component {
     // Otherwise assign to all (assign/remove are idempotent on the Rust side).
     const on = this._entryTags.has(id);
     try {
-      await Promise.all(paths.map((p) => (on ? removeTag(p, id) : assignTag(p, id))));
+      // One IPC call + one transaction for the whole selection (was one call
+      // and one autocommit per file — thousands for a large selection).
+      await setTagMany(paths, id, !on);
       if (on) this._entryTags.delete(id);
       else this._entryTags.add(id);
       dotEl.classList.toggle('is-on', !on);

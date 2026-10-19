@@ -19,6 +19,21 @@ pub fn assign(conn: &Connection, path: &str, tag_id: &str) -> Result<()> {
     Ok(())
 }
 
+/// Tag (or untag, `on = false`) many paths in ONE transaction — tagging a
+/// selection used to be one IPC call and one autocommit per file.
+pub fn set_many(conn: &Connection, paths: &[String], tag_id: &str, on: bool) -> Result<()> {
+    let tx = conn.unchecked_transaction()?;
+    for p in paths {
+        if on {
+            assign(&tx, p, tag_id)?;
+        } else {
+            remove(&tx, p, tag_id)?;
+        }
+    }
+    tx.commit()?;
+    Ok(())
+}
+
 pub fn remove(conn: &Connection, path: &str, tag_id: &str) -> Result<()> {
     let path = normalize(path);
     let path = path.as_str();
@@ -273,4 +288,15 @@ mod tests {
         assign(&conn, "/x/A.txt", "done").unwrap();
         assert_eq!(all(&conn).unwrap(), vec![("/x/A.txt".to_string(), "done".to_string())]);
     }
+
+    #[test]
+    fn set_many_tags_and_untags_in_bulk() {
+        let conn = mem();
+        let paths: Vec<String> = (0..50).map(|i| format!("/d/{i}.txt")).collect();
+        set_many(&conn, &paths, "urgent", true).unwrap();
+        assert_eq!(paths_for(&conn, "urgent").unwrap().len(), 50);
+        set_many(&conn, &paths[..10], "urgent", false).unwrap();
+        assert_eq!(paths_for(&conn, "urgent").unwrap().len(), 40);
+    }
 }
+

@@ -145,7 +145,8 @@ export class FilePanel extends Component {
         return;
       }
       const entries = cur.entries || [];
-      if (paths.some((p) => entries.find((e) => e.path === p))) this.loadTags(entries);
+      const changed = new Set(paths); // O(entries), was O(entries × paths)
+      if (entries.some((e) => changed.has(e.path))) this.loadTags(entries);
     });
 
     this._rowH = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--row-h'), 10) || 28;

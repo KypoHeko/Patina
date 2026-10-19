@@ -5,6 +5,11 @@ export function assignTag(path, tagId) {
   return invoke('assign_tag', { path, tagId });
 }
 
+/** Tag (on = true) or untag a whole selection in one call. */
+export function setTagMany(paths, tagId, on) {
+  return invoke('set_tag_many', { paths, tagId, on });
+}
+
 /** Remove a tag. */
 export function removeTag(path, tagId) {
   return invoke('remove_tag', { path, tagId });

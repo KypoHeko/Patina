@@ -2,13 +2,12 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 // Mock the tags API boundary — in jsdom there is no real Tauri IPC.
 vi.mock('../api/tags.js', () => ({
-  assignTag: vi.fn().mockResolvedValue(undefined),
-  removeTag: vi.fn().mockResolvedValue(undefined),
+  setTagMany: vi.fn().mockResolvedValue(undefined),
   tagsForPaths: vi.fn().mockResolvedValue({}),
 }));
 
 import { ContextMenu } from '../components/context-menu.js';
-import { assignTag, removeTag, tagsForPaths } from '../api/tags.js';
+import { setTagMany, tagsForPaths } from '../api/tags.js';
 import { TAGS } from '../config/tags.js';
 import { createStore } from '../core/store.js';
 import { createEventBus } from '../core/event-bus.js';
@@ -26,8 +25,7 @@ const TAG = TAGS[0].id; // 'urgent'
 
 describe('ContextMenu — multi-select tagging', () => {
   beforeEach(() => {
-    assignTag.mockClear();
-    removeTag.mockClear();
+    setTagMany.mockClear();
     tagsForPaths.mockClear();
   });
 
@@ -52,11 +50,11 @@ describe('ContextMenu — multi-select tagging', () => {
     expect(dot.classList.contains('is-on')).toBe(false);
 
     dot.click();
-    await tick(); // toggleTag() resolves Promise.all(assignTag...)
+    await tick(); // toggleTag() resolves setTagMany
 
-    expect(assignTag).toHaveBeenCalledTimes(3);
-    for (const p of paths) expect(assignTag).toHaveBeenCalledWith(p, TAG);
-    expect(removeTag).not.toHaveBeenCalled();
+    // One batch call for the whole selection.
+    expect(setTagMany).toHaveBeenCalledTimes(1);
+    expect(setTagMany).toHaveBeenCalledWith(paths, TAG, true);
     expect(dot.classList.contains('is-on')).toBe(true);
   });
 
@@ -83,9 +81,8 @@ describe('ContextMenu — multi-select tagging', () => {
     dot.click();
     await tick();
 
-    expect(removeTag).toHaveBeenCalledTimes(2);
-    for (const p of paths) expect(removeTag).toHaveBeenCalledWith(p, TAG);
-    expect(assignTag).not.toHaveBeenCalled();
+    expect(setTagMany).toHaveBeenCalledTimes(1);
+    expect(setTagMany).toHaveBeenCalledWith(paths, TAG, false);
   });
 
   it('a tag present on only SOME selected paths is treated as not-common → assigned to all', async () => {
@@ -111,7 +108,6 @@ describe('ContextMenu — multi-select tagging', () => {
     dot.click();
     await tick();
 
-    expect(assignTag).toHaveBeenCalledTimes(2);
-    for (const p of paths) expect(assignTag).toHaveBeenCalledWith(p, TAG);
+    expect(setTagMany).toHaveBeenCalledWith(paths, TAG, true);
   });
 });

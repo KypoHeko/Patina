@@ -71,6 +71,7 @@ pub fn run() {
             commands::system::native_icon,
             commands::tags::assign_tag,
             commands::tags::remove_tag,
+            commands::tags::set_tag_many,
             commands::tags::tags_for_paths,
             commands::tags::paths_for_tag,
             commands::tags::list_tag,
