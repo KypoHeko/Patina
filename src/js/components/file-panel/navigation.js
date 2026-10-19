@@ -21,9 +21,14 @@ export const NavigationMixin = {
     if (this.store.getState().searchQuery) {
       this.store.setState({ searchQuery: '' });
     }
+    // Every navigation gets a ticket; only the latest one may write its result.
+    // Without it a slow listing of a folder the user already left (fast clicks,
+    // Back) arrived last and replaced the folder they actually opened.
+    const seq = (this._navSeq = (this._navSeq || 0) + 1);
     updatePane(this.store, this.side, { loading: true, error: null });
     try {
       const entries = path.startsWith('tag:') ? await listTag(path.slice(4)) : await listDir(path);
+      if (seq !== this._navSeq) return; // superseded by a newer navigation
       this._tags = {}; // reset the previous folder's tags
       this._anchor = null;
       // Keep in the selection only the paths still present in the listing —
@@ -33,6 +38,7 @@ export const NavigationMixin = {
       updatePane(this.store, this.side, { path, entries, selected, loading: false });
       if (record) recordHistory(this.store, this.side, path);
     } catch (err) {
+      if (seq !== this._navSeq) return;
       updatePane(this.store, this.side, { loading: false, error: err.message });
     }
   },
