@@ -58,7 +58,15 @@ pub fn is_text(path: &Path, len: u64) -> bool {
 }
 
 /// Folders we do NOT index or scan: VCS, build artifacts, caches.
+/// Case-insensitive on Windows, where `Node_Modules` is the same folder.
 fn is_ignored_name(name: &str) -> bool {
+    let lowered;
+    let name = if cfg!(windows) {
+        lowered = name.to_ascii_lowercase();
+        lowered.as_str()
+    } else {
+        name
+    };
     matches!(
         name,
         ".git" | ".svn" | ".hg" | "node_modules" | "target" | "dist" | "build"
@@ -72,8 +80,32 @@ pub fn is_ignored_dir(e: &walkdir::DirEntry) -> bool {
     e.file_type().is_dir() && is_ignored_name(e.file_name().to_str().unwrap_or(""))
 }
 
-/// Returns `true` when any component of the path is an ignored directory name.
-pub fn is_ignored_path(p: &Path) -> bool {
+/// Returns `true` when a component of `p` BELOW `root` is an ignored
+/// directory name. Components of the root itself and above it do not count:
+/// with a root inside e.g. `D:\build\project`, checking every component made
+/// the live index ignore every change under that root.
+pub fn is_ignored_below(p: &Path, root: &Path) -> bool {
+    let skip = root.components().count();
     p.components()
+        .skip(skip)
         .any(|c| is_ignored_name(c.as_os_str().to_str().unwrap_or("")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_components_below_the_root_count() {
+        let root = Path::new("/srv/build/project");
+        assert!(!is_ignored_below(Path::new("/srv/build/project/src/a.rs"), root));
+        assert!(is_ignored_below(Path::new("/srv/build/project/node_modules/x/i.js"), root));
+        assert!(is_ignored_below(Path::new("/srv/build/project/target"), root));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn ignored_names_are_case_insensitive_on_windows() {
+        assert!(is_ignored_name("Node_Modules"));
+    }
 }

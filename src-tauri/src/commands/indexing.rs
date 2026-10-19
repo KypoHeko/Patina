@@ -171,14 +171,14 @@ pub(crate) fn build_edges(
 /// Apply a change of a SINGLE path to the indexes. Best-effort: errors are
 /// swallowed — this is background maintenance, and any drift is fixed by the
 /// next full rebuild.
-fn apply_change(app: &AppHandle, content_active: bool, path: &Path) {
-    apply_one(app, content_active, path, true);
+fn apply_change(app: &AppHandle, root: &Path, content_active: bool, path: &Path) {
+    apply_one(app, root, content_active, path, true);
 }
 
 /// `expand_new_dir`: index the subtree of a folder the index did not know.
 /// The subtree walk itself passes `false` — it already visits every level.
-fn apply_one(app: &AppHandle, content_active: bool, path: &Path, expand_new_dir: bool) {
-    if text_detect::is_ignored_path(path) {
+fn apply_one(app: &AppHandle, root: &Path, content_active: bool, path: &Path, expand_new_dir: bool) {
+    if text_detect::is_ignored_below(path, root) {
         return;
     }
     let state = app.state::<AppState>();
@@ -206,7 +206,7 @@ fn apply_one(app: &AppHandle, content_active: bool, path: &Path, expand_new_dir:
                     .filter_map(|e| e.ok())
                     .take(SCAN_LIMIT)
                 {
-                    apply_one(app, content_active, entry.path(), false);
+                    apply_one(app, root, content_active, entry.path(), false);
                 }
             }
             if content_active && text_file && let Ok(bytes) = std::fs::read(path) {
@@ -336,7 +336,7 @@ fn sync_from_journal(app: &AppHandle, root: &str, content_active: bool) -> bool 
         UsnRead::Changes { paths, cursor } => {
             let root_key = path_key::normalize(root);
             for p in paths.iter().filter(|p| is_within(&path_key::normalize(p), &root_key)) {
-                apply_change(app, content_active, Path::new(p));
+                apply_change(app, Path::new(root), content_active, Path::new(p));
             }
             if let Ok(conn) = state.db() {
                 let _ = usn_position::set(&conn, root, cursor);
@@ -450,7 +450,8 @@ pub async fn start_index(
         // watcher (and with it the sender) is dropped.
         let (tx, rx) = std::sync::mpsc::channel::<PathBuf>();
         let app3 = app.clone();
-        std::thread::spawn(move || watch_worker(app3, rx));
+        let root3 = PathBuf::from(&root);
+        std::thread::spawn(move || watch_worker(app3, root3, rx));
         let mut watcher =
             recommended_watcher(move |res: notify::Result<Event>| {
                 if let Ok(ev) = res {
@@ -470,7 +471,7 @@ pub async fn start_index(
 }
 
 /// Drain watcher events in batches (see `start_index`).
-fn watch_worker(app: AppHandle, rx: std::sync::mpsc::Receiver<PathBuf>) {
+fn watch_worker(app: AppHandle, root: PathBuf, rx: std::sync::mpsc::Receiver<PathBuf>) {
     use std::sync::mpsc::RecvTimeoutError;
     use std::time::{Duration, Instant};
     const QUIET: Duration = Duration::from_millis(300);
@@ -503,7 +504,7 @@ fn watch_worker(app: AppHandle, rx: std::sync::mpsc::Receiver<PathBuf>) {
             .map(|i| i.content_active)
             .unwrap_or(false);
         for p in &batch {
-            apply_change(&app, content_active, p);
+            apply_change(&app, &root, content_active, p);
         }
         let _ = app.emit("index:changed", ());
     }
