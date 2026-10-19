@@ -28,7 +28,9 @@ pub fn run() {
             let thumbs_dir = data_dir.join("thumbs");
             std::fs::create_dir_all(&versions_dir)?;
             std::fs::create_dir_all(&thumbs_dir)?;
-            app.manage(AppState::new(conn, versions_dir, thumbs_dir));
+            // A failed read-only open is not fatal: reads then share the writer.
+            let read_conn = index::db::open_read_only(app.handle()).ok();
+            app.manage(AppState::new(conn, read_conn, versions_dir, thumbs_dir));
             // Background GC of the version store: expired history of deleted
             // files, unreferenced blobs/chunks, stale temp files.
             let handle = app.handle().clone();

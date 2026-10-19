@@ -45,6 +45,25 @@ pub fn open(app: &AppHandle) -> Result<Connection> {
     Ok(conn)
 }
 
+/// A second, READ-ONLY connection to the same database for queries. With WAL
+/// it reads the last committed state while the writer is inside a long
+/// transaction (an index build of 50 000 rows), so tags, folder sizes and
+/// search stay responsive instead of queueing behind the writer's mutex.
+/// Open it after `open` (the schema must exist).
+pub fn open_read_only(app: &AppHandle) -> Result<Connection> {
+    use rusqlite::OpenFlags;
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| Error::InvalidPath(e.to_string()))?;
+    let conn = Connection::open_with_flags(
+        dir.join("patina.db"),
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+    conn.execute_batch("PRAGMA busy_timeout = 5000; PRAGMA cache_size = -16000;")?;
+    Ok(conn)
+}
+
 fn run_migrations(conn: &Connection) -> Result<()> {
     let mut version: usize =
         conn.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))? as usize;
@@ -94,4 +113,22 @@ mod tests {
         assert_eq!(v as usize, MIGRATIONS.len());
         run_migrations(&conn).unwrap(); // second run is a no-op
     }
+
+    #[test]
+    fn read_only_connection_is_not_blocked_by_a_writer_transaction() {
+        use rusqlite::OpenFlags;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.db");
+        let w = Connection::open(&path).unwrap();
+        w.execute_batch("PRAGMA journal_mode = WAL; CREATE TABLE t (x INTEGER); INSERT INTO t VALUES (1);")
+            .unwrap();
+        let r = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+        w.execute_batch("BEGIN; INSERT INTO t VALUES (2);").unwrap(); // long write in progress
+        let n: i64 = r.query_row("SELECT COUNT(*) FROM t", [], |row| row.get(0)).unwrap();
+        assert_eq!(n, 1, "the reader sees the last committed state without waiting");
+        w.execute_batch("COMMIT").unwrap();
+        let n: i64 = r.query_row("SELECT COUNT(*) FROM t", [], |row| row.get(0)).unwrap();
+        assert_eq!(n, 2);
+    }
 }
+

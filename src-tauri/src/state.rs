@@ -1,11 +1,11 @@
 //! Global application state (Tauri .manage()).
 //!
-//! The DB is wrapped in Mutex<Connection>, not RwLock<Connection>:
-//! - rusqlite::Connection holds a RefCell internally and does not implement Sync
-//! - RwLock<T>: Sync requires T: Send + Sync, but Connection: !Sync
-//! - Mutex<T>: Sync requires only T: Send, and Connection: Send
-//! - There is no practical difference: a single SQLite connection serializes
-//!   queries anyway, so RwLock's "many readers" gives no real parallelism
+//! Two SQLite connections, each behind a Mutex (rusqlite::Connection is Send
+//! but !Sync, so a Mutex is what makes AppState: Sync):
+//! - `db` — the single WRITER; every write goes through it;
+//! - `db_ro` — a READ-ONLY connection for queries. In WAL mode it reads the
+//!   last committed state while the writer is busy, so a long index build no
+//!   longer blocks tag lookups, folder sizes or search.
 
 use std::path::PathBuf;
 use std::sync::atomic::AtomicU64;
@@ -24,11 +24,10 @@ pub struct IndexState {
 }
 
 pub struct AppState {
-    /// Mutex<Connection> is the only way to make AppState: Sync,
-    /// since rusqlite::Connection: !Sync (internal RefCell).
-    /// In practice this is no worse than RwLock: a single SQLite connection
-    /// serializes all queries, so RwLock's "parallel readers" were an illusion.
+    /// The writer connection.
     pub db: Mutex<Connection>,
+    /// Read-only connection (None in tests: reads then use `db`).
+    pub db_ro: Option<Mutex<Connection>>,
     pub versions_dir: PathBuf,
     pub thumbs_dir: PathBuf,
     pub watcher: Mutex<Option<RecommendedWatcher>>,
@@ -44,9 +43,10 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub fn new(conn: Connection, versions_dir: PathBuf, thumbs_dir: PathBuf) -> Self {
+    pub fn new(conn: Connection, read_conn: Option<Connection>, versions_dir: PathBuf, thumbs_dir: PathBuf) -> Self {
         Self {
             db: Mutex::new(conn),
+            db_ro: read_conn.map(Mutex::new),
             versions_dir,
             thumbs_dir,
             watcher: Mutex::new(None),
@@ -66,14 +66,13 @@ impl AppState {
             .map_err(|_| Error::Operation("DB lock poisoned".into()))
     }
 
-    /// Acquire the DB connection for reading. Currently the same single
-    /// connection as `db()`; this method exists as an explicit read-intent marker
-    /// at the call site and as a seam for a future pool: once a separate
-    /// read-only (WAL) connection exists, readers will stop competing with the
-    /// writer for the mutex. Only the body here will change then — call sites
-    /// will not need to be touched.
+    /// Acquire a connection for READING: the read-only connection when there is
+    /// one, so readers do not wait for the writer. Never write through it.
     pub fn db_read(&self) -> Result<MutexGuard<'_, Connection>> {
-        self.db()
+        match &self.db_ro {
+            Some(ro) => ro.lock().map_err(|_| Error::Operation("read DB lock poisoned".into())),
+            None => self.db(),
+        }
     }
 
     pub fn watcher(&self) -> Result<MutexGuard<'_, Option<RecommendedWatcher>>> {
