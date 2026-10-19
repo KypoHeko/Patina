@@ -264,7 +264,7 @@ fn build_all_gen(app: &AppHandle, root: &str, content: bool, generation: Option<
             let _ = app.emit("index:truncated", serde_json::json!({ "root": root, "limit": SCAN_LIMIT }));
             break;
         }
-        if rows.len() % 1000 == 0 && superseded() {
+        if rows.len().is_multiple_of(1000) && superseded() {
             return Err(Error::Operation("index build superseded by a newer one".into()));
         }
         let path = entry.path();

@@ -66,6 +66,32 @@ pub fn write_atomic(dest: &Path, data: &[u8]) -> io::Result<()> {
     commit_temp(&tmp, dest)
 }
 
+/// Like [`commit_temp`], but for replacing a USER's file (version restore):
+/// the replaced file keeps its metadata. On Windows `ReplaceFileW` preserves
+/// attributes, ACL, alternate data streams and the creation date (a plain
+/// rename gives the file the temp file's identity); elsewhere the permission
+/// bits are copied over. Falls back to a rename when the target is missing or
+/// the replace is refused.
+pub fn replace_with_temp(tmp: &Path, dest: &Path) -> io::Result<()> {
+    if dest.exists() {
+        #[cfg(windows)]
+        if crate::platform::windows::replace_file(dest, tmp).is_ok() {
+            return Ok(());
+        }
+        #[cfg(not(windows))]
+        if let Ok(meta) = fs::metadata(dest) {
+            let _ = fs::set_permissions(tmp, meta.permissions());
+        }
+    }
+    commit_temp(tmp, dest)
+}
+
+/// Replace a user's file with `data`, crash-safely and keeping its metadata.
+pub fn replace_contents(dest: &Path, data: &[u8]) -> io::Result<()> {
+    let tmp = write_temp(dest, data)?;
+    replace_with_temp(&tmp, dest)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -79,6 +105,19 @@ mod tests {
         assert_eq!(fs::read(&dest).unwrap(), b"two");
         let entries: Vec<_> = fs::read_dir(dir.path()).unwrap().collect();
         assert_eq!(entries.len(), 1, "temp files must not be left behind");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn replace_keeps_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("script.sh");
+        fs::write(&dest, b"old").unwrap();
+        fs::set_permissions(&dest, fs::Permissions::from_mode(0o750)).unwrap();
+        replace_contents(&dest, b"new").unwrap();
+        assert_eq!(fs::read(&dest).unwrap(), b"new");
+        assert_eq!(fs::metadata(&dest).unwrap().permissions().mode() & 0o777, 0o750);
     }
 
     #[test]

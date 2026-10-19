@@ -272,7 +272,7 @@ fn build_preview(thumbs_dir: &Path, path: &str) -> Result<Preview> {
                 let rgb = image::DynamicImage::ImageRgb8(img.thumbnail(1024, 1024).to_rgb8());
                 let mut bytes = Vec::new();
                 rgb.write_to(&mut Cursor::new(&mut bytes), image::ImageFormat::Jpeg).is_ok()
-                    && std::fs::write(&cache, &bytes).is_ok()
+                    && crate::fs::atomic::write_atomic(&cache, &bytes).is_ok()
             });
 
         if ready {

@@ -100,7 +100,9 @@ pub fn train_dict(dicts_dir: &Path, samples: &[Vec<u8>], new_dict_id: i64) -> Re
         .map_err(|e| Error::Operation(format!("zstd dict train: {e}")))?;
 
     let path = dict_file(dicts_dir, new_dict_id);
-    fs::write(&path, &dict_data).map_err(Error::Io)?;
+    // Atomic: a half-written dictionary would make every version compressed
+    // with it unreadable.
+    crate::fs::atomic::write_atomic(&path, &dict_data).map_err(Error::Io)?;
     Ok(path)
 }
 

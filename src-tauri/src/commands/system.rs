@@ -292,7 +292,7 @@ pub async fn native_icon(app: AppHandle, path: String, size: u32) -> Result<Opti
                     crate::commands::fs::b64(&ni.png)
                 );
                 // Save to the cache
-                let _ = std::fs::write(&cache_path, data_url.as_bytes());
+                let _ = crate::fs::atomic::write_atomic(&cache_path, data_url.as_bytes());
                 Ok(Some(NativeIconResult {
                     data_url,
                     width: ni.width,

@@ -134,6 +134,26 @@ fn delete_on_sta_thread(paths: &[String]) -> Result<()> {
     }
 }
 
+/// Replace `dest` with `replacement` via ReplaceFileW, which — unlike a plain
+/// rename — keeps the replaced file's attributes, ACL, alternate data streams
+/// (e.g. Zone.Identifier) and creation time. `replacement` is consumed.
+pub fn replace_file(dest: &std::path::Path, replacement: &std::path::Path) -> std::io::Result<()> {
+    use windows::Win32::Storage::FileSystem::{ReplaceFileW, REPLACEFILE_IGNORE_MERGE_ERRORS};
+    let d = to_wide(&dest.to_string_lossy());
+    let r = to_wide(&replacement.to_string_lossy());
+    unsafe {
+        ReplaceFileW(
+            windows::core::PCWSTR(d.as_ptr()),
+            windows::core::PCWSTR(r.as_ptr()),
+            windows::core::PCWSTR::null(),
+            REPLACEFILE_IGNORE_MERGE_ERRORS,
+            None,
+            None,
+        )
+    }
+    .map_err(|e| std::io::Error::other(e.to_string()))
+}
+
 // Imports for CoCreateInstance, SHCreateItemFromParsingName
 use windows::Win32::System::Com::CoCreateInstance;
 use windows::Win32::UI::Shell::SHCreateItemFromParsingName;
