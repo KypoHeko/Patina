@@ -16,6 +16,20 @@ const LOC_ICON = {
   drive: '💽',
 };
 
+// System locations are labelled in the CURRENT UI language: the label stored
+// in the DB was written once, in Russian, and stayed Russian in the English UI.
+const SYSTEM_LOCS = new Set(['home', 'desktop', 'documents', 'downloads']);
+function locLabel(loc) {
+  return SYSTEM_LOCS.has(loc.kind) ? t(`loc.${loc.kind}`) : loc.label;
+}
+
+// Media kinds come from the backend as identifiers (SSD/HDD stay as is).
+function storageKind(kind) {
+  const key = `storage.kind.${kind}`;
+  const s = t(key);
+  return s === key ? kind : s;
+}
+
 // Label for an added folder — the last path segment.
 function baseLabel(path) {
   const trimmed = path.replace(/[\\/]+$/, '');
@@ -64,6 +78,8 @@ export class Sidebar extends Component {
       }
     }
     this.renderTags();
+    this.renderQuick(); // system locations follow the language
+    if (this._storage) this.fillStorage(this._storage);
   }
 
   section(title, key) {
@@ -131,7 +147,7 @@ export class Sidebar extends Component {
             title: loc.path,
           },
           el('span', { class: 'sidebar__ico' }, LOC_ICON[loc.kind] || '📁'),
-          el('span', { class: 'sidebar__label' }, loc.label),
+          el('span', { class: 'sidebar__label' }, locLabel(loc)),
         ),
       );
     }
@@ -300,6 +316,7 @@ export class Sidebar extends Component {
   /* ── Storage and tags ───────────────────────── */
 
   fillStorage(disks) {
+    this._storage = disks;
     const body = this.mount.querySelector('[data-section="storage"]');
     if (!body) return;
     body.innerHTML = '';
@@ -314,7 +331,7 @@ export class Sidebar extends Component {
             { class: 'sidebar__store-top' },
             el('span', { class: 'sidebar__ico' }, '💽'),
             el('span', { class: 'sidebar__store-name' }, d.name),
-            el('span', { class: 'sidebar__store-kind' }, d.kind),
+            el('span', { class: 'sidebar__store-kind' }, storageKind(d.kind)),
           ),
           el('div', { class: 'sidebar__store-size' }, `${formatSize(d.used)} / ${formatSize(d.total)}`),
           el(

@@ -78,11 +78,13 @@ pub fn reveal_in_explorer(path: String) -> Result<()> {
 pub fn quick_access_defaults(app: &tauri::AppHandle) -> Vec<Location> {
     let p = app.path();
 
+    // Labels are neutral fallbacks: the UI shows system locations by `kind` in
+    // the current language (they used to be stored in Russian only).
     let candidates = [
-        ("Домашняя", "home", p.home_dir()),
-        ("Рабочий стол", "desktop", p.desktop_dir()),
-        ("Документы", "documents", p.document_dir()),
-        ("Загрузки", "downloads", p.download_dir()),
+        ("Home", "home", p.home_dir()),
+        ("Desktop", "desktop", p.desktop_dir()),
+        ("Documents", "documents", p.document_dir()),
+        ("Downloads", "downloads", p.download_dir()),
     ];
     candidates
         .into_iter()
@@ -234,7 +236,7 @@ fn list_storage_sync() -> Vec<Storage> {
         let kind = match d.kind() {
             DiskKind::SSD => "SSD",
             DiskKind::HDD => "HDD",
-            _ => "Диск",
+            _ => "Disk", // translated on the front end (storage.kind.*)
         }
         .to_string();
         let trimmed = mp.trim_end_matches(|c| c == '\\' || c == '/');

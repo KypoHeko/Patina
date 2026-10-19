@@ -28,9 +28,9 @@ export const STRINGS = {
     'topbar.lang': 'Язык интерфейса',
 
     // Status bar
-    'status.selected': '{n} выделено',
-    'status.folders': '{n} папок',
-    'status.files': '{n} файлов',
+    'status.selected': { one: 'выделен {n}', few: 'выделено {n}', many: 'выделено {n}', other: 'выделено {n}' },
+    'status.folders': { one: '{n} папка', few: '{n} папки', many: '{n} папок', other: '{n} папки' },
+    'status.files': { one: '{n} файл', few: '{n} файла', many: '{n} файлов', other: '{n} файла' },
     'status.search': 'Поиск',
     'status.duplicates': 'Дубликаты',
     'status.links': 'Связи',
@@ -54,7 +54,7 @@ export const STRINGS = {
     'ctx.rename': 'Переименовать…',
     'ctx.duplicates': 'Найти дубликаты',
     'ctx.delete': 'Удалить в корзину',
-    'ctx.multi': 'Применить к {n} объектам',
+    'ctx.multi': { one: 'Применить к {n} объекту', few: 'Применить к {n} объектам', many: 'Применить к {n} объектам', other: 'Применить к {n} объекта' },
 
     // File panel
     'panel.split': 'Разделить',
@@ -90,13 +90,13 @@ export const STRINGS = {
     'dup.scanning': 'Сканирование…',
     'dup.hashing': 'Хеширование {done} / {total}',
     'dup.scanError': 'Ошибка поиска: {msg}',
-    'dup.canFree': 'можно освободить {n} копий',
+    'dup.canFree': { one: 'можно освободить {n} копию', few: 'можно освободить {n} копии', many: 'можно освободить {n} копий', other: 'можно освободить {n} копии' },
     'dup.keep': 'оставить',
     'dup.delTitle': 'Удалить в корзину',
-    'dup.copies': '{n} копий',
+    'dup.copies': { one: '{n} копия', few: '{n} копии', many: '{n} копий', other: '{n} копии' },
     'dup.keepFirst': 'Оставить первый',
     'dup.confirm.title': 'Удаление дубликатов',
-    'dup.confirm.keepMsg': 'Удалить в корзину {n} копий, оставив первый файл в каждой группе?',
+    'dup.confirm.keepMsg': { one: 'Удалить в корзину {n} копию, оставив первый файл в группе?', few: 'Удалить в корзину {n} копии, оставив первый файл в каждой группе?', many: 'Удалить в корзину {n} копий, оставив первый файл в каждой группе?', other: 'Удалить в корзину {n} копии, оставив первый файл в каждой группе?' },
     'dup.confirm.delMsg': 'Удалить в корзину файл «{name}»?',
 
     // Sidebar
@@ -104,6 +104,15 @@ export const STRINGS = {
     'sidebar.storage': 'Хранилище',
     'sidebar.tags': 'Теги',
     'sidebar.alreadyInQuick': 'Уже в быстром доступе',
+    'loc.home': 'Домашняя',
+    'loc.desktop': 'Рабочий стол',
+    'loc.documents': 'Документы',
+    'loc.downloads': 'Загрузки',
+    'storage.kind.Removable': 'Съёмный',
+    'storage.kind.Network': 'Сеть',
+    'storage.kind.RAM': 'RAM-диск',
+    'storage.kind.Disk': 'Диск',
+    'storage.kind.Unknown': 'Диск',
 
     // Preview panel
     'pv.title': 'Превью',
@@ -175,7 +184,7 @@ export const STRINGS = {
     'graph.hash.count': 'Хешировать ({n})',
     'graph.loading': 'Загрузка…',
     'graph.loaded': 'Загружено!',
-    'graph.indexing': 'Индексирую… {n} файлов',
+    'graph.indexing': { one: 'Индексирую… {n} файл', few: 'Индексирую… {n} файла', many: 'Индексирую… {n} файлов', other: 'Индексирую… {n} файла' },
     'graph.buildingRelations': 'Строю связи…',
     'graph.buildingRelations.count': 'Строю связи… {done}/{total}',
     'graph.emptyHint': 'Кликните узел, чтобы увидеть его зависимости и обратные ссылки.',
@@ -222,8 +231,8 @@ export const STRINGS = {
 
     // Status bar
     'status.selected': '{n} selected',
-    'status.folders': '{n} folders',
-    'status.files': '{n} files',
+    'status.folders': { one: '{n} folder', other: '{n} folders' },
+    'status.files': { one: '{n} file', other: '{n} files' },
     'status.search': 'Search',
     'status.duplicates': 'Duplicates',
     'status.links': 'Links',
@@ -247,7 +256,7 @@ export const STRINGS = {
     'ctx.rename': 'Rename…',
     'ctx.duplicates': 'Find duplicates',
     'ctx.delete': 'Move to Trash',
-    'ctx.multi': 'Apply to {n} items',
+    'ctx.multi': { one: 'Apply to {n} item', other: 'Apply to {n} items' },
 
     // File panel
     'panel.split': 'Split',
@@ -264,7 +273,7 @@ export const STRINGS = {
     'panel.newFolderName': 'New folder',
     'panel.createFolderError': "Couldn't create folder: {msg}",
     'panel.deleteTitle': 'Delete',
-    'panel.deleteMsg': 'Move {n} item(s) to Trash?',
+    'panel.deleteMsg': { one: 'Move {n} item to Trash?', other: 'Move {n} items to Trash?' },
     'panel.deleteConfirm': 'Delete',
     'panel.deleteError': 'Delete error: {msg}',
     'panel.openError': "Couldn't open: {msg}",
@@ -283,13 +292,13 @@ export const STRINGS = {
     'dup.scanning': 'Scanning…',
     'dup.hashing': 'Hashing {done} / {total}',
     'dup.scanError': 'Search error: {msg}',
-    'dup.canFree': '{n} extra copies can be freed',
+    'dup.canFree': { one: '{n} extra copy can be freed', other: '{n} extra copies can be freed' },
     'dup.keep': 'keep',
     'dup.delTitle': 'Move to Trash',
-    'dup.copies': '{n} copies',
+    'dup.copies': { one: '{n} copy', other: '{n} copies' },
     'dup.keepFirst': 'Keep first',
     'dup.confirm.title': 'Delete duplicates',
-    'dup.confirm.keepMsg': 'Move {n} duplicate copy(ies) to Trash, keeping the first file in each group?',
+    'dup.confirm.keepMsg': { one: 'Move {n} duplicate copy to Trash, keeping the first file in its group?', other: 'Move {n} duplicate copies to Trash, keeping the first file in each group?' },
     'dup.confirm.delMsg': 'Move the file "{name}" to Trash?',
 
     // Sidebar
@@ -297,6 +306,15 @@ export const STRINGS = {
     'sidebar.storage': 'Storage',
     'sidebar.tags': 'Tags',
     'sidebar.alreadyInQuick': 'Already in Quick access',
+    'loc.home': 'Home',
+    'loc.desktop': 'Desktop',
+    'loc.documents': 'Documents',
+    'loc.downloads': 'Downloads',
+    'storage.kind.Removable': 'Removable',
+    'storage.kind.Network': 'Network',
+    'storage.kind.RAM': 'RAM disk',
+    'storage.kind.Disk': 'Disk',
+    'storage.kind.Unknown': 'Disk',
 
     // Preview panel
     'pv.title': 'Preview',
@@ -368,7 +386,7 @@ export const STRINGS = {
     'graph.hash.count': 'Hash ({n})',
     'graph.loading': 'Loading…',
     'graph.loaded': 'Loaded!',
-    'graph.indexing': 'Indexing… {n} files',
+    'graph.indexing': { one: 'Indexing… {n} file', other: 'Indexing… {n} files' },
     'graph.buildingRelations': 'Building relations…',
     'graph.buildingRelations.count': 'Building relations… {done}/{total}',
     'graph.emptyHint': 'Click a node to see its dependencies and back-references.',

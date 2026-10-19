@@ -65,10 +65,26 @@ export function t(key, vars) {
   let s = table[key];
   if (s === undefined) s = STRINGS[DEFAULT][key];
   if (s === undefined) return key;
+  // Plural forms: { one, few, many, other } picked by Intl.PluralRules for
+  // vars.n — "1 файл / 2 файла / 5 файлов", not "2 файлов".
+  if (typeof s === 'object') s = pluralForm(s, vars && vars.n);
   if (vars) {
     for (const k in vars) s = s.split(`{${k}}`).join(String(vars[k]));
   }
   return s;
+}
+
+const _rules = {};
+function pluralForm(forms, n) {
+  const lang = STRINGS[_lang] ? _lang : DEFAULT;
+  let cat = 'other';
+  try {
+    _rules[lang] = _rules[lang] || new Intl.PluralRules(lang);
+    cat = _rules[lang].select(Number(n) || 0);
+  } catch {
+    /* no Intl — fall back to "other" */
+  }
+  return forms[cat] ?? forms.other ?? forms.many ?? Object.values(forms)[0];
 }
 
 /** Localized label of a predefined tag by its id. */
