@@ -54,9 +54,9 @@ export const OperationsMixin = {
   },
 
   startRename(entry) {
-    const row = [...this.listEl.querySelectorAll('.row')].find(
-      (r) => r.dataset.path === entry.path,
-    );
+    const row =
+      this._rowEls?.get(entry.path) ||
+      [...this.listEl.querySelectorAll('.row')].find((r) => r.dataset.path === entry.path);
     if (!row) return;
     this._renaming = entry.path;
     const nameEl = row.querySelector('.row__name');

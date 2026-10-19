@@ -125,10 +125,12 @@ export const RenderMixin = {
       this.listEl.innerHTML = `<div class="panel__error">${escapeHtml(pane.error)}</div>`;
       this._view = [];
       this._renderedPaths = new Set();
+      this._rowEls = new Map();
       return;
     }
     this._view = this.filterList(this.sortedEntries(pane.entries));
     this._renderedPaths = new Set();
+    this._rowEls = new Map();
     // Keep the scroll position when the SAME folder is re-rendered (a reload
     // after an external change, a re-sort, a filter tweak); jump to the top only
     // for a different folder.
@@ -152,6 +154,7 @@ export const RenderMixin = {
     if (!view.length) {
       this.listEl.innerHTML = `<div class="panel__empty">${this._filter ? t('panel.notFound') : t('panel.empty')}</div>`;
       this._renderedPaths = new Set();
+      this._rowEls = new Map();
       return;
     }
     const rowH = this._rowH;
@@ -179,12 +182,15 @@ export const RenderMixin = {
     const visiblePaths = new Set();
     for (let i = start; i < end; i++) visiblePaths.add(view[i].path);
 
-    // Remove rows that are no longer visible
+    // Remove rows that are no longer visible. Rows are found through a
+    // path → element Map: a `querySelector` per row made each scroll frame
+    // O(visible²) DOM queries.
     if (!this._renderedPaths) this._renderedPaths = new Set();
+    if (!this._rowEls) this._rowEls = new Map();
     for (const p of this._renderedPaths) {
       if (!visiblePaths.has(p)) {
-        const row = this.listEl.querySelector(`.row[data-path="${CSS.escape(p)}"]`);
-        if (row) row.remove();
+        this._rowEls.get(p)?.remove();
+        this._rowEls.delete(p);
       }
     }
     this._renderedPaths = visiblePaths;
@@ -193,7 +199,8 @@ export const RenderMixin = {
     for (let i = start; i < end; i++) {
       const e = view[i];
       const path = e.path;
-      let row = this.listEl.querySelector(`.row[data-path="${CSS.escape(path)}"]`);
+      let row = this._rowEls.get(path);
+      if (row && !row.isConnected) row = null; // the list was rebuilt meanwhile
 
       if (row) {
         // Update only what could change: selection, position, folder size
@@ -252,6 +259,7 @@ export const RenderMixin = {
           `<span class="row__size">${size}</span>` +
           `<span class="row__modified">${escapeHtml(formatDate(e.modified))}</span>`;
         this.listEl.appendChild(row);
+        this._rowEls.set(path, row);
       }
     }
   },
@@ -289,7 +297,7 @@ export const RenderMixin = {
         if (result && result.dataUrl) {
           this._nativeIcons.set(p, result.dataUrl);
           // Update the icon in the DOM without a full re-render
-          const iconSpan = this.listEl.querySelector(`.row[data-path="${CSS.escape(p)}"] .row__icon`);
+          const iconSpan = this._rowEls?.get(p)?.querySelector('.row__icon');
           if (iconSpan && !iconSpan.querySelector('.row__native-icon')) {
             iconSpan.innerHTML = `<img class="row__native-icon" src="${result.dataUrl}" width="16" height="16" alt="" draggable="false">`;
           }
