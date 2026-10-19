@@ -87,6 +87,7 @@ export const ResultsMixin = {
     this._resultsEl.querySelectorAll('.palette__item').forEach((it) => {
       const e = this._results[+it.dataset.i];
       const rt = it.querySelector('.palette__rtags');
+      // eslint-disable-next-line no-unsanitized/property -- dots carry only TAG_COLOR constants
       if (e && rt) rt.innerHTML = this.dotsHtml(e.path);
     });
   },

@@ -21,3 +21,17 @@ describe('StatusBar with a large selection', () => {
     expect(ms).toBeLessThan(150); // was ~430 ms with Array.includes
   });
 });
+
+describe('StatusBar hints', () => {
+  it('turns only known hint kinds into a class and escapes the text', () => {
+    const mount = document.createElement('div');
+    const store = createStore({ ...initialTabsState(), homePath: '' });
+    const bar = new StatusBar({ mount, store, bus: createEventBus() });
+    bar.init();
+    bar.flash('<img src=x onerror=alert(1)>', '"><img src=x onerror=alert(1)>');
+    expect(mount.querySelector('img')).toBeNull();
+    expect(mount.querySelector('span').className).toBe('status__hint');
+    bar.flash('bad', 'error');
+    expect(mount.querySelector('span').className).toBe('status__hint status__hint--error');
+  });
+});

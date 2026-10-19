@@ -157,18 +157,19 @@ export class DuplicatePanel extends Component {
       ? `<div class="dup__msg"><span class="dup__spinner" aria-hidden="true"></span><span class="dup__progress">${this.progressText()}</span></div>`
       : this._groups.length
         ? this._groups.map((g, i) => this.renderGroup(g, i)).join('')
-        : `<div class="dup__msg">${t('dup.none')}</div>`;
+        : `<div class="dup__msg">${escapeHtml(t('dup.none'))}</div>`;
 
+    // eslint-disable-next-line no-unsanitized/property -- `body` is built by renderGroup/progressText from escaped parts
     this.mount.innerHTML = `
       <div class="dup">
         <div class="dup__head">
           <div>
-            <div class="dup__title">${t('dup.title')}</div>
+            <div class="dup__title">${escapeHtml(t('dup.title'))}</div>
             <div class="dup__sub" title="${escapeHtml(this._dir)}">${escapeHtml(folderName(this._dir) || this._dir)}${
-              !this._loading && total ? ` · ${t('dup.canFree', { n: total })}` : ''
+              !this._loading && total ? ` · ${escapeHtml(t('dup.canFree', { n: total }))}` : ''
             }</div>
           </div>
-          <button class="dup__close" data-close title="${t('tab.close')}">×</button>
+          <button class="dup__close" data-close title="${escapeHtml(t('tab.close'))}">×</button>
         </div>
         <div class="dup__body">${body}</div>
       </div>`;
@@ -182,18 +183,18 @@ export class DuplicatePanel extends Component {
   renderGroup(g, i) {
     const files = g.paths
       .map((p, idx) => {
-        const tag = idx === 0 ? `<span class="dup__keep">${t('dup.keep')}</span>` : '';
+        const tag = idx === 0 ? `<span class="dup__keep">${escapeHtml(t('dup.keep'))}</span>` : '';
         return `<div class="dup__file">
             <span class="dup__path" title="${escapeHtml(p)}">${escapeHtml(p)}</span>
             ${tag}
-            <button class="dup__del" data-del="${escapeHtml(p)}" title="${t('dup.delTitle')}">×</button>
+            <button class="dup__del" data-del="${escapeHtml(p)}" title="${escapeHtml(t('dup.delTitle'))}">×</button>
           </div>`;
       })
       .join('');
     return `<div class="dup__group">
         <div class="dup__group-head">
-          <span>${t('dup.copies', { n: g.paths.length })} · ${formatSize(g.size)}</span>
-          <button class="dup__keepbtn" data-keepfirst="${i}">${t('dup.keepFirst')}</button>
+          <span>${escapeHtml(t('dup.copies', { n: g.paths.length }))} · ${escapeHtml(formatSize(g.size))}</span>
+          <button class="dup__keepbtn" data-keepfirst="${i}">${escapeHtml(t('dup.keepFirst'))}</button>
         </div>
         ${files}
       </div>`;

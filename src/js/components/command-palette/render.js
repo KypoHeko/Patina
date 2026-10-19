@@ -168,6 +168,7 @@ export const RenderMixin = {
     if (all.length > shown.length) {
       html += `<div class="palette__more">${escapeHtml(t('palette.more', { shown: shown.length, all: all.length }))}</div>`;
     }
+    // eslint-disable-next-line no-unsanitized/property -- every piece of `html` is escapeHtml()ed or a built-in icon
     this._resultsEl.innerHTML = html;
 
     this._resultsEl.querySelectorAll('.palette__item').forEach((it) => {

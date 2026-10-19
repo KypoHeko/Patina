@@ -13,6 +13,7 @@ export const RenderMixin = {
   render() {
     this._open = true;
     document.getElementById('graph-btn')?.classList.add('is-on');
+    // eslint-disable-next-line no-unsanitized/property -- static layout: colour constants and escaped translations
     this.mount.innerHTML = `
       <div class="graph graph--window">
         <div class="graph__head" data-drag>

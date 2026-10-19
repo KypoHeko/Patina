@@ -152,7 +152,7 @@ export const RenderMixin = {
     if (!this._lastPane || this._lastPane.error || !this._view) return;
     const view = this._view;
     if (!view.length) {
-      this.listEl.innerHTML = `<div class="panel__empty">${this._filter ? t('panel.notFound') : t('panel.empty')}</div>`;
+      this.listEl.innerHTML = `<div class="panel__empty">${escapeHtml(this._filter ? t('panel.notFound') : t('panel.empty'))}</div>`;
       this._renderedPaths = new Set();
       this._rowEls = new Map();
       return;
@@ -216,8 +216,9 @@ export const RenderMixin = {
           if (sizeSpan) {
             let sizeText;
             if (this._dirSizes.has(path)) sizeText = formatSize(this._dirSizes.get(path));
-            else if (this._dirComputing) sizeText = `<span class="dirsize-spin" title="${t('panel.computing')}"></span>`;
+            else if (this._dirComputing) sizeText = `<span class="dirsize-spin" title="${escapeHtml(t('panel.computing'))}"></span>`;
             else sizeText = '';
+            // eslint-disable-next-line no-unsanitized/property -- a formatted number or the fixed spinner markup
             if (sizeSpan.innerHTML !== sizeText) sizeSpan.innerHTML = sizeText;
           }
         }
@@ -225,6 +226,7 @@ export const RenderMixin = {
         const tagsSpan = row.querySelector('.row__tags');
         if (tagsSpan) {
           const newTags = this.dotsHtml(path);
+          // eslint-disable-next-line no-unsanitized/property -- dots carry TAG_COLOR constants and escaped labels
           if (tagsSpan.innerHTML !== newTags) tagsSpan.innerHTML = newTags;
         }
       } else {
@@ -245,12 +247,13 @@ export const RenderMixin = {
         let size;
         if (e.kind === 'folder') {
           if (this._dirSizes.has(path)) size = formatSize(this._dirSizes.get(path));
-          else if (this._dirComputing) size = `<span class="dirsize-spin" title="${t('panel.computing')}"></span>`;
+          else if (this._dirComputing) size = `<span class="dirsize-spin" title="${escapeHtml(t('panel.computing'))}"></span>`;
           else size = '';
         } else {
           size = formatSize(e.size);
         }
         const type = e.kind === 'folder' ? '' : (e.extension || '').toUpperCase();
+        // eslint-disable-next-line no-unsanitized/property -- name/type/date are escaped; icon, dots and size are trusted markup
         row.innerHTML =
           `<span class="row__icon">${iconHtml}</span>` +
           `<span class="row__name">${escapeHtml(e.name)}</span>` +
@@ -299,7 +302,16 @@ export const RenderMixin = {
           // Update the icon in the DOM without a full re-render
           const iconSpan = this._rowEls?.get(p)?.querySelector('.row__icon');
           if (iconSpan && !iconSpan.querySelector('.row__native-icon')) {
-            iconSpan.innerHTML = `<img class="row__native-icon" src="${result.dataUrl}" width="16" height="16" alt="" draggable="false">`;
+            // Built through the DOM: the data URL is set as a property, never
+            // parsed as markup.
+            const img = document.createElement('img');
+            img.className = 'row__native-icon';
+            img.width = 16;
+            img.height = 16;
+            img.alt = '';
+            img.draggable = false;
+            img.src = result.dataUrl;
+            iconSpan.replaceChildren(img);
           }
         }
       }).catch(() => {

@@ -82,6 +82,7 @@ export class StatusBar extends Component {
         )} / ${formatSize(this._storage.total)}</span>`
       : '';
 
+    // eslint-disable-next-line no-unsanitized/property -- path is escaped; counts and sizes are numbers; icons are constants
     this.mount.innerHTML =
       `<div class="status__left">` +
       `<span class="status__group status__group--path"><span class="status__ico">${ICON.folder}</span><span class="status__path">${escapeHtml(
@@ -106,10 +107,13 @@ export class StatusBar extends Component {
      */
     flash(text, type = 'info') {
       clearTimeout(this._hintTimer);
-      const cls = type === 'info' ? 'status__hint' : `status__hint status__hint--${type}`;
+      // `type` arrives over the event bus: only the known kinds become a class.
+      const kind = type === 'warn' || type === 'error' ? type : 'info';
+      const cls = kind === 'info' ? 'status__hint' : `status__hint status__hint--${kind}`;
+      // eslint-disable-next-line no-unsanitized/property -- cls is one of three fixed strings; text is escaped
       this.mount.innerHTML = `<span class="${cls}">${escapeHtml(text)}</span>`;
       // Errors and warnings linger so they are not missed; info stays brief.
-      const ms = type === 'error' ? 3600 : type === 'warn' ? 2600 : 1800;
+      const ms = kind === 'error' ? 3600 : kind === 'warn' ? 2600 : 1800;
       this._hintTimer = setTimeout(() => {
         this._hintTimer = null;
         this.render();

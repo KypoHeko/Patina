@@ -1,6 +1,7 @@
 import { Component } from '../core/component.js';
 import { Breadcrumbs } from './breadcrumbs.js';
 import { t } from '../lib/i18n.js';
+import { escapeHtml } from '../core/dom.js';
 import { getPane } from '../state/panes.js';
 import { getActiveSide, closeSplit, splitTab } from '../state/tabs.js';
 
@@ -42,10 +43,11 @@ export class FilePanel extends Component {
   init() {
     const splitBtn =
       this.side === 'left'
-        ? `<button class="panel__split" data-split title="${t('panel.split')}">▥</button>`
+        ? `<button class="panel__split" data-split title="${escapeHtml(t('panel.split'))}">▥</button>`
         : '';
     const closeBtn =
-      `<button class="panel__close" data-close-split title="${t('panel.closePanel')}">×</button>`;
+      `<button class="panel__close" data-close-split title="${escapeHtml(t('panel.closePanel'))}">×</button>`;
+    // eslint-disable-next-line no-unsanitized/property -- static layout; translations come from the bundled locale files
     this.mount.innerHTML = `
       <div class="panel">
         <div class="panel__head">

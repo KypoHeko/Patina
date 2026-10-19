@@ -1,6 +1,7 @@
 import { Component } from '../core/component.js';
 import { THEMES, getTheme, setTheme } from '../lib/theme.js';
 import { t } from '../lib/i18n.js';
+import { escapeHtml } from '../core/dom.js';
 
 // Palette selection menu. Opened from the topbar button (the 'theme:open' event),
 // rendered as a popover beneath it. The choice applies instantly and is saved.
@@ -56,14 +57,15 @@ export class ThemeMenu extends Component {
       (th) => `
       <button class="theme-menu__row${th.id === active ? ' is-active' : ''}" data-theme-id="${th.id}">
         <span class="theme-menu__swatch" style="background:${th.swatch}"></span>
-        <span class="theme-menu__label">${t('theme.' + th.id)}</span>
+        <span class="theme-menu__label">${escapeHtml(t('theme.' + th.id))}</span>
         <span class="theme-menu__check" aria-hidden="true">${th.id === active ? '✓' : ''}</span>
       </button>`,
     ).join('');
+    // eslint-disable-next-line no-unsanitized/property -- rows hold theme constants and escaped labels
     this.mount.innerHTML = `
       <div class="theme-menu__backdrop"></div>
-      <div class="theme-menu" role="menu" aria-label="${t('theme.title')}">
-        <div class="theme-menu__title">${t('theme.title')}</div>
+      <div class="theme-menu" role="menu" aria-label="${escapeHtml(t('theme.title'))}">
+        <div class="theme-menu__title">${escapeHtml(t('theme.title'))}</div>
         ${rows}
       </div>`;
     this.mount.querySelectorAll('[data-theme-id]').forEach((el) =>

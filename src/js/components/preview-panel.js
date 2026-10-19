@@ -417,6 +417,7 @@ export class PreviewPanel extends Component {
     }
 
     // ── Assembly ──
+    // eslint-disable-next-line no-unsanitized/property -- preview/info/versions HTML is assembled from escapeHtml()ed values above
     this.mount.innerHTML = `
       <div class="pv">
         <div class="pv__head">
