@@ -36,41 +36,36 @@ pub fn open_path(path: String) -> Result<()> {
 
 /// Reveal a file in the system file manager (with selection on Windows).
 ///
-/// Security: NTFS allows `"` in file names. Earlier we built the argument
-/// manually via `raw_arg("/select,\"{}\"", path)` — a name containing `"`
-/// would break out of the quoted region and let `explorer.exe` parse the rest
-/// as a separate argument (potentially an executable path to launch).
-///
-/// Now we (a) reject paths containing `"` outright (defence in depth —
-/// `explorer /select,` cannot legitimately address such a path anyway) and
-/// (b) rely on Rust's `Command::arg`, which applies `CommandLineToArgvW`
-/// quoting rules instead of our own. Together these close the injection.
+/// Security: on Windows the item is handed to the shell API as an ITEMIDLIST
+/// (`SHOpenFolderAndSelectItems`), not formatted into an `explorer.exe
+/// /select,<path>` command line. Win32 does not allow `"` in names — the old
+/// comment claiming NTFS does was wrong — but a command line built from a
+/// path still depended on explorer's own, non-standard argument parsing
+/// (commas and `/` switches inside the path). With the shell API there is no
+/// command line at all. Only absolute paths are accepted.
 #[tauri::command]
-pub fn reveal_in_explorer(path: String) -> Result<()> {
-    if path.contains('"') {
-        return Err(Error::InvalidPath(
-            "path contains a double quote, refusing to pass to explorer".into(),
-        ));
+pub async fn reveal_in_explorer(path: String) -> Result<()> {
+    if !std::path::Path::new(&path).is_absolute() {
+        return Err(Error::InvalidPath(format!("not an absolute path: {path}")));
     }
-    #[cfg(windows)]
-    {
-        use std::process::Command;
-        // `.arg(...)` lets std apply the standard CommandLineToArgvW quoting.
-        // No manual quotes around the path — std adds them when needed.
-        Command::new("explorer")
-            .arg(format!("/select,{}", path))
-            .spawn()?;
-        Ok(())
-    }
-    #[cfg(not(windows))]
-    {
-        let target = std::path::Path::new(&path)
-            .parent()
-            .map(std::path::Path::to_path_buf)
-            .unwrap_or_else(|| std::path::PathBuf::from(&path));
-        open::that(target)?;
-        Ok(())
-    }
+    tauri::async_runtime::spawn_blocking(move || reveal_sync(&path))
+        .await
+        .map_err(|e| Error::Operation(format!("reveal interrupted: {e}")))?
+}
+
+#[cfg(windows)]
+fn reveal_sync(path: &str) -> Result<()> {
+    crate::platform::reveal_in_explorer(path)
+}
+
+#[cfg(not(windows))]
+fn reveal_sync(path: &str) -> Result<()> {
+    let target = std::path::Path::new(path)
+        .parent()
+        .map(std::path::Path::to_path_buf)
+        .unwrap_or_else(|| std::path::PathBuf::from(path));
+    open::that(target)?;
+    Ok(())
 }
 
 /// Quick access: home, desktop, documents, downloads

@@ -52,6 +52,42 @@ impl Drop for ComGuard {
     }
 }
 
+// ─── Reveal in Explorer ───────────────────────────────────────────
+
+/// Open the folder of `path` in Explorer with the item selected, through the
+/// shell API (`SHOpenFolderAndSelectItems`) instead of a command line: the
+/// path is passed as data (an ITEMIDLIST), so no quoting or argument parsing
+/// of `explorer.exe /select,...` is involved. Runs on its own STA thread for
+/// the same reason as the deletion below.
+pub fn reveal_in_explorer(path: &str) -> Result<()> {
+    let path = path.to_string();
+    std::thread::spawn(move || reveal_on_sta_thread(&path))
+        .join()
+        .map_err(|_| Error::Operation("reveal thread panicked".into()))?
+}
+
+fn reveal_on_sta_thread(path: &str) -> Result<()> {
+    use windows::Win32::System::Com::{CoInitializeEx, COINIT_APARTMENTTHREADED};
+    use windows::Win32::UI::Shell::{ILCreateFromPathW, ILFree, SHOpenFolderAndSelectItems};
+
+    let wide = to_wide(path);
+    unsafe {
+        CoInitializeEx(None, COINIT_APARTMENTTHREADED)
+            .ok()
+            .map_err(|e| Error::Operation(format!("CoInitializeEx: {e}")))?;
+        let _com = ComGuard;
+        let pidl = ILCreateFromPathW(windows::core::PCWSTR(wide.as_ptr()));
+        if pidl.is_null() {
+            return Err(Error::Operation(format!("cannot resolve {path} in the shell namespace")));
+        }
+        // A full pidl with no child array: Explorer opens the parent folder
+        // and selects the item itself.
+        let res = SHOpenFolderAndSelectItems(pidl, None, 0);
+        ILFree(Some(pidl as *const _));
+        res.map_err(|e| Error::Operation(format!("SHOpenFolderAndSelectItems: {e}")))
+    }
+}
+
 // ─── Delete to Trash via IFileOperation ───────────────────────────
 
 // Delete files/folders to the Trash via IFileOperation.

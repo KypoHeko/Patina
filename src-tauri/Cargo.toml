@@ -41,6 +41,7 @@ opt-level = 3
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = [
   "Win32_UI_Shell",                   # SHGetFileInfo, IFileOperation, SHGetKnownFolderPath
+  "Win32_UI_Shell_Common",            # ITEMIDLIST: ILCreateFromPathW, SHOpenFolderAndSelectItems
   "Win32_Storage_FileSystem",         # USN Journal, GetVolumeInformation, GetDriveType, GetDiskFreeSpaceEx
   "Win32_Foundation",                 # HANDLE, BOOL, CloseHandle
   "Win32_Security",                   # SECURITY_ATTRIBUTES — required by the CreateFileW signature

@@ -25,7 +25,7 @@ pub use usn::{UsnCursor, UsnRead};
 // The re-export makes them available without the windows:: qualification.
 
 #[cfg(windows)]
-pub use windows::{delete_to_recycle_bin, list_drives_native};
+pub use windows::{delete_to_recycle_bin, list_drives_native, reveal_in_explorer};
 
 // Re-export native icons and the USN Journal for use in commands.
 #[cfg(windows)]
