@@ -26,12 +26,18 @@ fn relink_all(conn: &Connection, old: &str, new: &str) {
     let _ = edges::relink(conn, old, new);
 }
 
-/// Delete all path-bound data (tags, versions, links) for a removed path (and
-/// nested ones), otherwise rows pile up in the DB referencing non-existent
-/// files. Errors are swallowed for the same reasons as in `relink_all`.
+/// Drop path-bound data for a path moved to the Recycle Bin (and nested ones).
+/// Tags and links are removed; version history is only MARKED as deleted, so
+/// a file restored from the Bin keeps its history (expired history is removed
+/// by `versions::collect_garbage`). Errors are swallowed for the same reasons
+/// as in `relink_all`.
 fn purge_all(conn: &Connection, path: &str) {
+    let now = std::time::SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
     let _ = tags::purge(conn, path);
-    let _ = versions::purge(conn, path);
+    let _ = versions::mark_deleted(conn, path, now);
     let _ = edges::purge(conn, path);
 }
 

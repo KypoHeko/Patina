@@ -70,6 +70,13 @@ fn do_snapshot(db: &std::sync::Mutex<rusqlite::Connection>, versions_dir: &Path,
         return Ok(());
     }
 
+    // The file exists, so its history (if it was marked as deleted when the
+    // file went to the Recycle Bin) is live again.
+    {
+        let conn = db.lock().map_err(|_| Error::Operation("DB lock poisoned".into()))?;
+        versions::clear_deleted(&conn, path)?;
+    }
+
     let file_size = meta.len();
     let chunks_dir = versions_dir.join("chunks");
     let dicts_dir = version_compress::dicts_dir(versions_dir);
@@ -394,6 +401,126 @@ pub async fn list_versions(app: AppHandle, path: String) -> Result<Vec<Version>>
     .map_err(|e| Error::Operation(format!("list_versions interrupted: {e}")))?
 }
 
+/// Delete one version row (and its chunk rows) and unlink every blob/chunk
+/// that no other version references any more. Must be called with the DB lock
+/// held (C4: refcount check and unlink in one critical section).
+fn remove_version_locked(conn: &rusqlite::Connection, versions_dir: &Path, v: &Version) -> Result<()> {
+    // Collect chunk hashes BEFORE delete (it removes version_chunks).
+    let chunk_hashes: Vec<String> = if v.strategy == "chunked" {
+        versions::get_chunks(conn, v.id)?.into_iter().map(|(h, _)| h).collect()
+    } else {
+        Vec::new()
+    };
+    versions::delete(conn, v.id)?;
+
+    // Blob (full/zstd) — only if the hash has no more references.
+    if versions::hash_refcount(conn, &v.hash)? == 0 {
+        match v.strategy.as_str() {
+            "full" => {
+                let _ = std::fs::remove_file(versions_dir.join(&v.hash));
+            }
+            "zstd" => {
+                let _ = std::fs::remove_file(versions_dir.join(format!("{}.zst", v.hash)));
+            }
+            _ => {}
+        }
+    }
+    // Orphaned chunks.
+    let chunks_dir = versions_dir.join("chunks");
+    for ch in &chunk_hashes {
+        if versions::chunk_refcount(conn, ch)? == 0 {
+            let _ = std::fs::remove_file(chunks_dir.join(ch));
+        }
+    }
+    Ok(())
+}
+
+/// How long the history of a file that was moved to the Recycle Bin is kept.
+pub const DELETED_RETENTION_MS: i64 = 30 * 24 * 60 * 60 * 1000;
+
+/// Temp files older than this are leftovers of an interrupted write.
+const STALE_TMP_MS: u128 = 60 * 60 * 1000;
+
+/// Garbage collection of the version store (run in the background at startup):
+/// 1. versions of files deleted more than `retention_ms` ago are removed;
+/// 2. blobs and chunks no version references any more are unlinked (they
+///    used to accumulate forever, e.g. after a crash between writes);
+/// 3. stale temp files of interrupted atomic writes are removed.
+///
+/// Every refcount check and unlink runs under the DB lock, so a concurrent
+/// snapshot (which inserts its row BEFORE writing content — C4) is never
+/// mistaken for garbage. Returns the number of removed versions.
+pub fn collect_garbage(
+    db: &std::sync::Mutex<rusqlite::Connection>,
+    versions_dir: &Path,
+    retention_ms: i64,
+) -> Result<usize> {
+    let lock = || db.lock().map_err(|_| Error::Operation("DB lock poisoned".into()));
+    let cutoff = now_millis() - retention_ms;
+
+    let removed = {
+        let conn = lock()?;
+        let ids = versions::expired_ids(&conn, cutoff)?;
+        for id in &ids {
+            if let Some(v) = versions::get(&conn, *id)? {
+                remove_version_locked(&conn, versions_dir, &v)?;
+            }
+        }
+        ids.len()
+    };
+
+    let is_stale_tmp = |p: &Path| {
+        p.file_name().is_some_and(|n| n.to_string_lossy().contains(".patina-tmp-"))
+            && std::fs::metadata(p)
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.elapsed().ok())
+                .is_some_and(|age| age.as_millis() > STALE_TMP_MS)
+    };
+
+    // Blobs in versions_dir: `<hash>.zst` (zstd) or `<hash>` (legacy full).
+    if let Ok(rd) = std::fs::read_dir(versions_dir) {
+        for entry in rd.flatten() {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            if is_stale_tmp(&path) {
+                let _ = std::fs::remove_file(&path);
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.starts_with('.') {
+                continue;
+            }
+            let hash = name.strip_suffix(".zst").unwrap_or(&name);
+            let conn = lock()?;
+            if versions::hash_refcount(&conn, hash)? == 0 {
+                let _ = std::fs::remove_file(&path);
+            }
+        }
+    }
+    // Chunks.
+    if let Ok(rd) = std::fs::read_dir(versions_dir.join("chunks")) {
+        for entry in rd.flatten() {
+            let path = entry.path();
+            if is_stale_tmp(&path) {
+                let _ = std::fs::remove_file(&path);
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.starts_with('.') {
+                continue;
+            }
+            let conn = lock()?;
+            if versions::chunk_refcount(&conn, &name)? == 0 {
+                let _ = std::fs::remove_file(&path);
+            }
+        }
+    }
+    Ok(removed)
+}
+
 #[tauri::command]
 pub async fn restore_version(app: AppHandle, id: i64) -> Result<()> {
     tauri::async_runtime::spawn_blocking(move || {
@@ -427,47 +554,10 @@ pub async fn delete_version(app: AppHandle, id: i64) -> Result<Vec<Version>> {
                 return Err(Error::Operation("cannot delete the only version".into()));
             }
 
-        // Collect chunk hashes BEFORE delete (it removes version_chunks).
-        let chunk_hashes: Vec<String> = if v.strategy == "chunked" {
-            versions::get_chunks(&conn, id)?
-                .into_iter()
-                .map(|(h, _)| h)
-                .collect()
-        } else {
-            Vec::new()
-        };
+            remove_version_locked(&conn, &state.versions_dir, &v)?;
 
-        // Delete the version row (and its version_chunks).
-        versions::delete(&conn, id)?
-                .ok_or_else(|| Error::Operation("version not found".into()))?;
-
-            let versions_dir = &state.versions_dir;
-
-            // Blob (full/zstd) — only if the hash has no more references.
-            if versions::hash_refcount(&conn, &v.hash)? == 0 {
-            match v.strategy.as_str() {
-                "full" => {
-                    let _ = std::fs::remove_file(versions_dir.join(&v.hash));
-                }
-                "zstd" => {
-                    let _ = std::fs::remove_file(versions_dir.join(format!("{}.zst", &v.hash)));
-                }
-                _ => {}
-            }
-        }
-
-        // Orphaned chunks.
-        if !chunk_hashes.is_empty() {
-            let chunks_dir = versions_dir.join("chunks");
-            for ch in &chunk_hashes {
-                if versions::chunk_refcount(&conn, ch)? == 0 {
-                    let _ = std::fs::remove_file(chunks_dir.join(ch));
-                }
-            }
-        }
-
-        // The updated list — while we still hold the same conn.
-        versions::list_for(&conn, &v.path)?
+            // The updated list — while we still hold the same conn.
+            versions::list_for(&conn, &v.path)?
         };
 
         Ok(versions)
@@ -553,5 +643,41 @@ mod tests {
             .filter(|e| e.file_name().to_string_lossy().contains("patina-tmp"))
             .collect();
         assert!(leftovers.is_empty());
+    }
+
+    #[test]
+    fn gc_removes_expired_history_and_orphan_blobs_only() {
+        let env = env();
+        let keep = file(&env, "keep.txt", "keep me");
+        let gone = file(&env, "gone.txt", "gone soon");
+        do_snapshot(&env.db, &env.versions_dir, &keep).unwrap();
+        do_snapshot(&env.db, &env.versions_dir, &gone).unwrap();
+        std::fs::write(env.versions_dir.join("deadbeef.zst"), b"orphan").unwrap();
+        {
+            let conn = env.db.lock().unwrap();
+            versions::mark_deleted(&conn, &gone, 0).unwrap();
+        }
+        let removed = collect_garbage(&env.db, &env.versions_dir, 1).unwrap();
+        assert_eq!(removed, 1);
+        assert!(!env.versions_dir.join("deadbeef.zst").exists(), "orphan blob unlinked");
+        assert_eq!(versions_of(&env, &keep).len(), 1);
+        assert!(versions_of(&env, &gone).is_empty());
+        let kv = &versions_of(&env, &keep)[0];
+        assert!(env.versions_dir.join(format!("{}.zst", kv.hash)).exists(), "live blob kept");
+    }
+
+    #[test]
+    fn snapshot_after_restore_from_bin_revives_history() {
+        let env = env();
+        let p = file(&env, "x.txt", "one");
+        do_snapshot(&env.db, &env.versions_dir, &p).unwrap();
+        {
+            let conn = env.db.lock().unwrap();
+            versions::mark_deleted(&conn, &p, 0).unwrap();
+        }
+        std::fs::write(&p, "two").unwrap(); // the file is back
+        do_snapshot(&env.db, &env.versions_dir, &p).unwrap();
+        assert_eq!(collect_garbage(&env.db, &env.versions_dir, 1).unwrap(), 0);
+        assert_eq!(versions_of(&env, &p).len(), 2);
     }
 }

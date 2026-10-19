@@ -29,6 +29,19 @@ pub fn run() {
             std::fs::create_dir_all(&versions_dir)?;
             std::fs::create_dir_all(&thumbs_dir)?;
             app.manage(AppState::new(conn, versions_dir, thumbs_dir));
+            // Background GC of the version store: expired history of deleted
+            // files, unreferenced blobs/chunks, stale temp files.
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                let state = handle.state::<AppState>();
+                if let Err(e) = commands::versions::collect_garbage(
+                    &state.db,
+                    &state.versions_dir,
+                    commands::versions::DELETED_RETENTION_MS,
+                ) {
+                    eprintln!("[patina] version GC failed: {e}");
+                }
+            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

@@ -351,34 +351,42 @@ pub fn relink(conn: &Connection, old: &str, new: &str) -> Result<()> {
     }
 }
 
-/// Delete version history of a path and all nested ones (on move to Trash).
-/// Blobs and chunks are not deleted: they are content-addressed and may be
-/// referenced by other paths; garbage collection is a separate task.
-pub fn purge(conn: &Connection, path: &str) -> Result<()> {
+/// Mark the history of a path and all nested ones as belonging to a deleted
+/// file (on move to the Recycle Bin). The history is NOT removed: a file
+/// restored from the Bin gets it back (see [`clear_deleted`]); rows that stay
+/// deleted longer than the retention period are collected by
+/// `commands::versions::collect_garbage`.
+pub fn mark_deleted(conn: &Connection, path: &str, ts: i64) -> Result<()> {
     let path = normalize(path);
     let path = path.as_str();
     let (_, prefix, upper) = subtree_bounds(path);
-
-    // Delete chunks for chunked versions
-    let version_ids: Vec<i64> = {
-        let mut stmt = conn.prepare(
-            "SELECT id FROM versions WHERE path = ?1 OR (path >= ?2 AND path < ?3)",
-        )?;
-        stmt.query_map((path, &prefix, &upper), |r| r.get::<_, i64>(0))?
-            .collect::<rusqlite::Result<_>>()?
-    };
-    if !version_ids.is_empty() {
-        // Delete chunks in batches
-        for chunk_id in &version_ids {
-            conn.execute("DELETE FROM version_chunks WHERE version_id = ?1", [chunk_id])?;
-        }
-    }
-
     conn.execute(
-        "DELETE FROM versions WHERE path = ?1 OR (path >= ?2 AND path < ?3)",
-        (path, &prefix, &upper),
+        "UPDATE versions SET deleted_at = ?4
+         WHERE deleted_at IS NULL AND (path = ?1 OR (path >= ?2 AND path < ?3))",
+        (path, &prefix, &upper, ts),
     )?;
     Ok(())
+}
+
+/// The file exists again (restored from the Bin, recreated, snapshotted):
+/// its history is live again.
+pub fn clear_deleted(conn: &Connection, path: &str) -> Result<()> {
+    let path = normalize(path);
+    conn.execute(
+        "UPDATE versions SET deleted_at = NULL WHERE path = ?1 AND deleted_at IS NOT NULL",
+        [&path],
+    )?;
+    Ok(())
+}
+
+/// Ids of versions whose file was deleted before `cutoff` (Unix ms).
+pub fn expired_ids(conn: &Connection, cutoff: i64) -> Result<Vec<i64>> {
+    let mut stmt =
+        conn.prepare("SELECT id FROM versions WHERE deleted_at IS NOT NULL AND deleted_at < ?1")?;
+    let ids = stmt
+        .query_map([cutoff], |r| r.get::<_, i64>(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    Ok(ids)
 }
 
 #[cfg(test)]
@@ -425,13 +433,17 @@ mod tests {
     }
 
     #[test]
-    fn purge_removes_exact_and_nested_keeps_sibling() {
-        let c = mem();
+    fn mark_deleted_keeps_history_and_clear_restores_it() {
+        let c = crate::index::db::open_in_memory();
         insert(&c, "C:\\proj\\b", 1, 10, "h1", "v1", "full", None).unwrap();
         insert(&c, "C:\\proj\\b\\x.txt", 1, 20, "h2", "v1", "full", None).unwrap();
         insert(&c, "C:\\proj\\bb\\y.txt", 1, 30, "h3", "v1", "full", None).unwrap();
-        purge(&c, "C:\\proj\\b").unwrap();
-        assert_eq!(paths(&c), vec![normalize("C:\\proj\\bb\\y.txt")]);
+        mark_deleted(&c, "C:\\proj\\b", 1_000).unwrap();
+        assert_eq!(paths(&c).len(), 3, "history must survive a move to the Bin");
+        assert_eq!(expired_ids(&c, 2_000).unwrap().len(), 2, "sibling bb is not marked");
+        clear_deleted(&c, "C:\\proj\\b\\x.txt").unwrap();
+        assert_eq!(expired_ids(&c, 2_000).unwrap().len(), 1);
+        assert!(expired_ids(&c, 500).unwrap().is_empty(), "not yet past retention");
     }
 
     #[test]
