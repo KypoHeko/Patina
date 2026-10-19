@@ -204,6 +204,23 @@ pub fn relink(conn: &Connection, old: &str, new: &str) -> Result<()> {
     }
 }
 
+/// Delete only the DERIVED edges (links/imports/mentions) of a path and its
+/// subtree, keeping manual ones. Used when the file watcher sees a path
+/// disappear: that is also what a move/rename by Patina itself looks like for
+/// a moment, and purging manual links there raced with `relink` and could
+/// lose them. Derived edges are recomputed from content anyway.
+pub fn purge_derived(conn: &Connection, path: &str) -> Result<()> {
+    let path = normalize(path);
+    let path = path.as_str();
+    let (_, prefix, upper) = subtree_bounds(path);
+    conn.execute(
+        "DELETE FROM file_edges WHERE kind <> 'manual' AND
+         (src = ?1 OR (src >= ?2 AND src < ?3) OR dst = ?1 OR (dst >= ?2 AND dst < ?3))",
+        (path, &prefix, &upper),
+    )?;
+    Ok(())
+}
+
 /// Delete all edges of a path and its subtree (from either end) — on move to Trash.
 pub fn purge(conn: &Connection, path: &str) -> Result<()> {
     let path = normalize(path);
@@ -298,5 +315,17 @@ mod tests {
         };
         all.sort();
         assert_eq!(all, vec![(normalize("C:\\keep1"), normalize("C:\\keep2"))]);
+    }
+
+    #[test]
+    fn purge_derived_keeps_manual_links() {
+        let c = mem();
+        ins(&c, "/p/a.md", "/p/b.md", "link");
+        ins(&c, "/p/a.md", "/p/c.md", "manual");
+        purge_derived(&c, "/p/a.md").unwrap();
+        let n: i64 = c.query_row("SELECT COUNT(*) FROM file_edges", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 1);
+        let kind: String = c.query_row("SELECT kind FROM file_edges", [], |r| r.get(0)).unwrap();
+        assert_eq!(kind, "manual");
     }
 }

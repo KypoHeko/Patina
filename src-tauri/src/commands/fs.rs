@@ -76,17 +76,31 @@ pub async fn move_entries(
     overwrite: bool,
 ) -> Result<()> {
     tauri::async_runtime::spawn_blocking(move || {
-        operations::move_entries(&sources, &dest_dir, overwrite)?;
+        // One entry at a time, relinking each right after it moved: a batch
+        // move that failed half-way used to return before ANY relink, leaving
+        // the tags and history of the entries that did move under their old
+        // paths. Failures are collected and reported together.
         let state = app.state::<AppState>();
-        let conn = state.db()?;
+        let mut failed: Vec<String> = Vec::new();
         for src in &sources {
-            if let Some(name) = Path::new(src).file_name() {
-                let new_path = Path::new(&dest_dir).join(name);
-                let new_path = new_path.to_string_lossy();
-                relink_all(&conn, src, &new_path);
+            let name = Path::new(src)
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| src.clone());
+            match operations::move_entries(std::slice::from_ref(src), &dest_dir, overwrite) {
+                Ok(()) => {
+                    let new_path = Path::new(&dest_dir).join(&name);
+                    let conn = state.db()?;
+                    relink_all(&conn, src, &new_path.to_string_lossy());
+                }
+                Err(e) => failed.push(format!("{name}: {e}")),
             }
         }
-        Ok(())
+        if failed.is_empty() {
+            Ok(())
+        } else {
+            Err(Error::Operation(format!("not moved — {}", failed.join("; "))))
+        }
     })
     .await
     .map_err(|e| Error::Operation(format!("move_entries interrupted: {e}")))?

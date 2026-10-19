@@ -224,7 +224,9 @@ fn apply_one(app: &AppHandle, content_active: bool, path: &Path, expand_new_dir:
         }
     } else if let Ok(conn) = state.db() {
         let _ = file_index::delete_path(&conn, &pstr);
-        let _ = edges::purge(&conn, &pstr);
+        // Derived edges only: a manual link must survive the moment a move or
+        // rename by Patina makes the old path vanish before `relink` runs.
+        let _ = edges::purge_derived(&conn, &pstr);
         if content_active {
             let _ = content_index::delete_path(&conn, &pstr);
         }
