@@ -129,9 +129,16 @@ export const RenderMixin = {
     }
     this._view = this.filterList(this.sortedEntries(pane.entries));
     this._renderedPaths = new Set();
+    // Keep the scroll position when the SAME folder is re-rendered (a reload
+    // after an external change, a re-sort, a filter tweak); jump to the top only
+    // for a different folder.
+    const sameFolder = this._listPath === pane.path;
+    const keepScroll = sameFolder ? this.listEl.scrollTop : 0;
+    this._listPath = pane.path;
     this.listEl.innerHTML = '';
-    this.listEl.scrollTop = 0;
     this.renderWindow();
+    this.listEl.scrollTop = keepScroll;
+    if (keepScroll) this.renderWindow();
   },
 
   // Virtualization: only the visible window of rows + a margin is in the DOM.

@@ -16,9 +16,10 @@ export const NavigationMixin = {
     const isReload = this._lastPane?.path === path;
     const prevSelected = isReload ? [...(this._lastPane?.selected || [])] : [];
 
-    // Reset the filter on navigation — so we do not "catch" an old search in
-    // the new folder. The input updates via sync().
-    if (this.store.getState().searchQuery) {
+    // Reset the filter when entering ANOTHER folder — so we do not "catch" an
+    // old search there. A reload of the same folder (an external change, a
+    // rename, a restore) keeps what the user typed. The input syncs via sync().
+    if (!isReload && this.store.getState().searchQuery) {
       this.store.setState({ searchQuery: '' });
     }
     // Every navigation gets a ticket; only the latest one may write its result.

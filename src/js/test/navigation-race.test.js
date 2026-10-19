@@ -56,3 +56,32 @@ describe('FilePanel navigation race', () => {
     expect(getPane(store.getState(), 'left').error).toBeNull();
   });
 });
+
+describe('FilePanel reload', () => {
+  it('keeps the search filter and the scroll position of the same folder', async () => {
+    const { panel, store } = makePanel();
+    const many = Array.from({ length: 200 }, (_, i) => file('/R', `f${i}`));
+    const first = panel.navigate('/R');
+    pending['/R'].resolve(many);
+    await first;
+    store.setState({ searchQuery: 'f1' });
+    panel.listEl.scrollTop = 140;
+    const again = panel.navigate('/R', { record: false }); // what fs:changed does
+    pending['/R'].resolve([...many, file('/R', 'new.txt')]);
+    await again;
+    expect(store.getState().searchQuery).toBe('f1');
+    expect(panel.listEl.scrollTop).toBe(140);
+  });
+
+  it('clears the filter when entering another folder', async () => {
+    const { panel, store } = makePanel();
+    const a = panel.navigate('/S1');
+    pending['/S1'].resolve([file('/S1', 'x')]);
+    await a;
+    store.setState({ searchQuery: 'x' });
+    const b = panel.navigate('/S2');
+    pending['/S2'].resolve([]);
+    await b;
+    expect(store.getState().searchQuery).toBe('');
+  });
+});
