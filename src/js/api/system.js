@@ -18,9 +18,27 @@ export function listDrives() {
   return invoke('list_drives');
 }
 
-/** List of storage volumes: mount point, type, used/total. */
-export function listStorage() {
-  return invoke('list_storage');
+/** How long one volume listing is shared between callers. */
+const STORAGE_TTL_MS = 30_000;
+let storageCache = null; // { at, promise }
+
+/**
+ * List of storage volumes: mount point, type, used/total.
+ * The sidebar and the status bar both ask for it at startup; the backend
+ * walk is slow (sysinfo, or WinAPI per volume), so one in-flight/recent
+ * result is shared instead of enumerating the volumes twice. A failed call
+ * is not cached. `{ fresh: true }` forces a new listing.
+ */
+export function listStorage({ fresh = false } = {}) {
+  const now = Date.now();
+  if (!fresh && storageCache && now - storageCache.at < STORAGE_TTL_MS) return storageCache.promise;
+  const promise = invoke('list_storage');
+  const entry = { at: now, promise };
+  storageCache = entry;
+  promise.catch(() => {
+    if (storageCache === entry) storageCache = null;
+  });
+  return promise;
 }
 
 /** Watch a list of folders (natively). Changes arrive via the fs:external-change event. */

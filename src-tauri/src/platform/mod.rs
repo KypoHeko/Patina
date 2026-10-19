@@ -80,6 +80,21 @@ pub struct NativeIcon {
     pub height: u32,
 }
 
+/// Drive letters present in a `GetLogicalDrives` bit mask (bit 0 = A:).
+/// Kept OS-independent so it is unit-tested everywhere.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn drive_letters(mask: u32) -> Vec<char> {
+    (0..26u8).filter(|i| mask & (1 << i) != 0).map(|i| (b'A' + i) as char).collect()
+}
+
+/// Drive letters of the system, from one `GetLogicalDrives` call — instead of
+/// probing `X:\` 26 times with `Path::exists`, which stalls for seconds on a
+/// disconnected network drive or an empty card reader.
+#[cfg(windows)]
+pub fn logical_drives() -> Vec<char> {
+    drive_letters(unsafe { windows::Win32::Storage::FileSystem::GetLogicalDrives() })
+}
+
 // ─── Fallback implementations for non-Windows ──────────────────────
 
 #[cfg(not(windows))]
@@ -105,6 +120,17 @@ pub fn delete_to_recycle_bin(_paths: &[String]) -> crate::error::Result<()> {
 #[cfg(not(windows))]
 pub fn get_native_icon(_path: &str, _size: u32) -> Option<NativeIcon> {
     None
+}
+
+#[cfg(test)]
+mod drive_tests {
+    #[test]
+    fn decodes_the_logical_drive_mask() {
+        assert_eq!(super::drive_letters(0), Vec::<char>::new());
+        assert_eq!(super::drive_letters(0b1100), vec!['C', 'D']);
+        assert_eq!(super::drive_letters(1 | (1 << 25)), vec!['A', 'Z']);
+        assert_eq!(super::drive_letters(u32::MAX).len(), 26);
+    }
 }
 
 /// The USN Journal exists only on NTFS/ReFS under Windows.

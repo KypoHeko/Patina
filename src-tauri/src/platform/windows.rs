@@ -167,30 +167,31 @@ use windows::Win32::UI::Shell::SHCreateItemFromParsingName;
 /// Returns a list of drives with volume labels, types
 /// (SSD/HDD/Removable/Network) and space information.
 pub fn list_drives_native() -> Vec<DriveInfo> {
+    use windows::Win32::Storage::FileSystem::GetDriveTypeW;
     let mut out = Vec::new();
-
-    for letter in b'A'..=b'Z' {
-        let c = letter as char;
-        let root = format!("{}:\\", c);
-        let root_path = std::path::Path::new(&root);
-
-        if !root_path.exists() {
-            continue;
+    for c in super::logical_drives() {
+        let root = format!("{c}:\\");
+        let wide = to_wide(&root);
+        let drive_type = unsafe { GetDriveTypeW(windows::core::PCWSTR(wide.as_ptr())) };
+        match drive_type {
+            0 | 1 => continue, // DRIVE_UNKNOWN / DRIVE_NO_ROOT_DIR: nothing mounted
+            // DRIVE_REMOTE: the label and free-space queries go over the
+            // network and block for the SMB timeout when the server is gone
+            // — list the mapping without them rather than freeze the sidebar.
+            4 => {
+                out.push(DriveInfo { path: root, label: String::new(), kind: "Network".into(), total: 0, available: 0 });
+                continue;
+            }
+            // DRIVE_REMOVABLE / DRIVE_CDROM without media: no label, no space,
+            // and the queries would only spin up the drive.
+            2 | 5 if !std::path::Path::new(&root).exists() => continue,
+            _ => {}
         }
-
         let label = get_volume_label(&root);
-        let kind = get_drive_kind(&root);
+        let kind = get_drive_kind(drive_type, &root);
         let (total, available) = get_disk_space(&root);
-
-        out.push(DriveInfo {
-            path: root,
-            label,
-            kind,
-            total,
-            available,
-        });
+        out.push(DriveInfo { path: root, label, kind, total, available });
     }
-
     out
 }
 
@@ -226,12 +227,7 @@ fn get_volume_label(root: &str) -> String {
 /// 1. GetDriveTypeW → Removable / Network / RAM
 /// 2. For a fixed disk — detect_fixed_media (TRIM + seek penalty)
 /// 3. Indeterminate → "SSD" (see detect_fixed_media)
-fn get_drive_kind(root: &str) -> String {
-    use windows::Win32::Storage::FileSystem::GetDriveTypeW;
-
-    let wide = to_wide(root);
-    let drive_type = unsafe { GetDriveTypeW(windows::core::PCWSTR(wide.as_ptr())) };
-
+fn get_drive_kind(drive_type: u32, root: &str) -> String {
     // The numeric GetDriveType values (winbase.h) are stable and do not depend
     // on the crate version — the named constants are not reachable here in windows 0.58.
     match drive_type {

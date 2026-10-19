@@ -151,16 +151,14 @@ fn list_drives_sync() -> Vec<Location> {
     let mut out = Vec::new();
     #[cfg(windows)]
     {
-        for letter in b'A'..=b'Z' {
-            let c = letter as char;
-            let root = format!("{}:\\", c);
-            if std::path::Path::new(&root).exists() {
-                out.push(Location {
-                    label: format!("{}:", c),
-                    path: root,
-                    kind: "drive".into(),
-                });
-            }
+        // One GetLogicalDrives call; no per-letter existence probe (it
+        // blocked on dead network mappings and empty card readers).
+        for c in crate::platform::logical_drives() {
+            out.push(Location {
+                label: format!("{c}:"),
+                path: format!("{c}:\\"),
+                kind: "drive".into(),
+            });
         }
     }
     #[cfg(not(windows))]
