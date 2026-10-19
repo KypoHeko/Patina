@@ -4,9 +4,11 @@
 //! Unchanged regions yield the same chunks — this is the basis of deduplication.
 
 use std::fs::File;
-use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
 
 use crate::error::{Error, Result};
+use crate::fs::atomic;
 
 /// Chunking parameters.
 pub const CHUNK_MIN: usize = 256 * 1024;       // 256 KB — minimum chunk
@@ -18,9 +20,6 @@ pub const CHUNK_MAX: usize = 8 * 1024 * 1024;   // 8 MB — maximum chunk
 /// With CHUNK_MASK = 0x1FFFF (131071) the average chunk ≈ 128 KB × 32 ≈ 4 MB.
 const CHUNK_MASK: u32 = 0x1FFFF;
 
-/// Polynomial for the Rabin fingerprint (irreducible over GF(2), degree 31).
-const RABIN_POLY: u64 = 0x3DA3358B4DC173;
-
 /// Rolling-hash window (bytes).
 const WINDOW_SIZE: usize = 48;
 
@@ -31,77 +30,59 @@ pub struct Chunk {
     pub size: i64,
 }
 
-/// Split a file into chunks. Chunks are not held in memory in full —
-/// we stream the file, find boundaries, and hash each chunk with BLAKE3.
-pub fn chunk_file(path: &str) -> Result<Vec<Chunk>> {
-    let mut file = File::open(path).map_err(Error::Io)?;
-    let meta = file.metadata().map_err(Error::Io)?;
-    if meta.len() == 0 {
-        // Empty file — a single empty chunk
-        let hash = blake3::Hasher::new().finalize().to_hex().to_string();
-        return Ok(vec![Chunk { hash, size: 0 }]);
+/// Rolling-hash boundary detector (Buzhash-style, see `build_lookup`).
+struct Boundary {
+    lookup: [u64; 256],
+    window: [u8; WINDOW_SIZE],
+    wi: usize,
+    fp: u64,
+}
+
+impl Boundary {
+    fn new() -> Self {
+        Self { lookup: build_lookup(), window: [0u8; WINDOW_SIZE], wi: 0, fp: 0 }
     }
 
+    /// Feed one byte; `len` is the size of the current chunk INCLUDING it.
+    /// Returns true when the chunk must be cut after this byte.
+    #[inline]
+    fn push(&mut self, b: u8, len: usize) -> bool {
+        let old = self.window[self.wi];
+        self.fp = self
+            .fp
+            .wrapping_shl(1)
+            .wrapping_add(self.lookup[b as usize])
+            .wrapping_sub(self.lookup[old as usize].wrapping_shl(WINDOW_SIZE as u32));
+        self.window[self.wi] = b;
+        self.wi = (self.wi + 1) % WINDOW_SIZE;
+        (len >= CHUNK_MIN && (self.fp & CHUNK_MASK as u64) == 0) || len >= CHUNK_MAX
+    }
+}
+
+/// Split a file into chunks (hashes and sizes only, nothing is stored).
+#[cfg(test)]
+pub fn chunk_file(path: &str) -> Result<Vec<Chunk>> {
+    let mut file = File::open(path).map_err(Error::Io)?;
     let mut chunks = Vec::new();
     let mut buf = Vec::with_capacity(CHUNK_MAX);
-    let mut window = [0u8; WINDOW_SIZE];
-    let mut wi = 0usize; // position in the window
-    let mut fp: u64 = 0;
-    // RABIN_POLY is kept for a future table-based Rabin fingerprint
-    // implementation; the simplified Buzhash below does not use it, so the
-    // variable needs no mut.
-    let _out_table = RABIN_POLY;
-
-    // Precompute table[i] = RABIN_POLY^(8*i)
-    // for fast removal of a byte from the window.
-    // But that is expensive — instead we use a simplified rolling hash:
-    // Buzhash-style with a table of random values.
-    let lookup = build_lookup();
-
-    // Reset the window
-    window.fill(0);
-
-    // Buffered read: this used to be [0u8; 1] with a read syscall per byte —
-    // for a 15 MB file that is ~15 million syscalls. Now we read in 256 KB
-    // blocks and iterate over the bytes of the in-memory slice.
-    // 256 KB is enough for efficiency and does not overload the page cache.
+    let mut boundary = Boundary::new();
     let mut read_buf = vec![0u8; 256 * 1024];
     loop {
-        let n = match file.read(&mut read_buf) {
-            Ok(0) => break, // EOF
-            Ok(n) => n,
-            Err(e) => return Err(Error::Io(e)),
-        };
-
+        let n = file.read(&mut read_buf).map_err(Error::Io)?;
+        if n == 0 {
+            break;
+        }
         for &b in &read_buf[..n] {
-            // Remove the old byte from the window, add the new one
-            let old = window[wi];
-            fp = fp
-                .wrapping_shl(1)
-                .wrapping_add(lookup[b as usize])
-                .wrapping_sub(lookup[old as usize].wrapping_shl(WINDOW_SIZE as u32));
-
-            window[wi] = b;
-            wi = (wi + 1) % WINDOW_SIZE;
             buf.push(b);
-
-            if buf.len() >= CHUNK_MIN && (fp & CHUNK_MASK as u64) == 0 {
-                // Chunk boundary
-                chunks.push(hash_chunk(&buf));
-                buf.clear();
-            } else if buf.len() >= CHUNK_MAX {
-                // Hard limit — cut here
+            if boundary.push(b, buf.len()) {
                 chunks.push(hash_chunk(&buf));
                 buf.clear();
             }
         }
     }
-
-    // Remainder — the last chunk
-    if !buf.is_empty() {
+    if !buf.is_empty() || chunks.is_empty() {
         chunks.push(hash_chunk(&buf));
     }
-
     Ok(chunks)
 }
 
@@ -114,79 +95,146 @@ fn hash_chunk(data: &[u8]) -> Chunk {
     }
 }
 
-/// Read the given chunks and reassemble the file.
-/// Chunks are read from `chunks_dir` in the order given by `hashes`.
-pub fn reassemble(chunks_dir: &std::path::Path, hashes: &[String]) -> Result<Vec<u8>> {
-    let mut out = Vec::new();
-    for h in hashes {
-        let path = chunks_dir.join(h);
-        let data = std::fs::read(&path).map_err(Error::Io)?;
-        out.extend_from_slice(&data);
-    }
-    Ok(out)
+/// A chunked snapshot prepared in ONE pass over the file: the whole-file hash,
+/// the chunk list, and the content of every chunk not yet in the store staged
+/// in a temp file next to its final place.
+///
+/// Hash and content come from the same bytes, so a chunk can never end up
+/// stored under somebody else's hash — the previous design read the file three
+/// times (hash, boundaries, copy) and silently stored wrong data if the file
+/// changed in between. Temp files are only renamed into place by [`commit`]
+/// once the version rows exist (C4), so the garbage collector never sees a
+/// chunk without a reference.
+///
+/// [`commit`]: Staged::commit
+pub struct Staged {
+    pub file_hash: String,
+    pub chunks: Vec<Chunk>,
+    temps: Vec<Option<PathBuf>>,
 }
 
-/// Store chunks on disk. For each chunk: if the file already exists —
-/// skip it (content-addressed storage).
-///
-/// The source file is streamed into chunks in portions, without loading it
-/// fully into memory. This used to be `std::fs::read(path)`, which for files
-/// of 15 MB+ gave a memory peak equal to the file size (and the chunked
-/// strategy applies precisely to large files — theoretically up to gigabytes).
-/// Now we keep a single `File` open and copy exactly `chunk.size` bytes per
-/// chunk via `io::copy(file.take(n), out)`.
-pub fn store_chunks(
-    chunks_dir: &std::path::Path,
-    path: &str,
-    chunks: &[Chunk],
-) -> Result<()> {
+/// Read `path` once and stage its chunks under `chunks_dir`. Fails if the file
+/// changed while it was being read (size or mtime differ), so a torn snapshot
+/// is never recorded.
+pub fn stage_file(path: &str, chunks_dir: &Path) -> Result<Staged> {
     std::fs::create_dir_all(chunks_dir).map_err(Error::Io)?;
-
-    // Empty file — write no chunk, but the DB row will still be created
-    if chunks.len() == 1 && chunks[0].size == 0 {
-        return Ok(());
-    }
-
     let mut file = File::open(path).map_err(Error::Io)?;
+    let before = file.metadata().map_err(Error::Io)?;
 
-    for chunk in chunks {
-        let chunk_path = chunks_dir.join(&chunk.hash);
-        // chunk.size is i64, but chunks are never negative (the chunker
-        // guarantees size >= 0). Cast to u64 for take()/seek().
-        let chunk_size = chunk.size.max(0) as u64;
+    let mut staged = Staged { file_hash: String::new(), chunks: Vec::new(), temps: Vec::new() };
+    let mut file_hasher = blake3::Hasher::new();
+    let mut buf = Vec::with_capacity(CHUNK_MAX);
+    let mut boundary = Boundary::new();
+    let mut read_buf = vec![0u8; 256 * 1024];
+    let mut total: u64 = 0;
 
-        if chunk_path.exists() {
-            // Chunk is already stored — skip it, but advance the file position
-            // so the next chunk is read from the correct offset.
-            file.seek(SeekFrom::Current(chunk.size))
-                .map_err(Error::Io)?;
-            continue;
+    let res: Result<()> = (|| {
+        loop {
+            let n = file.read(&mut read_buf).map_err(Error::Io)?;
+            if n == 0 {
+                break;
+            }
+            total += n as u64;
+            file_hasher.update(&read_buf[..n]);
+            for &b in &read_buf[..n] {
+                buf.push(b);
+                if boundary.push(b, buf.len()) {
+                    staged.stage(chunks_dir, &buf)?;
+                    buf.clear();
+                }
+            }
         }
-
-        // Copy exactly chunk_size bytes into the new file. take(n) caps the
-        // read at n bytes; io::copy copies until the source returns EOF
-        // (for take, that is when the limit is reached). Thus copied equals
-        // chunk_size unless the source file turned out shorter than expected.
-        let mut out = std::fs::File::create(&chunk_path).map_err(Error::Io)?;
-        let copied = io::copy(&mut (&mut file).take(chunk_size), &mut out).map_err(Error::Io)?;
-        // Explicit flush + drop to close the file and flush buffers BEFORE we
-        // read chunk_path downstream (otherwise on Windows we can hit a
-        // sharing violation).
-        out.flush().map_err(Error::Io)?;
-        drop(out);
-
-        if copied != chunk_size {
-            // The file turned out shorter than the sum of chunk sizes — remove
-            // the partially written file and return an error.
-            let _ = std::fs::remove_file(&chunk_path);
-            return Err(Error::Operation(format!(
-                "chunk extends past end of file: requested {} bytes, read {}",
-                chunk_size, copied
-            )));
+        if !buf.is_empty() || staged.chunks.is_empty() {
+            staged.stage(chunks_dir, &buf)?;
         }
+        let after = std::fs::metadata(path).map_err(Error::Io)?;
+        if total != before.len()
+            || after.len() != before.len()
+            || after.modified().ok() != before.modified().ok()
+        {
+            return Err(Error::Operation(
+                "the file changed while its snapshot was being taken; try again".into(),
+            ));
+        }
+        Ok(())
+    })();
+    if let Err(e) = res {
+        staged.discard();
+        return Err(e);
+    }
+    staged.file_hash = file_hasher.finalize().to_hex().to_string();
+    Ok(staged)
+}
+
+impl Staged {
+    fn stage(&mut self, chunks_dir: &Path, data: &[u8]) -> Result<()> {
+        let chunk = hash_chunk(data);
+        let dest = chunks_dir.join(&chunk.hash);
+        // Already stored (content-addressed) or seen earlier in this file.
+        let known = dest.exists() || self.chunks.iter().any(|c| c.hash == chunk.hash);
+        let tmp = if known || data.is_empty() {
+            None
+        } else {
+            Some(atomic::write_temp(&dest, data).map_err(Error::Io)?)
+        };
+        self.chunks.push(chunk);
+        self.temps.push(tmp);
+        Ok(())
     }
 
-    Ok(())
+    /// Move the staged chunks into place. Call after the version and chunk rows
+    /// are inserted. A chunk that was skipped because it already existed must
+    /// still be there — if the GC removed it meanwhile, the snapshot fails and
+    /// the caller rolls the rows back.
+    pub fn commit(mut self, chunks_dir: &Path) -> Result<()> {
+        for (chunk, tmp) in self.chunks.iter().zip(self.temps.iter_mut()) {
+            let dest = chunks_dir.join(&chunk.hash);
+            match tmp.take() {
+                Some(t) => atomic::commit_temp(&t, &dest).map_err(Error::Io)?,
+                None if chunk.size > 0 && !dest.exists() => {
+                    return Err(Error::Operation(format!(
+                        "chunk {} disappeared during the snapshot; try again",
+                        chunk.hash
+                    )));
+                }
+                None => {}
+            }
+        }
+        Ok(())
+    }
+
+    /// Remove every staged temp file (on error).
+    pub fn discard(&mut self) {
+        for t in self.temps.iter_mut().filter_map(Option::take) {
+            let _ = std::fs::remove_file(t);
+        }
+    }
+}
+
+impl Drop for Staged {
+    fn drop(&mut self) {
+        self.discard();
+    }
+}
+
+/// Stream the given chunks, in order, into `out`, verifying each chunk's size
+/// and BLAKE3 hash — a damaged or substituted chunk aborts the restore instead
+/// of silently producing a corrupt file. Memory use is one chunk (≤ 8 MB),
+/// independent of the file size. Returns the number of bytes written.
+pub fn reassemble_into<W: Write>(chunks_dir: &Path, chunks: &[(String, i64)], out: &mut W) -> Result<u64> {
+    let mut written = 0u64;
+    for (hash, size) in chunks {
+        if *size == 0 {
+            continue; // the empty chunk of an empty file is never stored
+        }
+        let data = std::fs::read(chunks_dir.join(hash)).map_err(Error::Io)?;
+        if data.len() as i64 != *size || blake3::hash(&data).to_hex().as_str() != hash {
+            return Err(Error::Operation(format!("chunk {hash} is damaged; the version cannot be restored")));
+        }
+        out.write_all(&data).map_err(Error::Io)?;
+        written += data.len() as u64;
+    }
+    Ok(written)
 }
 
 /// Table of random 64-bit values for Buzhash.
@@ -245,21 +293,80 @@ mod tests {
         }
     }
 
-    #[test]
-    fn store_and_reassemble_roundtrip() {
-        let data = b"Hello, chunking world!";
+    fn random_file(size: usize, seed: u32) -> (NamedTempFile, Vec<u8>) {
+        let mut data = Vec::with_capacity(size);
+        let mut x = seed;
+        for _ in 0..size {
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            data.push((x & 0xFF) as u8);
+        }
         let mut f = NamedTempFile::new().unwrap();
-        f.write_all(data).unwrap();
+        f.write_all(&data).unwrap();
         f.flush().unwrap();
+        (f, data)
+    }
 
-        let chunks = chunk_file(f.path().to_str().unwrap()).unwrap();
+    fn restore(chunks_dir: &Path, staged_chunks: &[Chunk]) -> Result<Vec<u8>> {
+        let list: Vec<(String, i64)> = staged_chunks.iter().map(|c| (c.hash.clone(), c.size)).collect();
+        let mut out = Vec::new();
+        reassemble_into(chunks_dir, &list, &mut out)?;
+        Ok(out)
+    }
+
+    #[test]
+    fn stage_commit_reassemble_roundtrip() {
+        let (f, data) = random_file(2 * 1024 * 1024 + 7, 0xCAFEBABE);
         let dir = tempfile::tempdir().unwrap();
         let chunks_dir = dir.path().join("chunks");
-        store_chunks(&chunks_dir, f.path().to_str().unwrap(), &chunks).unwrap();
+        let staged = stage_file(f.path().to_str().unwrap(), &chunks_dir).unwrap();
+        assert_eq!(staged.file_hash, blake3::hash(&data).to_hex().to_string());
+        assert_eq!(staged.chunks.iter().map(|c| c.size).sum::<i64>(), data.len() as i64);
+        let chunks = staged.chunks.clone();
+        staged.commit(&chunks_dir).unwrap();
+        assert_eq!(restore(&chunks_dir, &chunks).unwrap(), data);
 
-        let hashes: Vec<String> = chunks.iter().map(|c| c.hash.clone()).collect();
-        let reassembled = reassemble(&chunks_dir, &hashes).unwrap();
-        assert_eq!(reassembled, data);
+        // A second snapshot of the same content stages nothing new and still restores.
+        let again = stage_file(f.path().to_str().unwrap(), &chunks_dir).unwrap();
+        assert!(again.temps.iter().all(Option::is_none));
+        again.commit(&chunks_dir).unwrap();
+        assert_eq!(restore(&chunks_dir, &chunks).unwrap(), data);
+    }
+
+    #[test]
+    fn dropped_stage_leaves_no_temp_files() {
+        let (f, _) = random_file(1024 * 1024, 0xDEADBEEF);
+        let dir = tempfile::tempdir().unwrap();
+        let chunks_dir = dir.path().join("chunks");
+        drop(stage_file(f.path().to_str().unwrap(), &chunks_dir).unwrap());
+        assert_eq!(std::fs::read_dir(&chunks_dir).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn reassemble_rejects_a_damaged_chunk() {
+        let (f, _) = random_file(600 * 1024, 0x1234_5678);
+        let dir = tempfile::tempdir().unwrap();
+        let chunks_dir = dir.path().join("chunks");
+        let staged = stage_file(f.path().to_str().unwrap(), &chunks_dir).unwrap();
+        let chunks = staged.chunks.clone();
+        staged.commit(&chunks_dir).unwrap();
+        let victim = chunks_dir.join(&chunks[0].hash);
+        let mut bytes = std::fs::read(&victim).unwrap();
+        bytes[0] ^= 0xFF;
+        std::fs::write(&victim, bytes).unwrap();
+        assert!(restore(&chunks_dir, &chunks).is_err());
+    }
+
+    #[test]
+    fn stage_matches_chunk_file_boundaries() {
+        let (f, _) = random_file(3 * 1024 * 1024, 0xBADC0DE);
+        let dir = tempfile::tempdir().unwrap();
+        let staged = stage_file(f.path().to_str().unwrap(), &dir.path().join("c")).unwrap();
+        let plain = chunk_file(f.path().to_str().unwrap()).unwrap();
+        let a: Vec<_> = staged.chunks.iter().map(|c| c.hash.clone()).collect();
+        let b: Vec<_> = plain.iter().map(|c| c.hash.clone()).collect();
+        assert_eq!(a, b);
     }
 
     /// Regression for bug #5: a file must chunk correctly under buffered
@@ -267,117 +374,12 @@ mod tests {
     /// of the buffer size and is several times larger than it.
     #[test]
     fn chunk_file_handles_large_non_aligned_file() {
-        // 1 MB + 1 byte — definitely not a multiple of the 256 KB read buffer
         let size = 1024 * 1024 + 1;
-        let mut data = Vec::with_capacity(size);
-        let mut x: u32 = 0xDEAD_BEEF;
-        for _ in 0..size {
-            // Pseudo-random bytes so chunk boundaries do not fall predictably
-            x ^= x << 13;
-            x ^= x >> 17;
-            x ^= x << 5;
-            data.push((x & 0xFF) as u8);
-        }
-
-        let mut f = NamedTempFile::new().unwrap();
-        f.write_all(&data).unwrap();
-        f.flush().unwrap();
-
+        let (f, _) = random_file(size, 0xDEAD_BEEF);
         let chunks = chunk_file(f.path().to_str().unwrap()).unwrap();
-
-        // The sum of chunk sizes must equal the file size
         let total: i64 = chunks.iter().map(|c| c.size).sum();
         assert_eq!(total, size as i64, "sum of chunk sizes must match the file size");
-
-        // Every chunk has a non-zero size (apart from a possible empty one, but data > 0)
         assert!(chunks.iter().all(|c| c.size > 0));
-
-        // No chunk exceeds CHUNK_MAX
         assert!(chunks.iter().all(|c| c.size as usize <= CHUNK_MAX));
-    }
-
-    /// Regression for bug #6: store_chunks must stream the file into chunks
-    /// without loading it fully into memory. We check a roundtrip on a file
-    /// that is deliberately larger than the old 256 KB block (using 2 MB to get
-    /// several chunks), and idempotency: a repeated store_chunks call must
-    /// neither overwrite existing chunks nor corrupt the data.
-    #[test]
-    fn store_chunks_streams_and_is_idempotent() {
-        // 2 MB of pseudo-random data — yields several chunks by default
-        // (target size ~4 MB, min 256 KB, but on random data boundaries may
-        // fall earlier — the point is the file is larger than the old buffer).
-        let size = 2 * 1024 * 1024;
-        let mut data = Vec::with_capacity(size);
-        let mut x: u32 = 0xCAFEBABE;
-        for _ in 0..size {
-            x ^= x << 13;
-            x ^= x >> 17;
-            x ^= x << 5;
-            data.push((x & 0xFF) as u8);
-        }
-
-        let mut f = NamedTempFile::new().unwrap();
-        f.write_all(&data).unwrap();
-        f.flush().unwrap();
-
-        let chunks = chunk_file(f.path().to_str().unwrap()).unwrap();
-        assert!(!chunks.is_empty(), "expect at least one chunk");
-
-        let dir = tempfile::tempdir().unwrap();
-        let chunks_dir = dir.path().join("chunks");
-
-        // First call — writes all chunks
-        store_chunks(&chunks_dir, f.path().to_str().unwrap(), &chunks).unwrap();
-
-        // Remember each chunk file's mtime (on Windows mtime precision is
-        // limited, so the second store_chunks just must not fail).
-        let hashes: Vec<String> = chunks.iter().map(|c| c.hash.clone()).collect();
-        let reassembled = reassemble(&chunks_dir, &hashes).unwrap();
-        assert_eq!(reassembled, data, "first roundtrip must yield the original data");
-
-        // Second call — all chunks already exist and must be skipped.
-        // Verify the data is unchanged.
-        store_chunks(&chunks_dir, f.path().to_str().unwrap(), &chunks).unwrap();
-        let reassembled2 = reassemble(&chunks_dir, &hashes).unwrap();
-        assert_eq!(reassembled2, data, "a repeated store_chunks must not corrupt the data");
-    }
-
-    /// Regression for bug #6: store_chunks must return an error if the file
-    /// size is smaller than the sum of chunk sizes (e.g. the file was truncated
-    /// between chunk_file and store_chunks). The partially written chunk file
-    /// must be removed.
-    #[test]
-    fn store_chunks_errors_on_short_source_file() {
-        // Create a "long" file and chunk it
-        let long_data = vec![0x77u8; 1024 * 1024]; // 1 MB
-        let mut f_long = NamedTempFile::new().unwrap();
-        f_long.write_all(&long_data).unwrap();
-        f_long.flush().unwrap();
-        let chunks = chunk_file(f_long.path().to_str().unwrap()).unwrap();
-
-        // Now create a "short" file with the same name — store_chunks must
-        // detect the mismatch and return an error.
-        let dir = tempfile::tempdir().unwrap();
-        let chunks_dir = dir.path().join("chunks");
-
-        let mut f_short = NamedTempFile::new().unwrap();
-        f_short.write_all(&[0u8; 16]).unwrap(); // only 16 bytes instead of a megabyte
-        f_short.flush().unwrap();
-
-        let result = store_chunks(&chunks_dir, f_short.path().to_str().unwrap(), &chunks);
-        assert!(result.is_err(), "expected an error on a short source file");
-
-        // Every chunk that managed to be created must be removed (or none was
-        // created) — verify the chunks dir is either empty or contains only
-        // partially written files that we later removed.
-        // In practice: the first chunk requests size > 16 bytes, gets 16, fails.
-        if chunks_dir.exists() {
-            let entries: Vec<_> = std::fs::read_dir(&chunks_dir).unwrap().collect();
-            for entry in entries {
-                let p = entry.unwrap().path();
-                // A partially written chunk must not remain
-                assert!(!p.exists(), "a partially written chunk file must not remain: {:?}", p);
-            }
-        }
     }
 }

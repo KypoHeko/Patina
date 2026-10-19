@@ -150,28 +150,16 @@ fn do_snapshot(db: &std::sync::Mutex<rusqlite::Connection>, versions_dir: &Path,
         // in `snapshot_version` after `do_snapshot`.
     } else {
         // ── chunked strategy ──
-        // The hash is needed for the "did the file change" check; the chunker
-        // streams the content. This is a second pass over the file (see the
-        // deferred bugs #5–#7 about the chunker).
-        let hash = hasher::hash_file(path).map_err(Error::Io)?;
+        // ONE pass over the file: whole-file hash, chunk boundaries and the
+        // content of new chunks (staged in temp files) all come from the same
+        // bytes, so a chunk is never stored under a hash that does not match
+        // its content, and a file modified during the snapshot is rejected.
+        let staged = chunker::stage_file(path, &chunks_dir)?;
+        let hash = staged.file_hash.clone();
 
-        // If the state is already saved in some version — skip (short lock).
-        // has_hash_for_path, so we do not breed duplicates after a restore.
-        {
-            let conn = db.lock().map_err(|_| Error::Operation("DB lock poisoned".into()))?;
-            if versions::has_hash_for_path(&conn, path, &hash)? {
-                return Ok(());
-            }
-        }
-
-        // Compute chunk boundaries outside the lock (reads the file as a stream).
-        let chunks = chunker::chunk_file(path)?;
-
-        // C4: the version and its chunk rows are inserted BEFORE chunks are
-        // written to disk. So each chunk's refcount is non-zero by the time the
-        // chunk appears on disk, and a concurrent GC will not delete it as
-        // orphaned. The chunks themselves (potentially gigabytes) are written
-        // below, OUTSIDE the lock.
+        // C4: the version and its chunk rows are inserted BEFORE the staged
+        // chunks are renamed into place, so the GC never sees an unreferenced
+        // chunk. If the state is already saved, the staged temps are dropped.
         let new_id = {
             let conn = db.lock().map_err(|_| Error::Operation("DB lock poisoned".into()))?;
             if versions::has_hash_for_path(&conn, path, &hash)? {
@@ -179,13 +167,11 @@ fn do_snapshot(db: &std::sync::Mutex<rusqlite::Connection>, versions_dir: &Path,
             }
             let label = versions::next_label(&conn, path)?;
             let vid = versions::insert(&conn, path, now_millis(), file_size as i64, &hash, &label, "chunked", None)?;
-            versions::insert_chunks(&conn, vid, &chunks)?;
+            versions::insert_chunks(&conn, vid, &staged.chunks)?;
             vid
         };
 
-        // Materialize the chunks outside the lock. On error, roll back the
-        // version row (delete also removes its version_chunks).
-        if let Err(e) = chunker::store_chunks(&chunks_dir, path, &chunks) {
+        if let Err(e) = staged.commit(&chunks_dir) {
             let conn = db.lock().map_err(|_| Error::Operation("DB lock poisoned".into()))?;
             let _ = versions::delete(&conn, new_id);
             return Err(e);
@@ -365,9 +351,21 @@ fn do_restore(
                 let conn = db.lock().map_err(|_| Error::Operation("DB lock poisoned".into()))?;
                 versions::get_chunks(&conn, id)?
             };
-            let hashes: Vec<String> = chunk_list.iter().map(|(h, _)| h.clone()).collect();
-            let data = chunker::reassemble(&chunks_dir, &hashes)?;
-            atomic_write(Path::new(&v.path), &data)?;
+            // Stream the verified chunks into a temp file next to the target
+            // (memory stays at one chunk even for multi-gigabyte files), then
+            // rename it over the live file.
+            let dest = Path::new(&v.path);
+            let tmp = atomic::temp_sibling(dest).map_err(Error::Io)?;
+            let res = (|| -> Result<()> {
+                let mut f = std::fs::File::create(&tmp).map_err(Error::Io)?;
+                chunker::reassemble_into(&chunks_dir, &chunk_list, &mut f)?;
+                f.sync_all().map_err(Error::Io)
+            })();
+            if let Err(e) = res {
+                let _ = std::fs::remove_file(&tmp);
+                return Err(e);
+            }
+            atomic::commit_temp(&tmp, dest).map_err(Error::Io)?;
         }
         _ => {
             return Err(Error::Operation(format!("unknown strategy: {}", v.strategy)));
@@ -679,5 +677,27 @@ mod tests {
         do_snapshot(&env.db, &env.versions_dir, &p).unwrap();
         assert_eq!(collect_garbage(&env.db, &env.versions_dir, 1).unwrap(), 0);
         assert_eq!(versions_of(&env, &p).len(), 2);
+    }
+
+    #[test]
+    fn chunked_snapshot_restore_roundtrip() {
+        let env = env();
+        let p = env.root.join("big.bin");
+        let mut data = Vec::with_capacity(CHUNK_THRESHOLD as usize + 4096);
+        let mut x: u64 = 0x9E37_79B9_7F4A_7C15;
+        while data.len() < CHUNK_THRESHOLD as usize + 4096 {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            data.extend_from_slice(&x.to_le_bytes());
+        }
+        std::fs::write(&p, &data).unwrap();
+        let ps = p.to_string_lossy().into_owned();
+        do_snapshot(&env.db, &env.versions_dir, &ps).unwrap();
+        let v = versions_of(&env, &ps).remove(0);
+        assert_eq!(v.strategy, "chunked");
+        std::fs::write(&p, b"overwritten").unwrap();
+        do_restore(&env.db, &env.versions_dir, v.id).unwrap();
+        assert_eq!(std::fs::read(&p).unwrap(), data);
     }
 }
