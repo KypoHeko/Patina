@@ -38,10 +38,13 @@ export class CommandPalette extends Component {
     this._tagSeq = 0;
     this._scanSeq = 0;
     this._indexing = false;
-    this._indexedRoots = new Set();
+    // The backend keeps ONE live (watched) index root. Mirror it here: a root
+    // remembered forever in a Set went stale once another root replaced it —
+    // its watcher was gone, but the palette never asked to re-index it.
+    this._liveRoot = null;
+    this._contentEver = false; // the backend content index, once on, stays on
     this._treeBase = null;
     this._treeTimer = null;
-    this._contentIndexed = new Set();
     this._contentReady = new Set();
     this._contentTimer = null;
     this._idxTimer = null;
@@ -118,7 +121,8 @@ export class CommandPalette extends Component {
     const root = this._root;
     if (this._scope === 'content') {
       startIndex(root, true, true).catch(() => {});
-      this._contentIndexed.add(root);
+      this._liveRoot = root;
+      this._contentEver = true;
       this._contentReady.delete(root);
       this.runContentQuery();
       return;
@@ -126,7 +130,7 @@ export class CommandPalette extends Component {
     if (this._scope !== 'tree') return;
     this._treeBase = null;
     startIndex(root, false, true).catch(() => {});
-    this._indexedRoots.add(root);
+    this._liveRoot = root;
     this.runTreeQuery();
   }
 
@@ -162,6 +166,16 @@ export class CommandPalette extends Component {
         this.runContentQuery(true);
       }
     }, 200);
+  }
+
+  /** Make `root` the backend's live index root (and enable content if asked).
+   *  Cheap to call repeatedly: only a root switch or the first content request
+   *  reaches the backend, which then replays the journal or rebuilds. */
+  ensureLive(root, content = false) {
+    if (root === this._liveRoot && (!content || this._contentEver)) return Promise.resolve();
+    this._liveRoot = root;
+    if (content) this._contentEver = true;
+    return startIndex(root, content).catch(() => {});
   }
 
   activate(entry) {

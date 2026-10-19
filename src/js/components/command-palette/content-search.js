@@ -14,7 +14,6 @@
 // wedge the UI. Mixed into CommandPalette.prototype.
 
 import { searchContent } from '../../api/content.js';
-import { startIndex } from '../../api/indexing.js';
 import { t } from '../../lib/i18n.js';
 
 export const ContentSearchMixin = {
@@ -30,11 +29,8 @@ export const ContentSearchMixin = {
   // completes.
   ensureContentIndexed(root) {
     // If we already know the content index is ready, skip.
-    if (this._contentReady.has(root)) return Promise.resolve();
-    if (!this._contentIndexed.has(root)) {
-      this._contentIndexed.add(root);
-      startIndex(root, true).catch(() => {});
-    }
+    if (this._contentReady.has(root) && this._liveRoot === root) return Promise.resolve();
+    this.ensureLive(root, true);
     return Promise.resolve();
   },
 

@@ -61,3 +61,26 @@ describe('CommandPalette — content search clears loading on empty results', ()
     expect(update).not.toHaveBeenCalled();
   });
 });
+
+describe('CommandPalette — live index root', () => {
+  it('re-indexes a root again after another root replaced it', async () => {
+    const { startIndex } = await import('../api/indexing.js');
+    const palette = openPalette();
+    startIndex.mockClear();
+    palette.ensureIndexed('C:\\A');
+    palette.ensureIndexed('C:\\A'); // same live root — nothing to do
+    palette.ensureIndexed('C:\\B');
+    palette.ensureIndexed('C:\\A'); // A was replaced by B on the backend
+    expect(startIndex.mock.calls.map((c) => c[0])).toEqual(['C:\\A', 'C:\\B', 'C:\\A']);
+  });
+
+  it('asks for the content index once', async () => {
+    const { startIndex } = await import('../api/indexing.js');
+    const palette = openPalette();
+    startIndex.mockClear();
+    palette.ensureIndexed('C:\\A');
+    palette.ensureLive('C:\\A', true);
+    palette.ensureLive('C:\\A', true);
+    expect(startIndex.mock.calls).toEqual([['C:\\A', false], ['C:\\A', true]]);
+  });
+});

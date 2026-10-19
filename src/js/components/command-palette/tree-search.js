@@ -2,7 +2,6 @@
 // the persistent file index. Mixed into CommandPalette.prototype.
 
 import { searchFiles } from '../../api/fs.js';
-import { startIndex } from '../../api/indexing.js';
 import { t } from '../../lib/i18n.js';
 
 const TREE_LIMIT = 20000; // ceiling for the subtree walk
@@ -18,9 +17,7 @@ export const TreeSearchMixin = {
   },
 
   ensureIndexed(root) {
-    if (this._indexedRoots.has(root)) return Promise.resolve();
-    this._indexedRoots.add(root);
-    return startIndex(root, false).catch(() => {});
+    return this.ensureLive(root, false);
   },
 
   // Normal mode — server-side substring search (little data over IPC).
