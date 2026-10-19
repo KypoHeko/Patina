@@ -110,20 +110,6 @@ fn build_match(q: &str) -> String {
         .join(" ")
 }
 
-/// Count content rows for a subtree. Used by `reindex_content` to return
-/// the number of indexed files after delegating to `build_all`.
-pub fn count_subtree(conn: &Connection, root: &str) -> Result<usize> {
-    let root = normalize(root);
-    let root = root.as_str();
-    let (_, prefix, upper) = subtree_bounds(root);
-    let count: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM content_fts WHERE path = ?1 OR (path >= ?2 AND path < ?3)",
-        (root, &prefix, &upper),
-        |r| r.get(0),
-    )?;
-    Ok(count as usize)
-}
-
 /// Update a single file's contents in place (delete+insert: FTS5 has no upsert).
 pub fn upsert_one(conn: &Connection, path: &str, body: &str) -> Result<()> {
     let path = normalize(path);

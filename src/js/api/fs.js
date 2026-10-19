@@ -25,11 +25,6 @@ export function readPreview(path) {
   return invoke('read_preview', { path });
 }
 
-/** Reindex a subtree in the persistent index. Returns the number of rows. */
-export function reindexTree(root) {
-  return invoke('reindex_tree', { root });
-}
-
 /** Search the persistent index: up to limit subtree rows. */
 export function searchFiles(root, query, limit = 20000) {
   return invoke('search_files', { root, query, limit });

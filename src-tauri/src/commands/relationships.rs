@@ -1,7 +1,6 @@
 //! File relationship commands: manual links + graph construction.
 
 use std::collections::HashMap;
-use std::time::UNIX_EPOCH;
 
 use rusqlite::Connection;
 use serde::Serialize;
@@ -9,10 +8,8 @@ use tauri::{AppHandle, Manager};
 
 use crate::error::{Error, Result};
 use crate::index::edges::{self, Edge};
-use crate::index::files;
 use crate::index::file_index;
 use crate::index::path_key::{self, normalize};
-use crate::indexer::hasher;
 use crate::state::AppState;
 
 #[tauri::command]
@@ -121,68 +118,4 @@ pub async fn file_graph(app: AppHandle, seeds: Vec<String>, hops: usize) -> Resu
     })
     .await
     .map_err(|e| Error::Operation(format!("file_graph interrupted: {e}")))?
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct FileHash {
-    pub path: String,
-    pub hash: String,
-    pub cached: bool,
-}
-
-#[tauri::command]
-pub async fn hash_graph_files(app: AppHandle, paths: Vec<String>) -> Result<Vec<FileHash>> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let state = app.state::<AppState>();
-        let mut cached: Vec<(String, i64, u64, Option<String>)> = Vec::with_capacity(paths.len());
-        {
-            let conn = state.db_read()?;
-            for path in &paths {
-                let meta = std::fs::metadata(path);
-                let mtime = meta
-                    .as_ref()
-                    .ok()
-                    .and_then(|m| m.modified().ok())
-                    .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-                    .map(|d| d.as_millis() as i64);
-                let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
-                let hash = if let Some(mt) = mtime {
-                    files::cached_hash(&conn, path, mt, size).ok().flatten()
-                } else {
-                    None
-                };
-                cached.push((path.clone(), mtime.unwrap_or(0), size, hash));
-            }
-        }
-
-        let mut fresh: Vec<(String, i64, u64, String)> = Vec::new();
-        let mut results: Vec<FileHash> = Vec::with_capacity(cached.len());
-        for (path, mtime, size, hash) in &cached {
-            if let Some(h) = hash {
-                results.push(FileHash { path: path.clone(), hash: h.clone(), cached: true });
-            } else {
-                match hasher::hash_file(path) {
-                    Ok(h) => {
-                        fresh.push((path.clone(), *mtime, *size, h.clone()));
-                        results.push(FileHash { path: path.clone(), hash: h, cached: false });
-                    }
-                    Err(_) => {
-                        results.push(FileHash { path: path.clone(), hash: String::new(), cached: false });
-                    }
-                }
-            }
-        }
-
-        if !fresh.is_empty() {
-            let conn = state.db()?;
-            for (path, mtime, size, hash) in &fresh {
-                let _ = files::store_hash(&conn, path, *size, *mtime, hash);
-            }
-        }
-
-        Ok(results)
-    })
-    .await
-    .map_err(|e| Error::Operation(format!("hash_graph_files interrupted: {e}")))?
 }

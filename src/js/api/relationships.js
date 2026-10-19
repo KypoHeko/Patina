@@ -16,9 +16,3 @@ export function removeRelationship(a, b) {
 export function fileGraph(seeds, hops = 1) {
   return invoke('file_graph', { seeds, hops });
 }
-
-/** Hash the graph's files (BLAKE3). Returns [{ path, hash, cached }].
- *  Caches the result in the files table (invalidated by mtime). */
-export function hashGraphFiles(paths) {
-  return invoke('hash_graph_files', { paths });
-}
