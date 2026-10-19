@@ -145,16 +145,13 @@ pub fn purge(conn: &Connection, path: &str) -> Result<()> {
     Ok(())
 }
 
-/// Number of files per tag.
-pub fn counts(conn: &Connection) -> Result<HashMap<String, i64>> {
-    let mut stmt = conn.prepare("SELECT tag_id, COUNT(*) FROM file_tags GROUP BY tag_id")?;
-    let mut map: HashMap<String, i64> = HashMap::new();
-    let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?;
-    for row in rows {
-        let (id, c) = row?;
-        map.insert(id, c);
-    }
-    Ok(map)
+/// Every assignment as (path for the file system, tag id).
+pub fn all(conn: &Connection) -> Result<Vec<(String, String)>> {
+    let mut stmt = conn.prepare("SELECT COALESCE(display_path, path), tag_id FROM file_tags")?;
+    let rows = stmt
+        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    Ok(rows)
 }
 
 #[cfg(test)]
@@ -269,5 +266,11 @@ mod tests {
         relink(&conn, "/a/x.txt", "/b/x.txt").unwrap();
         assert_eq!(rows(&conn), vec![(normalize("/b/x.txt"), "done".to_string())]);
     }
-}
 
+    #[test]
+    fn all_lists_assignments_with_original_paths() {
+        let conn = mem();
+        assign(&conn, "/x/A.txt", "done").unwrap();
+        assert_eq!(all(&conn).unwrap(), vec![("/x/A.txt".to_string(), "done".to_string())]);
+    }
+}

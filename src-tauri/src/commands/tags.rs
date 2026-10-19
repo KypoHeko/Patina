@@ -71,12 +71,24 @@ pub async fn list_tag(app: AppHandle, tag_id: String) -> Result<Vec<FileEntry>> 
     .map_err(|e| Error::Operation(format!("tag listing interrupted: {e}")))?
 }
 
+/// Number of EXISTING files per tag. Files deleted or renamed outside Patina
+/// keep their tag rows (they may come back, e.g. a removable drive), but they
+/// must not inflate the sidebar counters — the tag view already hides them.
 #[tauri::command]
 pub async fn tag_counts(app: AppHandle) -> Result<HashMap<String, i64>> {
-    tauri::async_runtime::spawn_blocking(move || {
+    tauri::async_runtime::spawn_blocking(move || -> Result<HashMap<String, i64>> {
         let state = app.state::<AppState>();
-        let conn = state.db_read()?;
-        tags::counts(&conn)
+        let rows = {
+            let conn = state.db_read()?;
+            tags::all(&conn)?
+        };
+        let mut counts: HashMap<String, i64> = HashMap::new();
+        for (path, tag) in rows {
+            if std::path::Path::new(&path).exists() {
+                *counts.entry(tag).or_default() += 1;
+            }
+        }
+        Ok(counts)
     })
     .await
     .map_err(|e| Error::Operation(format!("tag counts interrupted: {e}")))?
