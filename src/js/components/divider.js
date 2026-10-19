@@ -23,13 +23,27 @@ export class Divider extends Component {
     this._dragging = true;
     document.body.classList.add('is-resizing');
 
-    const onMove = (ev) => {
-      if (!this._dragging) return;
+    // mousemove fires far more often than frames are painted (and a store
+    // update re-lays out both panes): write at most once per frame, with the
+    // latest pointer position.
+    let lastX = e.clientX;
+    let raf = 0;
+    const apply = () => {
+      raf = 0;
       const rect = this.workspace.getBoundingClientRect();
-      const ratio = (ev.clientX - rect.left) / rect.width;
+      const ratio = (lastX - rect.left) / rect.width;
       setSplitRatio(this.store, Math.min(MAX, Math.max(MIN, ratio)));
     };
+    const onMove = (ev) => {
+      if (!this._dragging) return;
+      lastX = ev.clientX;
+      if (!raf) raf = requestAnimationFrame(apply);
+    };
     const onUp = () => {
+      if (raf) {
+        cancelAnimationFrame(raf);
+        apply(); // land exactly where the pointer was released
+      }
       this._dragging = false;
       document.body.classList.remove('is-resizing');
       document.removeEventListener('mousemove', onMove);
