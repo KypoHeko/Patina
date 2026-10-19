@@ -194,6 +194,26 @@ mod tests {
         assert_eq!(names, vec!["50%off.txt".to_string()]);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn search_and_replace_from_filesystem_root() {
+        let mut c = mem();
+        let row = |p: &str, n: &str| IndexRow {
+            path: p.into(),
+            name: n.into(),
+            is_dir: false,
+            size: 1,
+            mtime: None,
+            ext: None,
+        };
+        replace_subtree(&mut c, "/", &[row("/home/u/report.txt", "report.txt")]).unwrap();
+        assert_eq!(search(&c, "/", "report", 10).unwrap().len(), 1);
+        // A rebuild of the root must drop rows for files that disappeared.
+        replace_subtree(&mut c, "/", &[]).unwrap();
+        let n: i64 = c.query_row("SELECT COUNT(*) FROM file_index", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 0);
+    }
+
     #[test]
     fn empty_query_returns_whole_subtree() {
         let c = mem();

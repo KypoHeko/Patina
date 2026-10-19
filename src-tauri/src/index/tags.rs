@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use rusqlite::Connection;
 
 use crate::error::Result;
-use crate::index::path_bounds::subtree_bounds;
+use crate::index::path_bounds::{remap, subtree_bounds};
 use crate::index::path_key::normalize;
 
 pub fn assign(conn: &Connection, path: &str, tag_id: &str) -> Result<()> {
@@ -79,7 +79,7 @@ pub fn relink(conn: &Connection, old: &str, new: &str) -> Result<()> {
     let new = normalize(new);
     let (old, new) = (old.as_str(), new.as_str());
 
-    let (sep, prefix, upper) = subtree_bounds(old);
+    let (_sep, prefix, upper) = subtree_bounds(old);
 
     let rows: Vec<(String, String)> = {
         let mut stmt = conn.prepare(
@@ -101,11 +101,7 @@ pub fn relink(conn: &Connection, old: &str, new: &str) -> Result<()> {
         let mut stmt = conn
             .prepare("UPDATE OR IGNORE file_tags SET path = ?1 WHERE path = ?2 AND tag_id = ?3")?;
         for (path, tag_id) in &rows {
-            let new_path = if path == old {
-                new.to_string()
-            } else {
-                format!("{new}{sep}{}", &path[prefix.len()..])
-            };
+            let new_path = remap(path, old, new).unwrap_or_else(|| path.clone());
             stmt.execute((&new_path, path, tag_id))?;
         }
         Ok(())
