@@ -6,14 +6,17 @@ use crate::error::Result;
 
 use crate::index::path_key::normalize;
 
-/// The cached hash, if present and the mtime matches.
-pub fn cached_hash(conn: &Connection, path: &str, mtime: i64) -> Result<Option<String>> {
+/// The cached hash, if present and BOTH mtime (Unix ms) and size still match.
+/// Size is part of the check: an mtime alone (formerly in whole seconds) can
+/// stay the same across a quick rewrite, and a stale hash here means two
+/// different files reported as duplicates — one of which the user may delete.
+pub fn cached_hash(conn: &Connection, path: &str, mtime: i64, size: u64) -> Result<Option<String>> {
     let path = normalize(path);
     let path = path.as_str();
     let r = conn
         .query_row(
-            "SELECT hash FROM files WHERE path = ?1 AND mtime = ?2 AND hash IS NOT NULL",
-            (path, mtime),
+            "SELECT hash FROM files WHERE path = ?1 AND mtime = ?2 AND size = ?3 AND hash IS NOT NULL",
+            (path, mtime, size as i64),
             |row| row.get::<_, String>(0),
         )
         .optional()?;

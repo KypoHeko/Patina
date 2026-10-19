@@ -145,10 +145,10 @@ pub async fn hash_graph_files(app: AppHandle, paths: Vec<String>) -> Result<Vec<
                     .ok()
                     .and_then(|m| m.modified().ok())
                     .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-                    .map(|d| d.as_secs() as i64);
+                    .map(|d| d.as_millis() as i64);
                 let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
                 let hash = if let Some(mt) = mtime {
-                    files::cached_hash(&conn, path, mt).ok().flatten()
+                    files::cached_hash(&conn, path, mt, size).ok().flatten()
                 } else {
                     None
                 };

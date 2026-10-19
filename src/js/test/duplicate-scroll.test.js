@@ -6,7 +6,7 @@ import { initialTabsState } from '../state/tabs.js';
 import { deleteEntries } from '../api/fs.js';
 import { findDuplicates } from '../api/duplicates.js';
 
-vi.mock('../api/duplicates.js', () => ({ findDuplicates: vi.fn() }));
+vi.mock('../api/duplicates.js', () => ({ findDuplicates: vi.fn(), cancelDuplicates: vi.fn().mockResolvedValue(undefined) }));
 vi.mock('../api/fs.js', () => ({ deleteEntries: vi.fn().mockResolvedValue(undefined) }));
 vi.mock('../api/events.js', () => ({ onEvent: vi.fn().mockResolvedValue(() => {}) }));
 
@@ -73,5 +73,22 @@ describe('DuplicatePanel — scroll position survives Keep/Delete', () => {
 
     expect(mount.querySelector('.dup__body').scrollTop).toBe(320);
     expect(panel._groups).toHaveLength(39);
+  });
+});
+
+describe('DuplicatePanel — stale scans', () => {
+  it('a scan that finishes after the panel was reopened does not overwrite the new one', async () => {
+    const { panel } = setup();
+    const resolvers = [];
+    findDuplicates.mockReset();
+    findDuplicates.mockImplementation(() => new Promise((r) => resolvers.push(r)));
+    panel.open(); // scan #1
+    panel.close();
+    panel.open(); // scan #2
+    resolvers[1](groups(1));
+    await tick();
+    resolvers[0](groups(5)); // the old scan resolves last
+    await tick();
+    expect(panel._groups).toHaveLength(1);
   });
 });

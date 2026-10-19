@@ -68,6 +68,7 @@ pub fn run() {
             commands::tags::list_tag,
             commands::tags::tag_counts,
             commands::duplicates::find_duplicates,
+            commands::duplicates::cancel_duplicates,
             commands::versions::snapshot_version,
             commands::versions::list_versions,
             commands::versions::restore_version,

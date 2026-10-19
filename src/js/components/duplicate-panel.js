@@ -1,6 +1,6 @@
 import { Component } from '../core/component.js';
 import { escapeHtml } from '../core/dom.js';
-import { findDuplicates } from '../api/duplicates.js';
+import { findDuplicates, cancelDuplicates } from '../api/duplicates.js';
 import { onEvent } from '../api/events.js';
 import { deleteEntries } from '../api/fs.js';
 import { formatSize } from '../lib/format.js';
@@ -44,12 +44,18 @@ export class DuplicatePanel extends Component {
   }
 
   async scan() {
+    // Only the latest scan may fill the panel: closing and reopening it (or
+    // reopening on another folder) used to let the OLD scan's result land last.
+    const seq = (this._scanSeq = (this._scanSeq || 0) + 1);
+    let groups = [];
     try {
-      this._groups = (await findDuplicates(this._dir)) || [];
+      groups = (await findDuplicates(this._dir)) || [];
     } catch (err) {
+      if (seq !== this._scanSeq || !this._open) return; // cancelled/superseded
       this.bus.emit('shortcut:hint', { text: t('dup.scanError', { msg: err.message }), type: 'error' });
-      this._groups = [];
     }
+    if (seq !== this._scanSeq || !this._open) return;
+    this._groups = groups;
     this._loading = false;
     this.render();
   }
@@ -71,6 +77,8 @@ export class DuplicatePanel extends Component {
   close() {
     if (!this._open) return;
     this._open = false;
+    this._scanSeq = (this._scanSeq || 0) + 1; // drop the in-flight result
+    if (this._loading) cancelDuplicates().catch(() => {}); // stop hashing on the backend
     document.getElementById('duplicates-btn')?.classList.remove('is-on');
     if (this.mainEl) this.mainEl.classList.remove('has-dup');
     this.mount.innerHTML = '';

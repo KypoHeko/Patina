@@ -5,7 +5,7 @@ import { createEventBus } from '../core/event-bus.js';
 import { initialTabsState } from '../state/tabs.js';
 import { findDuplicates } from '../api/duplicates.js';
 
-vi.mock('../api/duplicates.js', () => ({ findDuplicates: vi.fn().mockResolvedValue([]) }));
+vi.mock('../api/duplicates.js', () => ({ findDuplicates: vi.fn().mockResolvedValue([]), cancelDuplicates: vi.fn().mockResolvedValue(undefined) }));
 vi.mock('../api/fs.js', () => ({ deleteEntries: vi.fn().mockResolvedValue(undefined) }));
 vi.mock('../api/events.js', () => ({ onEvent: vi.fn().mockResolvedValue(() => {}) }));
 

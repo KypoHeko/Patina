@@ -24,9 +24,12 @@ pub struct DupGroup {
 /// only the candidates (reusing the hash cache from the DB).
 /// `on_progress(done, total)` is called during hashing. Groups are sorted by
 /// descending size.
-pub fn find<F>(db: &Mutex<Connection>, dir: &str, on_progress: F) -> Result<Vec<DupGroup>>
+/// `cancelled()` is polled between files: closing the panel or starting a
+/// new scan stops the hashing instead of letting it run to the end.
+pub fn find<F, C>(db: &Mutex<Connection>, dir: &str, on_progress: F, cancelled: C) -> Result<Vec<DupGroup>>
 where
     F: Fn(usize, usize),
+    C: Fn() -> bool,
 {
     let mut by_size: HashMap<u64, Vec<scanner::ScanFile>> = HashMap::new();
     for f in scanner::walk(dir, SCAN_CAP) {
@@ -49,7 +52,7 @@ where
     {
         let conn = db.lock().map_err(|_| Error::Operation("DB lock poisoned".into()))?;
         for f in &candidates {
-            if let Some(h) = files::cached_hash(&conn, &f.path, f.mtime)? {
+            if let Some(h) = files::cached_hash(&conn, &f.path, f.mtime, f.size)? {
                 hashes.insert(f.path.clone(), h);
             }
         }
@@ -65,6 +68,9 @@ where
     let mut fresh: Vec<(String, u64, i64, String)> = Vec::new();
     let mut done = 0usize;
     for f in to_hash {
+        if cancelled() {
+            return Err(Error::Operation("duplicate search cancelled".into()));
+        }
         if let Ok(h) = hasher::hash_file(&f.path) {
             fresh.push((f.path.clone(), f.size, f.mtime, h.clone()));
             hashes.insert(f.path.clone(), h);
@@ -82,17 +88,55 @@ where
         }
     }
 
-    let mut by_hash: HashMap<String, (u64, Vec<String>)> = HashMap::new();
+    let mut by_hash: HashMap<String, (u64, Vec<scanner::ScanFile>)> = HashMap::new();
     for f in candidates {
         if let Some(h) = hashes.get(&f.path) {
-            by_hash.entry(h.clone()).or_insert((f.size, Vec::new())).1.push(f.path);
+            by_hash.entry(h.clone()).or_insert((f.size, Vec::new())).1.push(f);
         }
     }
     let mut groups: Vec<DupGroup> = by_hash
         .into_iter()
-        .filter(|(_, (_, paths))| paths.len() > 1)
-        .map(|(hash, (size, paths))| DupGroup { hash, size, paths })
+        .filter(|(_, (_, files))| files.len() > 1)
+        .map(|(hash, (size, mut files))| {
+            // Deterministic order, the most likely ORIGINAL first: oldest,
+            // then the shortest path. The UI's "keep first" keeps it — before,
+            // the order came from a HashMap and the kept copy was random.
+            files.sort_by(|a, b| {
+                a.mtime
+                    .cmp(&b.mtime)
+                    .then(a.path.len().cmp(&b.path.len()))
+                    .then_with(|| a.path.cmp(&b.path))
+            });
+            DupGroup { hash, size, paths: files.into_iter().map(|f| f.path).collect() }
+        })
         .collect();
     groups.sort_by(|a, b| b.size.cmp(&a.size));
     Ok(groups)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn keeps_the_oldest_copy_first_and_honours_cancel() {
+        let dir = tempfile::tempdir().unwrap();
+        let old = dir.path().join("zz_original.txt");
+        std::fs::write(&old, "same").unwrap();
+        let past = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+        std::fs::File::options().write(true).open(&old).unwrap().set_modified(past).unwrap();
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        std::fs::write(dir.path().join("sub").join("a_copy.txt"), "same").unwrap();
+        std::fs::write(dir.path().join("other.txt"), "diff").unwrap();
+
+        let db = Mutex::new(crate::index::db::open_in_memory());
+        let root = dir.path().to_string_lossy().into_owned();
+        let groups = find(&db, &root, |_, _| {}, || false).unwrap();
+        assert_eq!(groups.len(), 1);
+        assert!(groups[0].paths[0].ends_with("zz_original.txt"), "got {:?}", groups[0].paths);
+        assert_eq!(groups[0].paths.len(), 2, "the subtree is scanned");
+
+        let db2 = Mutex::new(crate::index::db::open_in_memory());
+        assert!(find(&db2, &root, |_, _| {}, || true).is_err());
+    }
 }

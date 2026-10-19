@@ -39,6 +39,8 @@ pub struct AppState {
     /// older generation stops at its next check instead of running to the end
     /// next to (and racing with) the newer one.
     pub index_gen: AtomicU64,
+    /// Generation of the latest duplicate scan; an older scan stops hashing.
+    pub dups_gen: AtomicU64,
 }
 
 impl AppState {
@@ -51,6 +53,7 @@ impl AppState {
             index_watcher: Mutex::new(None),
             index_info: Mutex::new(IndexState::default()),
             index_gen: AtomicU64::new(0),
+            dups_gen: AtomicU64::new(0),
         }
     }
 

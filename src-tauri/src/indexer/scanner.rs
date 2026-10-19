@@ -1,23 +1,27 @@
-//! Directory walk (files only). For duplicate detection we take ONLY the
-//! current folder (no recursion) and cap the number of files — so the scan cost
-//! is predictable and does not blow up on giant subtrees.
+//! Directory walk (files only) for duplicate detection: the whole SUBTREE of
+//! the folder, skipping VCS/build/cache folders and symlinks, capped at `cap`
+//! files so the cost stays predictable on giant trees.
 
 use std::time::UNIX_EPOCH;
 
 use walkdir::WalkDir;
 
+use crate::index::text_detect;
+
 pub struct ScanFile {
     pub path: String,
     pub size: u64,
+    /// Modification time, Unix ms.
     pub mtime: i64,
 }
 
-/// Files directly in `dir` (non-recursive), at most `cap` of them.
+/// Files in the subtree of `dir`, at most `cap` of them.
 pub fn walk(dir: &str, cap: usize) -> Vec<ScanFile> {
     WalkDir::new(dir)
         .min_depth(1)
-        // .max_depth(1) // current folder only
+        .follow_links(false)
         .into_iter()
+        .filter_entry(|e| !text_detect::is_ignored_dir(e))
         .filter_map(|e| e.ok())
         .filter(|e| e.file_type().is_file())
         .filter_map(|e| {
@@ -27,7 +31,7 @@ pub fn walk(dir: &str, cap: usize) -> Vec<ScanFile> {
                 .ok()?
                 .duration_since(UNIX_EPOCH)
                 .ok()?
-                .as_secs() as i64;
+                .as_millis() as i64;
             Some(ScanFile {
                 path: e.path().to_string_lossy().into_owned(),
                 size: md.len(),
