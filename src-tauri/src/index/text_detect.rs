@@ -15,6 +15,20 @@ pub const TEXT_EXTS: &[&str] = &[
     "cpp", "hpp", "sql", "kt", "swift", "rb", "php", "lua", "vue", "svelte",
 ];
 
+/// Extensions of formats that are binary by definition (images, audio/video,
+/// archives, executables, office containers, fonts, databases). `is_text`
+/// rejects them without opening the file: the head sniff cost one open+read
+/// per file of the tree on every index build, and these are most of the
+/// files under 1 MB in a typical home folder.
+pub const BINARY_EXTS: &[&str] = &[
+    "png", "jpg", "jpeg", "gif", "bmp", "ico", "webp", "tif", "tiff", "heic", "avif", "psd",
+    "mp3", "wav", "flac", "ogg", "m4a", "aac", "opus", "mp4", "mkv", "avi", "mov", "webm", "wmv",
+    "zip", "7z", "rar", "gz", "tgz", "bz2", "xz", "zst", "tar", "iso", "dmg", "cab",
+    "exe", "dll", "so", "dylib", "lib", "a", "o", "class", "jar", "pyc", "wasm", "msi",
+    "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "odt", "ods", "odp", "epub",
+    "ttf", "otf", "woff", "woff2", "eot", "db", "sqlite", "sqlite3", "mdb", "bin",
+];
+
 /// Maximum file size eligible for content indexing (1 MB).
 pub const MAX_FILE: u64 = 1_048_576;
 
@@ -47,12 +61,13 @@ pub fn is_text(path: &Path, len: u64) -> bool {
     if len == 0 || len > MAX_FILE {
         return false;
     }
-    if let Some(ext) = path
-        .extension()
-        .map(|e| e.to_string_lossy().to_ascii_lowercase())
-        && TEXT_EXTS.contains(&ext.as_str())
-    {
-        return true;
+    if let Some(ext) = path.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()) {
+        if TEXT_EXTS.contains(&ext.as_str()) {
+            return true;
+        }
+        if BINARY_EXTS.contains(&ext.as_str()) {
+            return false; // no need to open it
+        }
     }
     sample_looks_textual(&read_head(path, 8192))
 }
@@ -102,6 +117,21 @@ mod tests {
         assert!(!is_ignored_below(Path::new("/srv/build/project/src/a.rs"), root));
         assert!(is_ignored_below(Path::new("/srv/build/project/node_modules/x/i.js"), root));
         assert!(is_ignored_below(Path::new("/srv/build/project/target"), root));
+    }
+
+    #[test]
+    fn binary_extensions_skip_the_sniff() {
+        let dir = tempfile::tempdir().unwrap();
+        // Plain ASCII inside, but a .png is never content-indexed.
+        let png = dir.path().join("fake.png");
+        std::fs::write(&png, "just text").unwrap();
+        assert!(!is_text(&png, 9));
+        let other = dir.path().join("notes.unknownext");
+        std::fs::write(&other, "just text").unwrap();
+        assert!(is_text(&other, 9), "unlisted extensions are still sniffed");
+        for e in BINARY_EXTS {
+            assert!(!TEXT_EXTS.contains(e), "{e} is in both lists");
+        }
     }
 
     #[cfg(windows)]
