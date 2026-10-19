@@ -26,6 +26,11 @@ export function readPreview(path) {
 }
 
 /** Search the persistent index: up to limit subtree rows. */
+/** Contents of `<dir>/.gitignore`, or null when there is none. */
+export function readGitignore(dir) {
+  return invoke('read_gitignore', { dir });
+}
+
 export function searchFiles(root, query, limit = 20000) {
   return invoke('search_files', { root, query, limit });
 }

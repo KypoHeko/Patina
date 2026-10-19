@@ -62,6 +62,7 @@ pub fn run() {
             commands::fs::create_folder,
             commands::fs::check_conflicts,
             commands::fs::read_preview,
+            commands::fs::read_gitignore,
             commands::system::open_path,
             commands::system::reveal_in_explorer,
             commands::system::quick_access,

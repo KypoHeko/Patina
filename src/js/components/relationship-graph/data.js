@@ -4,11 +4,10 @@
 import { fileGraph } from '../../api/relationships.js';
 import { rebuildEdges } from '../../api/indexing.js';
 import { ensureLiveIndex } from '../../state/index-live.js';
-import { listDir } from '../../api/fs.js';
+import { listDir, readGitignore } from '../../api/fs.js';
 import { radialLayout } from '../../lib/radial-layout.js';
 import { buildDirTree } from '../../lib/dir-tree.js';
 import { gitignoreMatcher } from '../../lib/gitignore.js';
-import { assetUrl } from '../../api/invoke.js';
 import { MAX_DEPTH, MAX_NODES, ALWAYS_IGNORE_DIRS, DEP_SEED_CAP } from './constants.js';
 
 export const DataMixin = {
@@ -53,25 +52,18 @@ export const DataMixin = {
     }
   },
 
-  /** Read the focus folder's .gitignore (via the asset protocol) and return an
+  /** Read the focus folder's .gitignore (over IPC) and return an
    *  ignore(relPath, isDir) predicate. The VCS `.git` dir is always hidden when
    *  the toggle is on; .gitignore rules apply on top if the file exists. */
   async loadIgnore(root) {
     if (!root) return null;
     let match = null;
-    const sep = root.includes('\\') ? '\\' : '/';
-    const path = root.replace(/[\\/]+$/, '') + sep + '.gitignore';
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 2500); // never let this block the scan
+    let timer;
     try {
-      const url = assetUrl(path);
-      if (url) {
-        const res = await fetch(url, { signal: ctrl.signal });
-        if (res.ok) {
-          const text = await res.text();
-          if (text.trim()) match = gitignoreMatcher(text);
-        }
-      }
+      // Never let a slow (network) folder block the scan.
+      const timeout = new Promise((resolve) => (timer = setTimeout(() => resolve(null), 2500)));
+      const text = await Promise.race([readGitignore(root), timeout]);
+      if (text && text.trim()) match = gitignoreMatcher(text);
     } catch {
       /* no readable .gitignore — baseline ignores below still apply */
     } finally {

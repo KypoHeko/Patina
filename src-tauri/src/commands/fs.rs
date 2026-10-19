@@ -332,6 +332,32 @@ pub async fn read_preview(app: AppHandle, path: String) -> Result<Preview> {
     .map_err(|e| Error::Operation(format!("preview interrupted: {e}")))?
 }
 
+/// Largest `.gitignore` handed to the graph.
+const MAX_GITIGNORE: u64 = 256 * 1024;
+
+/// Contents of `<dir>/.gitignore` for the graph's ignore filter, or `None`
+/// when there is none (or it is not a regular file, or is implausibly big).
+/// The graph used to fetch it through the asset protocol, which therefore had
+/// to be opened for the whole disk (`scope: **`) — any script running in the
+/// webview could read any file. Now the protocol only serves thumbnails and
+/// this command reads exactly one file name.
+#[tauri::command]
+pub async fn read_gitignore(dir: String) -> Result<Option<String>> {
+    tauri::async_runtime::spawn_blocking(move || -> Result<Option<String>> { Ok(read_gitignore_sync(Path::new(&dir))) })
+        .await
+        .map_err(|e| Error::Operation(format!("read_gitignore interrupted: {e}")))?
+}
+
+fn read_gitignore_sync(dir: &Path) -> Option<String> {
+    let path = dir.join(".gitignore");
+    let meta = std::fs::symlink_metadata(&path).ok()?;
+    if !meta.is_file() || meta.len() > MAX_GITIGNORE {
+        return None;
+    }
+    let bytes = std::fs::read(&path).ok()?;
+    Some(String::from_utf8_lossy(&bytes).into_owned())
+}
+
 /// Create a new folder in `parent`. If the name is taken, appends " (N)".
 /// Returns the path of the created folder.
 #[tauri::command]
@@ -359,4 +385,19 @@ pub async fn create_folder(parent: String, name: String) -> Result<String> {
     })
     .await
     .map_err(|e| Error::Operation(format!("create_folder interrupted: {e}")))?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gitignore_is_read_only_when_it_is_a_small_regular_file() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(read_gitignore_sync(dir.path()), None);
+        std::fs::write(dir.path().join(".gitignore"), "target/\n").unwrap();
+        assert_eq!(read_gitignore_sync(dir.path()).as_deref(), Some("target/\n"));
+        std::fs::write(dir.path().join(".gitignore"), vec![b'#'; (MAX_GITIGNORE + 1) as usize]).unwrap();
+        assert_eq!(read_gitignore_sync(dir.path()), None);
+    }
 }
