@@ -56,6 +56,14 @@ export class CommandPalette extends Component {
     // event we just re-run the current query.
     onEvent('index:ready', (root) => this.onIndexReady(root));
     onEvent('index:changed', () => this.onIndexEvent());
+    // Build progress: while the spinner is up, say how far the index got
+    // (the events were emitted all along, but nobody listened).
+    onEvent('index:progress', (p) => {
+      if (!this._open || !p || p.root !== this._root) return;
+      this._indexing = true;
+      this._indexCount = p.count || 0;
+      if (this._loading) this.renderResults();
+    });
     // The backend indexes at most N entries per root; say so instead of
     // letting a partial index look complete.
     onEvent('index:truncated', (p) => {

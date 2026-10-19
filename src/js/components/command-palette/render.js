@@ -126,7 +126,12 @@ export const RenderMixin = {
     if (this._loading) {
       this._results = [];
       this._resultsCount = 0;
-      this._resultsEl.innerHTML = `<div class="palette__empty">${escapeHtml(this._indexing ? t('palette.indexing') : t('common.loading'))}</div>`;
+      const text = this._indexing
+        ? this._indexCount
+          ? t('graph.indexing', { n: this._indexCount })
+          : t('palette.indexing')
+        : t('common.loading');
+      this._resultsEl.innerHTML = `<div class="palette__empty">${escapeHtml(text)}</div>`;
       return;
     }
     const all = this.filtered();

@@ -221,6 +221,11 @@ onEvent('fs:external-change', (dirs) => {
   }, 200);
 });
 
+// Folder-size walk progress (∑ button) — a short status line per batch.
+onEvent('dirsize:progress', (p) => {
+  if (p && p.count) bus.emit('shortcut:hint', t('panel.dirsizeProgress', { n: p.count }));
+});
+
 let _watchedKey = '';
 store.subscribe((state) => {
   const tab = getActiveTab(state);

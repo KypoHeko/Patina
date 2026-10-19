@@ -37,8 +37,10 @@ export const ContentSearchMixin = {
   // Called when the backend emits `index:ready`. Marks the root ready and runs
   // a silent re-search (via onIndexEvent) so results pick up the freshly built
   // index without flashing the spinner.
-  onIndexReady(root) {
-    if (root) this._contentReady.add(root);
+  onIndexReady(payload) {
+    const root = typeof payload === 'string' ? payload : payload && payload.root;
+    if (root && payload && payload.content) this._contentReady.add(root);
+    this._indexing = false;
     this.onIndexEvent();
   },
 

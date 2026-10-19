@@ -349,6 +349,13 @@ fn sync_from_journal(app: &AppHandle, root: &str, content_active: bool) -> bool 
     }
 }
 
+/// `index:ready` payload. `content` tells the palette whether the content
+/// index of this root is now built — it used to treat ANY ready event (also
+/// one of a name-only build) as "content ready".
+fn ready_payload(root: &str, content: bool) -> serde_json::Value {
+    serde_json::json!({ "root": root, "content": content })
+}
+
 /// The index (re)build strategy when `start_index` is called for a root.
 #[derive(Debug, PartialEq, Eq)]
 enum IndexPlan {
@@ -424,7 +431,7 @@ pub async fn start_index(
             // content index is live must refresh the content index too.
             tauri::async_runtime::spawn_blocking(move || {
                 if build_all_gen(&app2, &root2, content_active, Some(generation)).is_ok() {
-                    let _ = app2.emit("index:ready", &root2);
+                    let _ = app2.emit("index:ready", ready_payload(&root2, content_active));
                 }
             });
         }
@@ -433,12 +440,12 @@ pub async fn start_index(
                 let ok = sync_from_journal(&app2, &root2, content_active)
                     || build_all_gen(&app2, &root2, content_active, Some(generation)).is_ok();
                 if ok {
-                    let _ = app2.emit("index:ready", &root2);
+                    let _ = app2.emit("index:ready", ready_payload(&root2, content_active));
                 }
             });
         }
         IndexPlan::UpToDate => {
-            let _ = app.emit("index:ready", &root);
+            let _ = app.emit("index:ready", ready_payload(&root, content_active));
         }
     }
 

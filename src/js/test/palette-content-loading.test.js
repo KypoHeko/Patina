@@ -84,3 +84,13 @@ describe('CommandPalette — live index root', () => {
     expect(startIndex.mock.calls).toEqual([['C:\\A', false], ['C:\\A', true]]);
   });
 });
+
+describe('CommandPalette — index readiness', () => {
+  it('only a content build marks the content index ready', () => {
+    const palette = openPalette();
+    palette.onIndexReady({ root: 'C:\\Dir', content: false });
+    expect(palette._contentReady.has('C:\\Dir')).toBe(false);
+    palette.onIndexReady({ root: 'C:\\Dir', content: true });
+    expect(palette._contentReady.has('C:\\Dir')).toBe(true);
+  });
+});

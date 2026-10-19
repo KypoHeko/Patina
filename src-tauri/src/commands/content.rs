@@ -45,12 +45,15 @@ pub async fn search_content(
         };
         let hits = match result {
             Ok(hits) => hits,
-            Err(_) => {
-                // Table may not exist yet — create it and retry.
+            // Only a missing FTS table (no content index built yet) is worth a
+            // retry; any other error is reported instead of being masked by a
+            // second attempt under the write lock.
+            Err(Error::Db(e)) if e.to_string().contains("no such table") => {
                 let conn = state.db()?;
                 content_index::ensure_table(&conn)?;
                 content_index::search(&conn, &root, &query, cap)?
             }
+            Err(e) => return Err(e),
         };
         Ok(hits)
     })
