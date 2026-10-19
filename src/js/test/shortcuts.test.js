@@ -2,9 +2,10 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createShortcuts } from '../core/shortcuts.js';
 
 // Helper: dispatch a keydown with the given modifiers from a specific target.
-function press(key, { ctrl = false, shift = false, alt = false, meta = false, target = document.body } = {}) {
+function press(key, { ctrl = false, shift = false, alt = false, meta = false, target = document.body, code } = {}) {
   const ev = new KeyboardEvent('keydown', {
     key,
+    code,
     ctrlKey: ctrl,
     shiftKey: shift,
     altKey: alt,
@@ -34,6 +35,21 @@ describe('createShortcuts', () => {
     sc.register('palette', fn);
     press('k', { ctrl: true });
     expect(fn).toHaveBeenCalledTimes(1);
+  });
+
+  it('works on a non-Latin keyboard layout (matches the physical key)', () => {
+    sc = createShortcuts([
+      { combo: 'ctrl+k', action: 'palette' },
+      { combo: 'ctrl+shift+t', action: 'reopen' },
+    ]);
+    const palette = vi.fn();
+    const reopen = vi.fn();
+    sc.register('palette', palette);
+    sc.register('reopen', reopen);
+    press('л', { ctrl: true, code: 'KeyK' }); // Russian layout
+    press('Е', { ctrl: true, shift: true, code: 'KeyT' });
+    expect(palette).toHaveBeenCalledTimes(1);
+    expect(reopen).toHaveBeenCalledTimes(1);
   });
 
   it('does not react without the required modifier', () => {

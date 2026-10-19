@@ -12,13 +12,28 @@ function normalize(combo) {
   return [...mods, key].join('+');
 }
 
+/**
+ * The key of an event, independent of the keyboard LAYOUT for letters and
+ * digits: `e.code` is the physical key (`KeyK`), while `e.key` is the produced
+ * character — `л` on a Russian layout, so Ctrl+K never matched there.
+ * Other keys (Delete, F2, arrows) fall back to `e.key`.
+ */
+function keyFromEvent(e) {
+  const code = e.code || '';
+  let m = /^Key([A-Z])$/.exec(code);
+  if (m) return m[1].toLowerCase();
+  m = /^Digit([0-9])$/.exec(code);
+  if (m) return m[1];
+  return (e.key || '').toLowerCase();
+}
+
 /** Build a combination from a keyboard event. */
 function comboFromEvent(e) {
   const parts = [];
   if (e.ctrlKey || e.metaKey) parts.push('ctrl'); // metaKey — for Cmd on macOS
   if (e.shiftKey) parts.push('shift');
   if (e.altKey) parts.push('alt');
-  const key = e.key.toLowerCase();
+  const key = keyFromEvent(e);
   if (!['control', 'shift', 'alt', 'meta'].includes(key)) parts.push(key);
   return parts.join('+');
 }
