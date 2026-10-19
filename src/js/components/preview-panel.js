@@ -2,7 +2,7 @@ import { Component } from '../core/component.js';
 import { escapeHtml } from '../core/dom.js';
 import { readPreview } from '../api/fs.js';
 import { assetUrl } from '../api/invoke.js';
-import { snapshotVersion, listVersions, restoreVersion, deleteVersion } from '../api/versions.js';
+import { snapshotVersion, listVersions, restoreVersion, deleteVersion, currentVersion } from '../api/versions.js';
 import { tagsForPaths } from '../api/tags.js';
 import { TAGS } from '../config/tags.js';
 import { formatSize, formatDate } from '../lib/format.js';
@@ -99,20 +99,21 @@ export class PreviewPanel extends Component {
     // Show the spinner
     this.renderFrame();
     try {
-      const [preview, versions, tagMap] = await Promise.all([
+      const [preview, versions, tagMap, current] = await Promise.all([
         readPreview(path),
         listVersions(path).catch(() => []),
         tagsForPaths([path]).catch(() => ({})),
+        currentVersion(path).catch(() => null),
       ]);
       if (this._path !== path) return; // selection changed
       this._preview = preview;
       this._versions = versions || [];
       this._tags = (tagMap && tagMap[path]) || [];
       this._selectedVer = null;
-      // By default the "current" one is the newest version (we assume the file
-      // matches it if the preview was just opened). After a restore,
-      // _currentVerId is overridden in doRestore.
-      this._currentVerId = this._versions[0]?.id || null;
+      // "Current" = the version whose content equals the file on disk (asked
+      // from the backend by hash). null = the file has changes not saved in
+      // any version — then no row is marked current.
+      this._currentVerId = current ?? null;
       this.renderFrame();
     } catch (err) {
       if (this._path !== path) return;
@@ -141,22 +142,19 @@ export class PreviewPanel extends Component {
       // Preserve selectedVer — the user may have selected a version row.
       const savedSel = this._selectedVer;
       try {
-        const [preview, versions, tagMap] = await Promise.all([
+        const [preview, versions, tagMap, current] = await Promise.all([
           readPreview(path),
           listVersions(path).catch(() => []),
           tagsForPaths([path]).catch(() => ({})),
+          currentVersion(path).catch(() => null),
         ]);
         if (this._path !== path) return; // selection changed while the request was in flight
         this._preview = preview;
         this._versions = versions || [];
         this._tags = (tagMap && tagMap[path]) || [];
         this._selectedVer = savedSel;
-        // The "current" version is the one matching the file. If we just did a
-        // restore or snapshot, the caller already set _currentVerId explicitly
-        // before calling refreshPreview; otherwise we assume the newest (default).
-        if (!this._versions.some(v => v.id === this._currentVerId)) {
-          this._currentVerId = this._versions[0]?.id || null;
-        }
+        // The "current" version is the one whose content equals the file now.
+        this._currentVerId = current ?? null;
         this.renderFrame();
       } catch {
         if (this._path !== path) return;
@@ -196,11 +194,19 @@ export class PreviewPanel extends Component {
       return;
     }
 
-    // Delete a version
+    // Delete a version — irreversible, so behind a confirmation like restore.
     if (e.target.closest('[data-del]')) {
       const btn = e.target.closest('[data-del]');
       const id = +btn.dataset.del;
-      if (id) this.doDelete(id);
+      if (!id) return;
+      const ver = this._versions.find((v) => v.id === id);
+      this.bus.emit('confirm:open', {
+        title: t('pv.deleteTitle'),
+        message: t('pv.deleteConfirm', { label: ver?.label || '' }),
+        confirmLabel: t('pv.btn.delete'),
+        danger: true,
+        onConfirm: () => this.doDelete(id),
+      });
       return;
     }
 
@@ -218,9 +224,6 @@ export class PreviewPanel extends Component {
     this.renderFrame();
     try {
       this._versions = (await snapshotVersion(this._path)) || [];
-      // The new snapshot becomes the "current" version — the file did not change,
-      // we just saved its state.
-      this._currentVerId = this._versions[0]?.id || null;
       this.bus.emit('shortcut:hint', t('pv.snapshotCreated'));
       // Re-read the whole preview: after a snapshot the file may have a new
       // mtime/size (even though the content is the same), and the preview should
@@ -258,10 +261,8 @@ export class PreviewPanel extends Component {
       this._versions = (await deleteVersion(id)) || [];
       this.bus.emit('shortcut:hint', t('pv.versionDeleted'));
       this._selectedVer = null;
-      // If the "current" version was deleted — reset to the newest of the remaining ones.
-      if (this._currentVerId === id || !this._versions.some(v => v.id === this._currentVerId)) {
-        this._currentVerId = this._versions[0]?.id || null;
-      }
+      // If the "current" version was deleted, the file matches none now.
+      if (this._currentVerId === id) this._currentVerId = null;
       this.renderFrame();
     } catch (err) {
           this.bus.emit('shortcut:hint', { text: err.message || t('pv.deleteError'), type: 'error' });
@@ -272,9 +273,8 @@ export class PreviewPanel extends Component {
     if (!this._path) return;
     try {
       this._versions = (await listVersions(this._path)) || [];
-      // If _currentVerId is no longer in the list (deleted?) — reset to the newest.
-      if (this._currentVerId && !this._versions.some(v => v.id === this._currentVerId)) {
-        this._currentVerId = this._versions[0]?.id || null;
+      if (this._currentVerId && !this._versions.some((v) => v.id === this._currentVerId)) {
+        this._currentVerId = null;
       }
     } catch { this._versions = []; }
     this.renderFrame();
@@ -321,7 +321,8 @@ export class PreviewPanel extends Component {
     const vers = this._versions;
     // The current version is the one matching the file on disk. By default it's
     // the newest; after a restore or snapshot _currentVerId points to it explicitly.
-    const currentVersion = vers.find(v => v.id === this._currentVerId) || vers[0];
+    // The version equal to the file on disk; none when it has unsaved changes.
+    const currentVersion = vers.find((v) => v.id === this._currentVerId) || null;
 
     // ── Preview ──
     let previewHtml;
@@ -367,7 +368,11 @@ export class PreviewPanel extends Component {
           ${this.tagsRowHtml()}
           ${vers.length ? `<div class="pv__info-row">
             <span class="pv__info-key">${escapeHtml(t('pv.info.version'))}</span>
-            <span class="pv__info-val pv__info-val--teal">${escapeHtml(currentVersion?.label || '—')} · ${escapeHtml(t('pv.info.current'))}</span>
+            <span class="pv__info-val pv__info-val--teal">${
+              currentVersion
+                ? `${escapeHtml(currentVersion.label)} · ${escapeHtml(t('pv.info.current'))}`
+                : escapeHtml(t('pv.info.unsaved'))
+            }</span>
           </div>` : ''}
         </div>`;
     }

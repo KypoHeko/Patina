@@ -236,6 +236,19 @@ pub fn set_zstd_dict_for_hash(conn: &Connection, hash: &str, dict_id: Option<i64
     Ok(())
 }
 
+/// Id of the newest version of `path` whose content hash is `hash`.
+pub fn id_for_hash(conn: &Connection, path: &str, hash: &str) -> Result<Option<i64>> {
+    let key = normalize(path);
+    let id = conn
+        .query_row(
+            "SELECT id FROM versions WHERE path = ?1 AND hash = ?2 ORDER BY ts DESC, id DESC LIMIT 1",
+            (&key, hash),
+            |r| r.get::<_, i64>(0),
+        )
+        .optional()?;
+    Ok(id)
+}
+
 /// Check whether anyone still references this chunk.
 pub fn chunk_refcount(conn: &Connection, chunk_hash: &str) -> Result<i64> {
     let count = conn.query_row(

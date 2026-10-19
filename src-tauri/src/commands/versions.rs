@@ -388,6 +388,29 @@ pub async fn snapshot_version(app: AppHandle, path: String) -> Result<Vec<Versio
     .map_err(|e| Error::Operation(format!("snapshot_version interrupted: {e}")))?
 }
 
+/// Files larger than this are not hashed just to mark the "current" version.
+const CURRENT_HASH_LIMIT: u64 = 256 * 1024 * 1024;
+
+/// The version whose content equals the file on disk right now, if any.
+/// `None` means the file has unsaved changes (or is too large to check).
+/// The preview used to assume the NEWEST version was current, even after the
+/// file had been edited since.
+#[tauri::command]
+pub async fn current_version(path: String, app: AppHandle) -> Result<Option<i64>> {
+    tauri::async_runtime::spawn_blocking(move || -> Result<Option<i64>> {
+        match std::fs::metadata(&path) {
+            Ok(m) if m.is_file() && m.len() <= CURRENT_HASH_LIMIT => {}
+            _ => return Ok(None),
+        }
+        let hash = hasher::hash_file(&path).map_err(Error::Io)?;
+        let state = app.state::<AppState>();
+        let conn = state.db_read()?;
+        versions::id_for_hash(&conn, &path, &hash)
+    })
+    .await
+    .map_err(|e| Error::Operation(format!("current_version interrupted: {e}")))?
+}
+
 #[tauri::command]
 pub async fn list_versions(app: AppHandle, path: String) -> Result<Vec<Version>> {
     tauri::async_runtime::spawn_blocking(move || {

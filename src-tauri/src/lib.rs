@@ -71,6 +71,7 @@ pub fn run() {
             commands::duplicates::cancel_duplicates,
             commands::versions::snapshot_version,
             commands::versions::list_versions,
+            commands::versions::current_version,
             commands::versions::restore_version,
             commands::versions::delete_version,
             commands::relationships::add_relationship,

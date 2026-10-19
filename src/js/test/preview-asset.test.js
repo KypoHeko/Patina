@@ -12,6 +12,7 @@ vi.mock('../api/fs.js', () => ({ readPreview: vi.fn().mockResolvedValue(null) })
 vi.mock('../api/versions.js', () => ({
   snapshotVersion: vi.fn(),
   listVersions: vi.fn().mockResolvedValue([]),
+  currentVersion: vi.fn().mockResolvedValue(null),
   restoreVersion: vi.fn(),
   deleteVersion: vi.fn(),
 }));
