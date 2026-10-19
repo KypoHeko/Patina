@@ -4,8 +4,11 @@
 
 export function parentPath(path) {
   const trimmed = String(path).replace(/[\\/]+$/, '');
+  // UNC share root (\\server\share) has no parent folder to go up to.
+  if (/^[\\/]{2}[^\\/]+[\\/][^\\/]+$/.test(trimmed)) return null;
   const idx = Math.max(trimmed.lastIndexOf('\\'), trimmed.lastIndexOf('/'));
-  if (idx <= 0) return null;
+  if (idx < 0) return null; // no separator: "tag:…", a bare name
+  if (idx === 0) return trimmed.length > 1 ? '/' : null; // "/home" -> "/"
   let parent = trimmed.slice(0, idx);
   if (/^[A-Za-z]:$/.test(parent)) parent += '\\'; // C: -> C:\
   return parent;

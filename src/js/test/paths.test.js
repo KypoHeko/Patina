@@ -10,8 +10,17 @@ describe('parentPath', () => {
     expect(parentPath('/')).toBeNull();
   });
 
-  it('POSIX: single-segment path → null', () => {
-    expect(parentPath('/home')).toBeNull();
+  it('POSIX: a top-level folder goes up to the root', () => {
+    expect(parentPath('/home')).toBe('/');
+  });
+
+  it('UNC: the share root has no parent; inside a share goes up normally', () => {
+    expect(parentPath('\\\\server\\share')).toBeNull();
+    expect(parentPath('\\\\server\\share\\docs')).toBe('\\\\server\\share');
+  });
+
+  it('a tag pseudo-path has no parent', () => {
+    expect(parentPath('tag:urgent')).toBeNull();
   });
 
   it('Windows: returns the parent directory', () => {
