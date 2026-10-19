@@ -215,6 +215,26 @@ fn none_preview(name: String, meta: &std::fs::Metadata) -> Preview {
     Preview { kind: "none".into(), name, text: None, data_url: None, thumb_path: None, size: meta.len(), modified, created }
 }
 
+/// Largest raster accepted for a thumbnail, per side.
+const MAX_DECODE_SIDE: u32 = 16_384;
+/// Decoder memory budget for one thumbnail.
+const MAX_DECODE_ALLOC: u64 = 384 * 1024 * 1024;
+
+/// Decode an image for the thumbnail under explicit limits. `image::open`
+/// trusted the header: a few-KB PNG/GIF declaring 60 000 × 60 000 pixels
+/// (a "decompression bomb") made the decoder allocate gigabytes and could
+/// take the app down just by selecting the file. The format is sniffed from
+/// the content, not taken from the extension.
+fn decode_limited(path: &str) -> Option<image::DynamicImage> {
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(MAX_DECODE_SIDE);
+    limits.max_image_height = Some(MAX_DECODE_SIDE);
+    limits.max_alloc = Some(MAX_DECODE_ALLOC);
+    let mut reader = image::ImageReader::open(path).ok()?.with_guessed_format().ok()?;
+    reader.limits(limits);
+    reader.decode().ok()
+}
+
 /// Synchronous preview implementation. Called from `read_preview` inside
 /// `spawn_blocking` so that heavy image decoding does not occupy an
 /// async-runtime worker.
@@ -271,7 +291,7 @@ fn build_preview(thumbs_dir: &Path, path: &str) -> Result<Preview> {
         // Generate the thumbnail once; later opens reuse the cached file, which
         // the webview loads directly via the asset protocol.
         let ready = cache.exists()
-            || image::open(path).is_ok_and(|img| {
+            || decode_limited(path).is_some_and(|img| {
                 let rgb = image::DynamicImage::ImageRgb8(img.thumbnail(1024, 1024).to_rgb8());
                 let mut bytes = Vec::new();
                 rgb.write_to(&mut Cursor::new(&mut bytes), image::ImageFormat::Jpeg).is_ok()
@@ -388,6 +408,50 @@ pub async fn create_folder(parent: String, name: String) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn oversized_images_are_not_decoded() {
+        let dir = tempfile::tempdir().unwrap();
+        let small = dir.path().join("ok.png");
+        image::RgbImage::new(4, 4).save(&small).unwrap();
+        assert!(decode_limited(&small.to_string_lossy()).is_some());
+
+        // A valid PNG header claiming 100 000 × 100 000 pixels: tiny on disk,
+        // ~30 GB once decoded. Must be refused, not allocated.
+        let mut png = Vec::new();
+        png.extend_from_slice(b"\x89PNG\r\n\x1a\n");
+        let mut ihdr = Vec::new();
+        ihdr.extend_from_slice(&100_000u32.to_be_bytes());
+        ihdr.extend_from_slice(&100_000u32.to_be_bytes());
+        ihdr.extend_from_slice(&[8, 2, 0, 0, 0]);
+        png.extend_from_slice(&(ihdr.len() as u32).to_be_bytes());
+        let mut chunk = b"IHDR".to_vec();
+        chunk.extend_from_slice(&ihdr);
+        let crc = crc32(&chunk);
+        png.extend_from_slice(&chunk);
+        png.extend_from_slice(&crc.to_be_bytes());
+        let bomb = dir.path().join("bomb.png");
+        std::fs::write(&bomb, &png).unwrap();
+        assert!(decode_limited(&bomb.to_string_lossy()).is_none());
+        // ...and refused BY THE LIMITS (not merely because the data is short).
+        let mut r = image::ImageReader::open(&bomb).unwrap().with_guessed_format().unwrap();
+        let mut limits = image::Limits::default();
+        limits.max_image_width = Some(MAX_DECODE_SIDE);
+        limits.max_image_height = Some(MAX_DECODE_SIDE);
+        r.limits(limits);
+        assert!(matches!(r.decode(), Err(image::ImageError::Limits(_))));
+    }
+
+    fn crc32(data: &[u8]) -> u32 {
+        let mut c = 0xFFFF_FFFFu32;
+        for &b in data {
+            c ^= b as u32;
+            for _ in 0..8 {
+                c = if c & 1 != 0 { 0xEDB8_8320 ^ (c >> 1) } else { c >> 1 };
+            }
+        }
+        !c
+    }
 
     #[test]
     fn gitignore_is_read_only_when_it_is_a_small_regular_file() {
