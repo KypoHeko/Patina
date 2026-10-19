@@ -110,7 +110,7 @@ where
             DupGroup { hash, size, paths: files.into_iter().map(|f| f.path).collect() }
         })
         .collect();
-    groups.sort_by(|a, b| b.size.cmp(&a.size));
+    groups.sort_by_key(|g| std::cmp::Reverse(g.size));
     Ok(groups)
 }
 

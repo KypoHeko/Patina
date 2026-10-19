@@ -301,7 +301,7 @@ fn do_restore(
             atomic::replace_with_temp(&tmp, dest).map_err(Error::Io)?;
         }
         "zstd" => {
-            let blob = versions_dir.join(format!("{}.zst", &v.hash));
+            let blob = versions_dir.join(format!("{}.zst", v.hash));
             let compressed = std::fs::read(&blob).map_err(Error::Io)?;
             let dicts_dir = version_compress::dicts_dir(versions_dir);
             let data = version_compress::decompress(&compressed, &dicts_dir, v.dict_id)?;

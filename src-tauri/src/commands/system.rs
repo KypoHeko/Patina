@@ -239,7 +239,7 @@ fn list_storage_sync() -> Vec<Storage> {
             _ => "Disk", // translated on the front end (storage.kind.*)
         }
         .to_string();
-        let trimmed = mp.trim_end_matches(|c| c == '\\' || c == '/');
+        let trimmed = mp.trim_end_matches(['\\', '/']);
         let name = if trimmed.is_empty() { mp.clone() } else { trimmed.to_string() };
         out.push(Storage {
             name,
