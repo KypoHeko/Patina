@@ -4,7 +4,7 @@
 
 import { tagsForPaths, pathsForTag } from '../../api/tags.js';
 import { escapeHtml } from '../../core/dom.js';
-import { pathKey } from '../../lib/paths.js';
+import { pathKey, samePath, isInside } from '../../lib/paths.js';
 import { safeRegExp } from '../../lib/regex.js';
 import { TAGS } from '../../config/tags.js';
 
@@ -129,7 +129,9 @@ export const ResultsMixin = {
 
   relParent(path) {
     let rel = path;
-    if (this._root && path.startsWith(this._root)) rel = path.slice(this._root.length);
+    if (this._root && (samePath(path, this._root) || isInside(path, this._root))) {
+      rel = path.slice(this._root.length);
+    }
     rel = rel.replace(/^[\\/]+/, '');
     const idx = Math.max(rel.lastIndexOf('/'), rel.lastIndexOf('\\'));
     return idx > 0 ? rel.slice(0, idx) : '';

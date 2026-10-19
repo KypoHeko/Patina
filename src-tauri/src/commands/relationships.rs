@@ -3,14 +3,15 @@
 use std::collections::HashMap;
 use std::time::UNIX_EPOCH;
 
-use rusqlite::{Connection, OptionalExtension};
+use rusqlite::Connection;
 use serde::Serialize;
 use tauri::{AppHandle, Manager};
 
 use crate::error::{Error, Result};
 use crate::index::edges::{self, Edge};
 use crate::index::files;
-use crate::index::path_key::normalize;
+use crate::index::file_index;
+use crate::index::path_key::{self, normalize};
 use crate::indexer::hasher;
 use crate::state::AppState;
 
@@ -51,27 +52,14 @@ pub struct GraphData {
     edges: Vec<Edge>,
 }
 
-fn node_meta(conn: &Connection, path: &str) -> (String, bool) {
-    let row = conn
-        .query_row(
-            "SELECT name, is_dir FROM file_index WHERE path = ?1",
-            [path],
-            |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? != 0)),
-        )
-        .optional()
-        .ok()
-        .flatten();
-    match row {
-        Some((name, is_dir)) => (name, is_dir),
-        None => {
-            let name = path
-                .rsplit(['\\', '/'])
-                .next()
-                .unwrap_or(path)
-                .to_string();
-            (name, false)
-        }
+/// Original-case path, name and kind of a graph node by its canonical key.
+fn node_meta(conn: &Connection, key: &str) -> (String, String, bool) {
+    if let Ok(Some((path, name, is_dir))) = file_index::display_of(conn, key) {
+        return (path, name, is_dir);
     }
+    let path = path_key::on_disk_case(key);
+    let name = path.rsplit(['\\', '/']).next().unwrap_or(&path).to_string();
+    (path, name, false)
 }
 
 #[tauri::command]
@@ -93,17 +81,27 @@ pub async fn file_graph(app: AppHandle, seeds: Vec<String>, hops: usize) -> Resu
         for s in &seeds {
             display.entry(normalize(s)).or_insert_with(|| s.clone());
         }
-        for e in &edges {
-            display.entry(e.src.clone()).or_insert_with(|| e.src.clone());
-            display.entry(e.dst.clone()).or_insert_with(|| e.dst.clone());
+        let mut meta: HashMap<String, (String, bool)> = HashMap::new();
+        for key in edges.iter().flat_map(|e| [&e.src, &e.dst]) {
+            if !meta.contains_key(key) {
+                // Non-seed endpoints: original case from the file index, so the
+                // node matches the file panel and reveal opens the real path.
+                let (path, name, is_dir) = node_meta(&conn, key);
+                display.entry(key.clone()).or_insert(path);
+                meta.insert(key.clone(), (name, is_dir));
+            }
         }
 
         let nodes: Vec<GraphNode> = display
             .iter()
             .map(|(canon, disp)| {
-                // metadata by the canonical key (as file_index stores it),
-                // node path is the displayed one (original case for a seed).
-                let (name, is_dir) = node_meta(&conn, canon.as_str());
+                let (name, is_dir) = meta
+                    .get(canon)
+                    .cloned()
+                    .unwrap_or_else(|| {
+                        let (_, n, d) = node_meta(&conn, canon);
+                        (n, d)
+                    });
                 GraphNode { path: disp.clone(), name, is_dir }
             })
             .collect();

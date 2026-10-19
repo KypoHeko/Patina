@@ -33,3 +33,8 @@ window.getComputedStyle = function (el, ...rest) {
   }
   return style;
 };
+
+// CSS.escape is absent in jsdom (the virtualized list uses it in selectors).
+if (!globalThis.CSS?.escape) {
+  globalThis.CSS = { ...(globalThis.CSS || {}), escape: (s) => String(s).replace(/[^a-zA-Z0-9_ -￿-]/g, '\\$&') };
+}

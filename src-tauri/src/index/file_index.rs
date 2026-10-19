@@ -31,8 +31,8 @@ pub fn replace_subtree(conn: &mut Connection, root: &str, rows: &[IndexRow]) -> 
     {
         let mut stmt = tx.prepare(
             "INSERT OR REPLACE INTO file_index
-             (path, name, name_lower, is_dir, size, mtime, ext)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+             (path, name, name_lower, is_dir, size, mtime, ext, display_path)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         )?;
         for r in rows {
             stmt.execute((
@@ -43,6 +43,7 @@ pub fn replace_subtree(conn: &mut Connection, root: &str, rows: &[IndexRow]) -> 
                 r.size as i64,
                 r.mtime.map(|m| m as i64),
                 &r.ext,
+                &r.path,
             ))?;
         }
     }
@@ -90,7 +91,7 @@ pub fn search(conn: &Connection, root: &str, query: &str, limit: usize) -> Resul
     let mut out = Vec::new();
     if q.is_empty() {
         let mut stmt = conn.prepare(
-            "SELECT path, name, is_dir, size, mtime, ext FROM file_index
+            "SELECT COALESCE(display_path, path), name, is_dir, size, mtime, ext FROM file_index
              WHERE path >= ?1 AND path < ?2 LIMIT ?3",
         )?;
         let rows = stmt.query_map((&prefix, &upper, limit as i64), row_to_entry)?;
@@ -100,7 +101,7 @@ pub fn search(conn: &Connection, root: &str, query: &str, limit: usize) -> Resul
     } else {
         let like = format!("%{}%", escape_like(&q.to_lowercase()));
         let mut stmt = conn.prepare(
-            "SELECT path, name, is_dir, size, mtime, ext FROM file_index
+            "SELECT COALESCE(display_path, path), name, is_dir, size, mtime, ext FROM file_index
              WHERE path >= ?1 AND path < ?2 AND name_lower LIKE ?3 ESCAPE '\\' LIMIT ?4",
         )?;
         let rows = stmt.query_map((&prefix, &upper, &like, limit as i64), row_to_entry)?;
@@ -114,8 +115,8 @@ pub fn search(conn: &Connection, root: &str, query: &str, limit: usize) -> Resul
 /// Update a single index row in place (incremental maintenance).
 pub fn upsert_one(conn: &Connection, row: &IndexRow) -> Result<()> {
     conn.execute(
-        "INSERT OR REPLACE INTO file_index (path, name, name_lower, is_dir, size, mtime, ext)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        "INSERT OR REPLACE INTO file_index (path, name, name_lower, is_dir, size, mtime, ext, display_path)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         (
             &normalize(&row.path),
             &row.name,
@@ -124,9 +125,24 @@ pub fn upsert_one(conn: &Connection, row: &IndexRow) -> Result<()> {
             row.size as i64,
             row.mtime.map(|m| m as i64),
             &row.ext,
+            &row.path,
         ),
     )?;
     Ok(())
+}
+
+/// Original-case path and name of an indexed entry, by any spelling of its path.
+pub fn display_of(conn: &Connection, path: &str) -> Result<Option<(String, String, bool)>> {
+    use rusqlite::OptionalExtension;
+    let key = normalize(path);
+    let v = conn
+        .query_row(
+            "SELECT COALESCE(display_path, path), name, is_dir FROM file_index WHERE path = ?1",
+            [&key],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get::<_, i64>(2)? != 0)),
+        )
+        .optional()?;
+    Ok(v)
 }
 
 /// Whether the index already has a row for this exact path.
@@ -153,12 +169,7 @@ mod tests {
     use super::*;
 
     fn mem() -> Connection {
-        let c = Connection::open_in_memory().unwrap();
-        c.execute_batch(
-            "CREATE TABLE file_index (path TEXT PRIMARY KEY, name TEXT NOT NULL, name_lower TEXT NOT NULL, is_dir INTEGER NOT NULL, size INTEGER NOT NULL, mtime INTEGER, ext TEXT);",
-        )
-        .unwrap();
-        c
+        crate::index::db::open_in_memory()
     }
 
     // Write the path canonicalized — exactly like production (replace_subtree/
@@ -219,6 +230,29 @@ mod tests {
         replace_subtree(&mut c, "/", &[]).unwrap();
         let n: i64 = c.query_row("SELECT COUNT(*) FROM file_index", [], |r| r.get(0)).unwrap();
         assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn search_returns_original_case_paths() {
+        let mut c = mem();
+        let row = IndexRow {
+            path: "C:\\Proj\\Report.TXT".into(),
+            name: "Report.TXT".into(),
+            is_dir: false,
+            size: 1,
+            mtime: None,
+            ext: None,
+        };
+        // On Windows keys are case-folded, so any spelling of the root finds it.
+        let (root, probe) = if cfg!(windows) {
+            ("c:\\proj", "c:\\proj\\report.txt")
+        } else {
+            ("C:\\Proj", "C:\\Proj\\Report.TXT")
+        };
+        replace_subtree(&mut c, root, &[row]).unwrap();
+        let hits = search(&c, root, "report", 10).unwrap();
+        assert_eq!(hits[0].path, "C:\\Proj\\Report.TXT");
+        assert_eq!(display_of(&c, probe).unwrap().unwrap().1, "Report.TXT");
     }
 
     #[test]

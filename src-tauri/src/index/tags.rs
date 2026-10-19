@@ -6,14 +6,15 @@ use rusqlite::Connection;
 
 use crate::error::Result;
 use crate::index::path_bounds::{remap, subtree_bounds};
-use crate::index::path_key::normalize;
+use crate::index::path_key::{normalize, on_disk_case, rebase_display};
 
+/// Tag `path`. The key is canonical; the original spelling is kept for display.
 pub fn assign(conn: &Connection, path: &str, tag_id: &str) -> Result<()> {
-    let path = normalize(path);
-    let path = path.as_str();
+    let key = normalize(path);
     conn.execute(
-        "INSERT OR IGNORE INTO file_tags (path, tag_id) VALUES (?1, ?2)",
-        (path, tag_id),
+        "INSERT INTO file_tags (path, tag_id, display_path) VALUES (?1, ?2, ?3)
+         ON CONFLICT(path, tag_id) DO UPDATE SET display_path = excluded.display_path",
+        (&key, tag_id, path),
     )?;
     Ok(())
 }
@@ -63,32 +64,34 @@ pub fn for_paths(conn: &Connection, paths: &[String]) -> Result<HashMap<String, 
     Ok(map)
 }
 
+/// Paths carrying `tag_id`, in their ORIGINAL case (legacy rows without a
+/// stored spelling are resolved against the disk).
 pub fn paths_for(conn: &Connection, tag_id: &str) -> Result<Vec<String>> {
-    let mut stmt = conn.prepare("SELECT path FROM file_tags WHERE tag_id = ?1")?;
+    let mut stmt = conn.prepare("SELECT path, display_path FROM file_tags WHERE tag_id = ?1")?;
     let paths = stmt
-        .query_map([tag_id], |r| r.get::<_, String>(0))?
+        .query_map([tag_id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?)))?
+        .map(|r| r.map(|(key, display)| display.unwrap_or_else(|| on_disk_case(&key))))
         .collect::<rusqlite::Result<_>>()?;
     Ok(paths)
 }
 
 
 /// Remap tags on rename/move: old -> new, including nested paths (for folders).
-/// Only the relevant rows are affected.
+/// `old`/`new` are the caller's original-case paths: the key is remapped
+/// canonically, the stored spelling keeps the case of the untouched tail.
+/// A row whose target already carries the tag is merged (deleted) instead of
+/// being left behind under the old path.
 pub fn relink(conn: &Connection, old: &str, new: &str) -> Result<()> {
-    let old = normalize(old);
-    let new = normalize(new);
-    let (old, new) = (old.as_str(), new.as_str());
+    let old_key = normalize(old);
+    let new_key = normalize(new);
+    let (_sep, prefix, upper) = subtree_bounds(&old_key);
 
-    let (_sep, prefix, upper) = subtree_bounds(old);
-
-    let rows: Vec<(String, String)> = {
+    let rows: Vec<(String, String, Option<String>)> = {
         let mut stmt = conn.prepare(
-            "SELECT path, tag_id FROM file_tags WHERE path = ?1 OR (path >= ?2 AND path < ?3)",
+            "SELECT path, tag_id, display_path FROM file_tags WHERE path = ?1 OR (path >= ?2 AND path < ?3)",
         )?;
-        stmt.query_map((old, &prefix, &upper), |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-        })?
-        .collect::<rusqlite::Result<_>>()?
+        stmt.query_map((&old_key, &prefix, &upper), |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+            .collect::<rusqlite::Result<_>>()?
     };
 
     if rows.is_empty() {
@@ -98,11 +101,23 @@ pub fn relink(conn: &Connection, old: &str, new: &str) -> Result<()> {
     // A single burst instead of N autocommit writes to the WAL. Roll back on error.
     conn.execute_batch("BEGIN")?;
     let res: Result<()> = (|| {
-        let mut stmt = conn
-            .prepare("UPDATE OR IGNORE file_tags SET path = ?1 WHERE path = ?2 AND tag_id = ?3")?;
-        for (path, tag_id) in &rows {
-            let new_path = remap(path, old, new).unwrap_or_else(|| path.clone());
-            stmt.execute((&new_path, path, tag_id))?;
+        let mut upd = conn.prepare(
+            "UPDATE OR IGNORE file_tags SET path = ?1, display_path = ?2 WHERE path = ?3 AND tag_id = ?4",
+        )?;
+        let mut del = conn.prepare("DELETE FROM file_tags WHERE path = ?1 AND tag_id = ?2")?;
+        for (path, tag_id, display) in &rows {
+            let new_path = remap(path, &old_key, &new_key).unwrap_or_else(|| path.clone());
+            let new_display = display
+                .as_deref()
+                .and_then(|d| rebase_display(d, old, new))
+                .unwrap_or_else(|| rebase_display(path, old, new).unwrap_or_else(|| new_path.clone()));
+            upd.execute((&new_path, &new_display, path, tag_id))?;
+            // If UPDATE OR IGNORE skipped the row (the target already has this
+            // tag), drop the leftover under the old key. A case-only rename keeps
+            // the same key — then the row was updated in place and must stay.
+            if &new_path != path {
+                del.execute((path, tag_id))?;
+            }
         }
         Ok(())
     })();
@@ -147,12 +162,7 @@ mod tests {
     use super::*;
 
     fn mem() -> Connection {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(
-            "CREATE TABLE file_tags (path TEXT NOT NULL, tag_id TEXT NOT NULL, PRIMARY KEY(path, tag_id));",
-        )
-        .unwrap();
-        conn
+        crate::index::db::open_in_memory()
     }
 
     fn rows(conn: &Connection) -> Vec<(String, String)> {
@@ -241,4 +251,23 @@ mod tests {
             ]
         );
     }
+
+    #[test]
+    fn paths_for_returns_original_case_and_relink_keeps_tail_case() {
+        let conn = mem();
+        assign(&conn, "/Home/U/Docs/Report.TXT", "urgent").unwrap();
+        assert_eq!(paths_for(&conn, "urgent").unwrap(), vec!["/Home/U/Docs/Report.TXT".to_string()]);
+        relink(&conn, "/Home/U/Docs", "/Home/U/Archive").unwrap();
+        assert_eq!(paths_for(&conn, "urgent").unwrap(), vec!["/Home/U/Archive/Report.TXT".to_string()]);
+    }
+
+    #[test]
+    fn relink_onto_an_already_tagged_target_leaves_no_orphan() {
+        let conn = mem();
+        assign(&conn, "/a/x.txt", "done").unwrap();
+        assign(&conn, "/b/x.txt", "done").unwrap();
+        relink(&conn, "/a/x.txt", "/b/x.txt").unwrap();
+        assert_eq!(rows(&conn), vec![(normalize("/b/x.txt"), "done".to_string())]);
+    }
 }
+

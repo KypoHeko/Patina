@@ -69,14 +69,20 @@ pub fn search(conn: &Connection, root: &str, query: &str, limit: usize) -> Resul
     let rows = stmt.query_map((&match_q, &prefix, &upper, limit as i64), |r| {
         Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
     })?;
-    let mut out = Vec::new();
-    for row in rows {
-        let (path, snippet) = row?;
-        let name = path
-            .rsplit(['\\', '/'])
-            .next()
-            .unwrap_or(&path)
-            .to_string();
+    let hits: Vec<(String, String)> = rows.collect::<rusqlite::Result<_>>()?;
+    // FTS rows are keyed by the canonical (case-folded on Windows) path; report
+    // the original spelling from the file index so results show and open the
+    // real names.
+    let mut out = Vec::with_capacity(hits.len());
+    for (key, snippet) in hits {
+        let (path, name) = match crate::index::file_index::display_of(conn, &key)? {
+            Some((path, name, _)) => (path, name),
+            None => {
+                let path = crate::index::path_key::on_disk_case(&key);
+                let name = path.rsplit(['\\', '/']).next().unwrap_or(&path).to_string();
+                (path, name)
+            }
+        };
         out.push(ContentHit { path, name, snippet });
     }
     Ok(out)

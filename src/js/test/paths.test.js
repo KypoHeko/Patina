@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parentPath, folderName, isRoot, pathCrumbs } from '../lib/paths.js';
+import { parentPath, folderName, isRoot, pathCrumbs, samePath, isInside } from '../lib/paths.js';
 
 describe('parentPath', () => {
   it('POSIX: returns the parent directory', () => {
@@ -105,5 +105,20 @@ describe('pathCrumbs', () => {
     // Implementation: trimmed.replace(/[\\/]+$/, '') on '/' yields ''
     // so the result is an empty array
     expect(crumbs).toEqual([]);
+  });
+});
+
+describe('samePath / isInside', () => {
+  it('ignores case and trailing separators on Windows paths', () => {
+    expect(samePath('C:\\Docs', 'c:\\docs\\')).toBe(true);
+    expect(isInside('c:\\docs\\a.txt', 'C:\\Docs')).toBe(true);
+    expect(isInside('C:\\Docs', 'C:\\Docs')).toBe(false);
+    expect(isInside('C:\\Docs2\\a', 'C:\\Docs')).toBe(false);
+    expect(isInside('C:\\x', 'C:\\')).toBe(true);
+  });
+  it('keeps case on POSIX paths', () => {
+    expect(samePath('/home/A', '/home/a')).toBe(false);
+    expect(isInside('/home/a/b', '/home/a')).toBe(true);
+    expect(isInside('/x', '/')).toBe(true);
   });
 });

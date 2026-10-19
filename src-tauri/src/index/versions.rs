@@ -5,7 +5,7 @@ use serde::Serialize;
 
 use crate::error::Result;
 use crate::index::path_bounds::{remap, subtree_bounds};
-use crate::index::path_key::normalize;
+use crate::index::path_key::{normalize, on_disk_case, rebase_display};
 use crate::index::chunker::Chunk;
 
 #[derive(Serialize)]
@@ -40,6 +40,24 @@ pub fn latest_hash(conn: &Connection, path: &str) -> Result<Option<String>> {
         )
         .optional()?;
     Ok(h)
+}
+
+/// Map `SELECT id, path, display_path, ts, size, hash, label, strategy, dict_id`.
+/// `path` is the ORIGINAL-case path (legacy rows: resolved against the disk) —
+/// it is shown to the user and a restore writes to it.
+fn version_from_row(r: &rusqlite::Row) -> rusqlite::Result<Version> {
+    let key: String = r.get(1)?;
+    let display: Option<String> = r.get(2)?;
+    Ok(Version {
+        id: r.get(0)?,
+        path: display.unwrap_or_else(|| on_disk_case(&key)),
+        ts: r.get(3)?,
+        size: r.get(4)?,
+        hash: r.get(5)?,
+        label: r.get(6)?,
+        strategy: r.get(7)?,
+        dict_id: r.get(8)?,
+    })
 }
 
 /// Number of versions for a given path.
@@ -108,11 +126,10 @@ pub fn insert(
     strategy: &str,
     dict_id: Option<i64>,
 ) -> Result<i64> {
-    let path = normalize(path);
-    let path = path.as_str();
+    let key = normalize(path);
     conn.execute(
-        "INSERT INTO versions (path, ts, size, hash, label, strategy, dict_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-        (path, ts, size, hash, label, strategy, dict_id),
+        "INSERT INTO versions (path, ts, size, hash, label, strategy, dict_id, display_path) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        (&key, ts, size, hash, label, strategy, dict_id, path),
     )?;
     Ok(conn.last_insert_rowid())
 }
@@ -121,19 +138,10 @@ pub fn list_for(conn: &Connection, path: &str) -> Result<Vec<Version>> {
     let path = normalize(path);
     let path = path.as_str();
     let mut stmt = conn
-        .prepare("SELECT id, path, ts, size, hash, label, strategy, dict_id FROM versions WHERE path = ?1 ORDER BY ts DESC, id DESC")?;
+        .prepare("SELECT id, path, display_path, ts, size, hash, label, strategy, dict_id FROM versions WHERE path = ?1 ORDER BY ts DESC, id DESC")?;
     let rows = stmt
         .query_map([path], |r| {
-            Ok(Version {
-                id: r.get(0)?,
-                path: r.get(1)?,
-                ts: r.get(2)?,
-                size: r.get(3)?,
-                hash: r.get(4)?,
-                label: r.get(5)?,
-                strategy: r.get(6)?,
-                dict_id: r.get(7)?,
-            })
+            version_from_row(r)
         })?
         .collect::<rusqlite::Result<_>>()?;
     Ok(rows)
@@ -142,19 +150,10 @@ pub fn list_for(conn: &Connection, path: &str) -> Result<Vec<Version>> {
 pub fn get(conn: &Connection, id: i64) -> Result<Option<Version>> {
     let v = conn
         .query_row(
-            "SELECT id, path, ts, size, hash, label, strategy, dict_id FROM versions WHERE id = ?1",
+            "SELECT id, path, display_path, ts, size, hash, label, strategy, dict_id FROM versions WHERE id = ?1",
             [id],
             |r| {
-                Ok(Version {
-                    id: r.get(0)?,
-                    path: r.get(1)?,
-                    ts: r.get(2)?,
-                    size: r.get(3)?,
-                    hash: r.get(4)?,
-                    label: r.get(5)?,
-                    strategy: r.get(6)?,
-                    dict_id: r.get(7)?,
-                })
+                version_from_row(r)
             },
         )
         .optional()?;
@@ -313,16 +312,17 @@ pub fn dict_refcount(conn: &Connection, dict_id: i64) -> Result<i64> {
 /// Remap version history on rename/move: old -> new, including nested paths
 /// (for folders). Content-addressed blobs and chunks need not be touched —
 /// only the `path` column changes.
-pub fn relink(conn: &Connection, old: &str, new: &str) -> Result<()> {
-    let old = normalize(old);
-    let new = normalize(new);
+pub fn relink(conn: &Connection, old_orig: &str, new_orig: &str) -> Result<()> {
+    let old = normalize(old_orig);
+    let new = normalize(new_orig);
     let (old, new) = (old.as_str(), new.as_str());
 
     let (_, prefix, upper) = subtree_bounds(old);
-    let affected: Vec<(i64, String)> = {
-        let mut stmt = conn
-            .prepare("SELECT id, path FROM versions WHERE path = ?1 OR (path >= ?2 AND path < ?3)")?;
-        stmt.query_map((old, &prefix, &upper), |r| Ok((r.get(0)?, r.get(1)?)))?
+    let affected: Vec<(i64, String, Option<String>)> = {
+        let mut stmt = conn.prepare(
+            "SELECT id, path, display_path FROM versions WHERE path = ?1 OR (path >= ?2 AND path < ?3)",
+        )?;
+        stmt.query_map((old, &prefix, &upper), |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
             .collect::<rusqlite::Result<_>>()?
     };
     if affected.is_empty() {
@@ -331,10 +331,14 @@ pub fn relink(conn: &Connection, old: &str, new: &str) -> Result<()> {
 
     conn.execute_batch("BEGIN")?;
     let res: Result<()> = (|| {
-        let mut stmt = conn.prepare("UPDATE versions SET path = ?1 WHERE id = ?2")?;
-        for (id, path) in &affected {
+        let mut stmt = conn.prepare("UPDATE versions SET path = ?1, display_path = ?2 WHERE id = ?3")?;
+        for (id, path, display) in &affected {
             if let Some(np) = remap(path, old, new) {
-                stmt.execute((&np, id))?;
+                let nd = display
+                    .as_deref()
+                    .and_then(|d| rebase_display(d, old_orig, new_orig))
+                    .or_else(|| rebase_display(path, old_orig, new_orig));
+                stmt.execute((&np, nd, id))?;
             }
         }
         Ok(())
@@ -394,14 +398,7 @@ mod tests {
     use super::*;
 
     fn mem() -> Connection {
-        let c = Connection::open_in_memory().unwrap();
-        c.execute_batch(
-            "CREATE TABLE versions (id INTEGER PRIMARY KEY AUTOINCREMENT, path TEXT NOT NULL, ts INTEGER NOT NULL, size INTEGER NOT NULL, hash TEXT NOT NULL, label TEXT NOT NULL DEFAULT '', strategy TEXT NOT NULL DEFAULT 'full', dict_id INTEGER);
-             CREATE TABLE version_chunks (version_id INTEGER NOT NULL, chunk_order INTEGER NOT NULL, chunk_hash TEXT NOT NULL, chunk_size INTEGER NOT NULL, PRIMARY KEY (version_id, chunk_order));
-             CREATE TABLE zstd_dicts (id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, size INTEGER NOT NULL, zstd_count_at_train INTEGER NOT NULL DEFAULT 0);",
-        )
-        .unwrap();
-        c
+        crate::index::db::open_in_memory()
     }
 
     fn paths(conn: &Connection) -> Vec<String> {

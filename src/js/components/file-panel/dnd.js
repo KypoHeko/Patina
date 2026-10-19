@@ -3,7 +3,7 @@
 
 import { startDrag, getDrag, clearDrag } from '../../state/drag.js';
 import { copyEntries, moveEntries, checkConflicts } from '../../api/fs.js';
-import { parentPath, folderName } from '../../lib/paths.js';
+import { parentPath, folderName, samePath, isInside } from '../../lib/paths.js';
 import { t } from '../../lib/i18n.js';
 
 export const DndMixin = {
@@ -68,11 +68,14 @@ export const DndMixin = {
   },
 
   async dropEntries(sources, destDir, copy) {
+    // Case-insensitive on Windows: entries from a tag view or a search come
+    // with a different spelling than the folder listing, and a copy/move of a
+    // file onto itself (or of a folder into its own subtree) must be refused.
     const filtered = sources.filter((src) => {
-      if (src === destDir) return false;
-      if (parentPath(src) === destDir) return false;
-      const sep = src.includes('\\') ? '\\' : '/';
-      if (destDir.startsWith(src + sep)) return false;
+      if (samePath(src, destDir)) return false;
+      const parent = parentPath(src);
+      if (parent && samePath(parent, destDir)) return false;
+      if (isInside(destDir, src)) return false;
       return true;
     });
     if (!filtered.length) return;

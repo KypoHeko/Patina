@@ -83,3 +83,27 @@ export function pathKey(path) {
   }
   return s.toLowerCase();
 }
+
+/** Windows-style path (drive letter or backslash) — its file system ignores case. */
+function isWindowsPath(path) {
+  const s = String(path);
+  return /^[A-Za-z]:/.test(s) || s.includes('\\');
+}
+
+/** Comparison key: case-folded only where the file system is case-insensitive. */
+function compareKey(path) {
+  return isWindowsPath(path) ? pathKey(path) : String(path).replace(/\/+$/, '') || '/';
+}
+
+/** Whether two spellings name the same path (`C:\Docs` vs `c:\docs` on Windows). */
+export function samePath(a, b) {
+  return compareKey(a) === compareKey(b);
+}
+
+/** Whether `child` lies strictly inside `parent` (case rules as in samePath). */
+export function isInside(child, parent) {
+  const c = compareKey(child);
+  const p = compareKey(parent);
+  const sep = isWindowsPath(parent) ? '\\' : '/';
+  return c !== p && c.startsWith(p.endsWith(sep) ? p : p + sep);
+}
