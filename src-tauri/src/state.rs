@@ -8,6 +8,7 @@
 //!   queries anyway, so RwLock's "many readers" gives no real parallelism
 
 use std::path::PathBuf;
+use std::sync::atomic::AtomicU64;
 use std::sync::{Mutex, MutexGuard};
 
 use notify::RecommendedWatcher;
@@ -34,6 +35,10 @@ pub struct AppState {
     /// Recursive watcher of the indexed root (live index).
     pub index_watcher: Mutex<Option<RecommendedWatcher>>,
     pub index_info: Mutex<IndexState>,
+    /// Generation of the latest live-index build. A build started for an
+    /// older generation stops at its next check instead of running to the end
+    /// next to (and racing with) the newer one.
+    pub index_gen: AtomicU64,
 }
 
 impl AppState {
@@ -45,6 +50,7 @@ impl AppState {
             watcher: Mutex::new(None),
             index_watcher: Mutex::new(None),
             index_info: Mutex::new(IndexState::default()),
+            index_gen: AtomicU64::new(0),
         }
     }
 

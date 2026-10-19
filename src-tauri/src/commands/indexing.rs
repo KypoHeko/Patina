@@ -4,7 +4,8 @@
 //! are also built here from file contents.
 
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::Ordering;
 
 use notify::{recommended_watcher, Event, RecursiveMode, Watcher};
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -235,7 +236,15 @@ fn apply_one(app: &AppHandle, content_active: bool, path: &Path, expand_new_dir:
 
 /// Full (re)build of the root index — runs in the background.
 pub(crate) fn build_all(app: &AppHandle, root: &str, content: bool) -> Result<()> {
+    build_all_gen(app, root, content, None)
+}
+
+/// `generation`: the live-index generation this build belongs to. When a newer
+/// `start_index` bumps `AppState::index_gen`, this build stops before writing
+/// anything (Err(Cancelled)). On-demand rebuilds pass `None` and always finish.
+fn build_all_gen(app: &AppHandle, root: &str, content: bool, generation: Option<u64>) -> Result<()> {
     let state = app.state::<AppState>();
+    let superseded = || generation.is_some_and(|g| state.index_gen.load(Ordering::SeqCst) != g);
     // Journal position taken BEFORE the walk: everything that changes during
     // the walk is replayed on the next start, so nothing slips between them.
     let cursor = platform::query_usn_cursor(root);
@@ -249,7 +258,12 @@ pub(crate) fn build_all(app: &AppHandle, root: &str, content: bool) -> Result<()
         .filter_map(|e| e.ok())
     {
         if rows.len() >= SCAN_LIMIT {
+            // Say so instead of silently indexing a part of the tree.
+            let _ = app.emit("index:truncated", serde_json::json!({ "root": root, "limit": SCAN_LIMIT }));
             break;
+        }
+        if rows.len() % 1000 == 0 && superseded() {
+            return Err(Error::Operation("index build superseded by a newer one".into()));
         }
         let path = entry.path();
         if let Some(row) = build_row(path) {
@@ -275,6 +289,9 @@ pub(crate) fn build_all(app: &AppHandle, root: &str, content: bool) -> Result<()
             }
         }
     }
+    if superseded() {
+        return Err(Error::Operation("index build superseded by a newer one".into()));
+    }
     {
         let mut conn = state.db()?;
         file_index::replace_subtree(&mut conn, root, &rows)?;
@@ -288,6 +305,9 @@ pub(crate) fn build_all(app: &AppHandle, root: &str, content: bool) -> Result<()
         );
         // Content + link edges are built from the same read bodies.
         let edges = build_edges(app, root, &content_rows, &rows);
+        if superseded() {
+            return Err(Error::Operation("index build superseded by a newer one".into()));
+        }
         let mut conn = state.db()?;
         content_index::ensure_table(&conn)?;
         content_index::replace_subtree(&mut conn, root, &content_rows)?;
@@ -387,23 +407,32 @@ pub async fn start_index(
         .is_some();
     let app2 = app.clone();
     let root2 = root.clone();
-    match plan_index(root_changed, force, need_content_build, has_cursor) {
+    let plan = plan_index(root_changed, force, need_content_build, has_cursor);
+    // A new build supersedes any build still running for an older request.
+    let generation = if plan == IndexPlan::UpToDate {
+        state.index_gen.load(Ordering::SeqCst)
+    } else {
+        state.index_gen.fetch_add(1, Ordering::SeqCst) + 1
+    };
+    match plan {
         IndexPlan::FullBuild => {
             // build_all is a synchronous blocking walk + transactions: spawn_blocking
             // so we do not occupy an async-runtime worker for the whole index build.
             // `content_active`, not `content`: a forced rebuild of a root whose
             // content index is live must refresh the content index too.
             tauri::async_runtime::spawn_blocking(move || {
-                let _ = build_all(&app2, &root2, content_active);
-                let _ = app2.emit("index:ready", &root2);
+                if build_all_gen(&app2, &root2, content_active, Some(generation)).is_ok() {
+                    let _ = app2.emit("index:ready", &root2);
+                }
             });
         }
         IndexPlan::Incremental => {
             tauri::async_runtime::spawn_blocking(move || {
-                if !sync_from_journal(&app2, &root2, content_active) {
-                    let _ = build_all(&app2, &root2, content_active);
+                let ok = sync_from_journal(&app2, &root2, content_active)
+                    || build_all_gen(&app2, &root2, content_active, Some(generation)).is_ok();
+                if ok {
+                    let _ = app2.emit("index:ready", &root2);
                 }
-                let _ = app2.emit("index:ready", &root2);
             });
         }
         IndexPlan::UpToDate => {
@@ -413,23 +442,21 @@ pub async fn start_index(
 
     // (Re)start the recursive watcher on the root.
     if root_changed || force {
+        // The notify callback only forwards paths; a worker thread batches
+        // them (300 ms of quiet, at most 2 s), de-duplicates and applies them,
+        // then emits ONE `index:changed`. Before, every single event touched
+        // the DB on notify's thread and emitted its own event — copying 10 000
+        // files flooded the UI with 10 000 re-queries. The worker ends when the
+        // watcher (and with it the sender) is dropped.
+        let (tx, rx) = std::sync::mpsc::channel::<PathBuf>();
         let app3 = app.clone();
+        std::thread::spawn(move || watch_worker(app3, rx));
         let mut watcher =
             recommended_watcher(move |res: notify::Result<Event>| {
                 if let Ok(ev) = res {
-                    if ev.paths.is_empty() {
-                        return;
+                    for p in ev.paths {
+                        let _ = tx.send(p);
                     }
-                    let content_active = app3
-                        .state::<AppState>()
-                        .index_info
-                        .lock()
-                        .map(|i| i.content_active)
-                        .unwrap_or(false);
-                    for p in &ev.paths {
-                        apply_change(&app3, content_active, p);
-                    }
-                    let _ = app3.emit("index:changed", ());
                 }
             })
             .map_err(|e| Error::Operation(e.to_string()))?;
@@ -440,6 +467,46 @@ pub async fn start_index(
     }
 
     Ok(())
+}
+
+/// Drain watcher events in batches (see `start_index`).
+fn watch_worker(app: AppHandle, rx: std::sync::mpsc::Receiver<PathBuf>) {
+    use std::sync::mpsc::RecvTimeoutError;
+    use std::time::{Duration, Instant};
+    const QUIET: Duration = Duration::from_millis(300);
+    const MAX_BATCH: Duration = Duration::from_secs(2);
+    while let Ok(first) = rx.recv() {
+        let mut batch: HashSet<PathBuf> = HashSet::from([first]);
+        let started = Instant::now();
+        loop {
+            match rx.recv_timeout(QUIET) {
+                Ok(p) => {
+                    batch.insert(p);
+                    if started.elapsed() >= MAX_BATCH {
+                        break;
+                    }
+                }
+                Err(RecvTimeoutError::Timeout) => break,
+                Err(RecvTimeoutError::Disconnected) => {
+                    batch.clear(); // the watcher was replaced — drop the rest
+                    break;
+                }
+            }
+        }
+        if batch.is_empty() {
+            return;
+        }
+        let content_active = app
+            .state::<AppState>()
+            .index_info
+            .lock()
+            .map(|i| i.content_active)
+            .unwrap_or(false);
+        for p in &batch {
+            apply_change(&app, content_active, p);
+        }
+        let _ = app.emit("index:changed", ());
+    }
 }
 
 /// Rebuild derived edges (links/imports/mentions) for a subtree by walking the

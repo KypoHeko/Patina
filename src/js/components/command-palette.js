@@ -3,6 +3,7 @@ import { getPane } from '../state/panes.js';
 import { getActiveSide } from '../state/tabs.js';
 import { startIndex } from '../api/indexing.js';
 import { onEvent } from '../api/events.js';
+import { t } from '../lib/i18n.js';
 
 import { TreeSearchMixin } from './command-palette/tree-search.js';
 import { ContentSearchMixin } from './command-palette/content-search.js';
@@ -55,6 +56,12 @@ export class CommandPalette extends Component {
     // event we just re-run the current query.
     onEvent('index:ready', (root) => this.onIndexReady(root));
     onEvent('index:changed', () => this.onIndexEvent());
+    // The backend indexes at most N entries per root; say so instead of
+    // letting a partial index look complete.
+    onEvent('index:truncated', (p) => {
+      if (!p) return;
+      this.bus.emit('shortcut:hint', { text: t('palette.truncated', { n: p.limit }), type: 'warn' });
+    });
     this.on(document, 'keydown', (e) => {
       if (this._open) this.onKey(e);
     });
