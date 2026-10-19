@@ -86,7 +86,7 @@ mod tests {
 
     #[test]
     fn applies_win32_rules_only_on_windows() {
-        for n in ["a.txt:hidden", "C:", "what?", "a*b", "pipe|", "q\"uote", "tab\there", "trail.", "trail ", "CON", "nul.txt", "Com1.log", "lpt9", "con .txt"] {
+        for n in ["a.txt:hidden", "C:", "what?", "a*b", "pipe|", "q\"uote", "tab\there", "trail.", "trail ", "CON", "nul.txt", "Com1.log", "lpt9", "con .txt", "D:x", "C:..\\x"] {
             assert!(validate_name_for(n, true).is_err(), "{n:?} must be rejected on Windows");
         }
         // Legal on Unix file systems.

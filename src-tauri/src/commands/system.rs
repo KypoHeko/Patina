@@ -28,10 +28,42 @@ pub struct Location {
 }
 
 /// Open a path in the default application (.lnk shortcuts are resolved by the OS).
+///
+/// Security: on Windows, opening an .exe/.bat/.ps1/… RUNS it. Every command
+/// is callable from the webview, so one XSS would be enough to launch any
+/// program. Runnable files therefore need a yes in a native dialog (which a
+/// script cannot answer); a path confirmed once is not asked again in this
+/// session. Default button is "No".
 #[tauri::command]
-pub fn open_path(path: String) -> Result<()> {
-    open::that(&path)?;
-    Ok(())
+pub async fn open_path(path: String) -> Result<()> {
+    tauri::async_runtime::spawn_blocking(move || -> Result<()> {
+        #[cfg(windows)]
+        if crate::platform::is_runnable(&path) && !run_confirmed(&path) {
+            return Err(Error::Operation("not run: the user declined".into()));
+        }
+        open::that(&path)?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| Error::Operation(format!("open interrupted: {e}")))?
+}
+
+/// Paths the user already agreed to run in this session.
+#[cfg(windows)]
+fn run_confirmed(path: &str) -> bool {
+    use std::collections::HashSet;
+    use std::sync::{Mutex, OnceLock};
+    static CONFIRMED: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    let key = crate::index::path_key::normalize(path);
+    let set = CONFIRMED.get_or_init(Default::default);
+    if set.lock().is_ok_and(|s| s.contains(&key)) {
+        return true;
+    }
+    let yes = crate::platform::confirm_run(path);
+    if yes && let Ok(mut s) = set.lock() {
+        s.insert(key);
+    }
+    yes
 }
 
 /// Reveal a file in the system file manager (with selection on Windows).

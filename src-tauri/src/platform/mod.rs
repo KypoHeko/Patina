@@ -25,7 +25,7 @@ pub use usn::{UsnCursor, UsnRead};
 // The re-export makes them available without the windows:: qualification.
 
 #[cfg(windows)]
-pub use windows::{delete_to_recycle_bin, list_drives_native, reveal_in_explorer};
+pub use windows::{confirm_run, delete_to_recycle_bin, list_drives_native, reveal_in_explorer};
 
 // Re-export native icons and the USN Journal for use in commands.
 #[cfg(windows)]
@@ -95,6 +95,22 @@ pub fn logical_drives() -> Vec<char> {
     drive_letters(unsafe { windows::Win32::Storage::FileSystem::GetLogicalDrives() })
 }
 
+/// Extensions Windows EXECUTES on open rather than showing in an app.
+const RUNNABLE_EXTS: &[&str] = &[
+    "exe", "com", "scr", "pif", "bat", "cmd", "ps1", "psm1", "vbs", "vbe", "js", "jse", "wsf", "wsh",
+    "hta", "msi", "msp", "cpl", "reg", "jar",
+];
+
+/// Whether opening `path` would run code (and so needs the user's native
+/// confirmation, see `commands::system::open_path`).
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn is_runnable(path: &str) -> bool {
+    std::path::Path::new(path)
+        .extension()
+        .map(|e| e.to_string_lossy().to_ascii_lowercase())
+        .is_some_and(|e| RUNNABLE_EXTS.contains(&e.as_str()))
+}
+
 // ─── Fallback implementations for non-Windows ──────────────────────
 
 #[cfg(not(windows))]
@@ -124,6 +140,16 @@ pub fn get_native_icon(_path: &str, _size: u32) -> Option<NativeIcon> {
 
 #[cfg(test)]
 mod drive_tests {
+    #[test]
+    fn recognises_runnable_files() {
+        assert!(super::is_runnable(r"C:\Downloads\setup.EXE"));
+        assert!(super::is_runnable("/x/run.bat"));
+        assert!(super::is_runnable("script.ps1"));
+        assert!(!super::is_runnable("notes.txt"));
+        assert!(!super::is_runnable("shortcut.lnk"));
+        assert!(!super::is_runnable("exe")); // a name, not an extension
+    }
+
     #[test]
     fn decodes_the_logical_drive_mask() {
         assert_eq!(super::drive_letters(0), Vec::<char>::new());

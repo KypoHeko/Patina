@@ -52,6 +52,29 @@ impl Drop for ComGuard {
     }
 }
 
+// ─── Confirm running a program ────────────────────────────────────
+
+/// Ask the user, in a NATIVE dialog, whether to run `path`. A script in the
+/// webview can call `open_path` but cannot click a system message box, so an
+/// XSS cannot silently launch a program through Patina.
+pub fn confirm_run(path: &str) -> bool {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        MessageBoxW, IDYES, MB_DEFBUTTON2, MB_ICONWARNING, MB_SETFOREGROUND, MB_TOPMOST, MB_YESNO,
+    };
+    let text = to_wide(&format!("Run this program?\n\n{path}"));
+    let caption = to_wide("Patina");
+    let answer = unsafe {
+        MessageBoxW(
+            HWND::default(),
+            windows::core::PCWSTR(text.as_ptr()),
+            windows::core::PCWSTR(caption.as_ptr()),
+            MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2 | MB_TOPMOST | MB_SETFOREGROUND,
+        )
+    };
+    answer == IDYES
+}
+
 // ─── Reveal in Explorer ───────────────────────────────────────────
 
 /// Open the folder of `path` in Explorer with the item selected, through the
