@@ -21,6 +21,8 @@ use crate::state::AppState;
 
 const SCAN_LIMIT: usize = 50_000;
 const MENTION_SCAN_CAP: usize = 100_000; // upper bound of the body for the mention scan
+/// Text files written to the content index per transaction during a build.
+const CONTENT_BATCH: usize = 200;
 
 /// Explicit outgoing edges of a single file from its body (links/imports,
 /// resolved to existing paths). The mention layer is NOT built here — it
@@ -50,16 +52,25 @@ pub(crate) fn explicit_out_edges(
 }
 
 /// The full set of subtree edges: explicit links/imports + a mention layer by
-/// unique file name (discovery). Built from the already-read bodies.
-pub(crate) fn build_edges(
-    app: &AppHandle,
+/// unique file name (discovery).
+///
+/// Bodies are loaded ONE AT A TIME through `load` (from disk) and dropped
+/// after use: the build no longer keeps the text of every file of the tree in
+/// memory (up to 50 000 × 1 MB) just to compute edges.
+pub(crate) fn build_edges<L, P>(
     root: &str,
-    content_rows: &[content_index::ContentRow],
+    text_files: &[String],
     rows: &[IndexRow],
-) -> Vec<(String, String, String)> {
+    load: L,
+    progress: P,
+) -> Vec<(String, String, String)>
+where
+    L: Fn(&str) -> Option<String>,
+    P: Fn(usize, usize),
+{
     use aho_corasick::AhoCorasickBuilder;
 
-    // Build an in-memory set of all normalized file paths in the subtree.
+    // Build an in-memory set of all file paths in the subtree.
     let known_set: HashSet<String> = rows.iter().map(|r| r.path.clone()).collect();
     let known_paths = links::KnownPaths { paths: &known_set, root_key: path_key::normalize(root) };
 
@@ -77,93 +88,72 @@ pub(crate) fn build_edges(
             .or_insert_with(|| Some(r.path.clone()));
     }
 
-    let mut out: Vec<(String, String, String)> = Vec::new();
-    let mut seen: HashSet<(String, String)> = HashSet::new();
-
-    // 1) Explicit links/imports.
-    for cr in content_rows {
-        for (dst, kind) in explicit_out_edges(&cr.path, &cr.body, Some(&known_paths)) {
-            if seen.insert((cr.path.clone(), dst.clone())) {
-                out.push((cr.path.clone(), dst, kind));
-            }
-        }
-    }
-
-    // 2) Mentions by unique name (the discovery layer). We take only names
-    //    WITH AN EXTENSION (containing '.') and length ≥ 4: this filters out
-    //    "bare" word-names (center, index, montserrat) that coincide with
-    //    ordinary words in text (CSS: text-align: center) and breed false
-    //    links. Names with an extension (utils.js, notes.md) stay.
+    // Mentions by unique name (the discovery layer): only names WITH AN
+    // EXTENSION and length ≥ 4 — bare word-names (center, index) coincide with
+    // ordinary words and breed false links.
     let unique: Vec<(String, String)> = by_name
         .into_iter()
         .filter_map(|(name, p)| p.map(|path| (name, path)))
         .filter(|(name, _)| name.len() >= 4 && name.contains('.'))
         .collect();
-
-    if unique.is_empty() {
-        return out;
-    }
-
     // One Aho-Corasick automaton for all names: each body is scanned in a
-    // single pass (O(body length + number of matches)) instead of iterating all
-    // names over every body — this removes the former quadratic cost.
+    // single pass (O(body length + number of matches)).
     let patterns: Vec<&str> = unique.iter().map(|(name, _)| name.as_str()).collect();
-    let ac = match AhoCorasickBuilder::new()
-        .ascii_case_insensitive(true)
-        .build(&patterns) 
-    {
-        Ok(ac) => ac,
-        Err(_) => return out,
+    let ac = if unique.is_empty() {
+        None
+    } else {
+        AhoCorasickBuilder::new().ascii_case_insensitive(true).build(&patterns).ok()
     };
 
-    let total = content_rows.len();
-    for (i, cr) in content_rows.iter().enumerate() {
-        let body = &cr.body;
-        let slice = if body.len() > MENTION_SCAN_CAP {
-            let mut end = MENTION_SCAN_CAP;
+    let mut out: Vec<(String, String, String)> = Vec::new();
+    let mut seen: HashSet<(String, String)> = HashSet::new();
+    // A match counts only as a SEPARATE token: "pt.js" inside "scri[pt.js]"
+    // must not produce an edge index.html -> pt.js.
+    let nameish = |c: u8| c.is_ascii_alphanumeric() || c == b'.' || c == b'_' || c == b'-';
+
+    let total = text_files.len();
+    for (i, path) in text_files.iter().enumerate() {
+        let Some(body) = load(path) else { continue };
+
+        // 1) Explicit links/imports.
+        for (dst, kind) in explicit_out_edges(path, &body, Some(&known_paths)) {
+            if seen.insert((path.clone(), dst.clone())) {
+                out.push((path.clone(), dst, kind));
+            }
+        }
+
+        // 2) Mentions.
+        if let Some(ac) = &ac {
+            let mut end = body.len().min(MENTION_SCAN_CAP);
             while end > 0 && !body.is_char_boundary(end) {
                 end -= 1;
             }
-            &body[..end]
-        } else {
-            &body[..]
-        };
-        // Search the original-case slice directly — no to_lowercase() allocation.
-        let hb = slice.as_bytes();
-        // A match counts only as a SEPARATE token: the name must not be part of
-        // a longer word/name. Otherwise "pt.js" is caught inside "scri[pt.js]"
-        // — hence a false edge index.html -> pt.js.
-        let nameish = |c: u8| c.is_ascii_alphanumeric() || c == b'.' || c == b'_' || c == b'-';
-        let mut matched: HashSet<usize> = HashSet::new();
-        for m in ac.find_iter(slice) {
-            let (s, e) = (m.start(), m.end());
-            let left_ok = s == 0 || !nameish(hb[s - 1]);
-            let right_ok = e >= hb.len() || !nameish(hb[e]);
-            if left_ok && right_ok {
-                matched.insert(m.pattern().as_usize());
-                if matched.len() == unique.len() {
-                    break; // all names already found — no point scanning further
+            let slice = &body[..end];
+            let hb = slice.as_bytes();
+            let mut matched: HashSet<usize> = HashSet::new();
+            for m in ac.find_iter(slice) {
+                let (s, e) = (m.start(), m.end());
+                let left_ok = s == 0 || !nameish(hb[s - 1]);
+                let right_ok = e >= hb.len() || !nameish(hb[e]);
+                if left_ok && right_ok {
+                    matched.insert(m.pattern().as_usize());
+                    if matched.len() == unique.len() {
+                        break; // all names already found
+                    }
+                }
+            }
+            for idx in matched {
+                let dst = &unique[idx].1;
+                if dst != path && seen.insert((path.clone(), dst.clone())) {
+                    out.push((path.clone(), dst.clone(), "mention".to_string()));
                 }
             }
         }
-        for idx in matched {
-            let dst = &unique[idx].1;
-            if dst.as_str() == cr.path {
-                continue;
-            }
-            if seen.insert((cr.path.clone(), dst.clone())) {
-                out.push((cr.path.clone(), dst.clone(), "mention".to_string()));
-            }
-        }
 
-        // Live progress for the relations phase. Adaptive step + always a final
-        // emit, otherwise for folders < 200 files the counter froze at 0/total.
+        // Live progress for the relations phase (always a final emit).
         let step = (total / 20).clamp(1, 200);
         if (i + 1) % step == 0 || i + 1 == total {
-            let _ = app.emit(
-                "index:progress",
-                serde_json::json!({ "root": root, "count": i + 1, "total": total, "phase": "relations" }),
-            );
+            progress(i + 1, total);
         }
     }
 
@@ -215,7 +205,8 @@ fn apply_one(app: &AppHandle, root: &Path, content_active: bool, path: &Path, ex
                 let body = String::from_utf8_lossy(&bytes).into_owned();
                 if let Ok(conn) = state.db() {
                     let _ = content_index::ensure_table(&conn);
-                    let _ = content_index::upsert_one(&conn, &pstr, &body);
+                    let stamp = (row.size as i64, row.mtime.map(|m| m as i64));
+                    let _ = content_index::upsert_one(&conn, &pstr, &body, stamp);
                     // Incrementally update only the explicit outgoing edges
                     // (the mention layer is rebuilt on a full reindex).
                     // No known_paths set available here — resolve() falls
@@ -247,11 +238,15 @@ pub(crate) fn build_all(app: &AppHandle, root: &str, content: bool) -> Result<()
 fn build_all_gen(app: &AppHandle, root: &str, content: bool, generation: Option<u64>) -> Result<()> {
     let state = app.state::<AppState>();
     let superseded = || generation.is_some_and(|g| state.index_gen.load(Ordering::SeqCst) != g);
+    let cancelled = || Error::Operation("index build superseded by a newer one".into());
     // Journal position taken BEFORE the walk: everything that changes during
     // the walk is replayed on the next start, so nothing slips between them.
     let cursor = platform::query_usn_cursor(root);
+
+    // 1) Walk: metadata only. Text files are just remembered — bodies are
+    //    read later in bounded batches, never all at once.
     let mut rows: Vec<IndexRow> = Vec::new();
-    let mut content_rows: Vec<content_index::ContentRow> = Vec::new();
+    let mut text_files: Vec<(String, u64, Option<u64>)> = Vec::new();
     let mut since_emit = 0usize;
     for entry in walkdir::WalkDir::new(root)
         .min_depth(1)
@@ -265,22 +260,14 @@ fn build_all_gen(app: &AppHandle, root: &str, content: bool, generation: Option<
             break;
         }
         if rows.len().is_multiple_of(1000) && superseded() {
-            return Err(Error::Operation("index build superseded by a newer one".into()));
+            return Err(cancelled());
         }
         let path = entry.path();
         if let Some(row) = build_row(path) {
-            if content
-                && !row.is_dir
-                && text_detect::is_text(path, row.size)
-                && let Ok(bytes) = std::fs::read(path)
-            {
-                content_rows.push(content_index::ContentRow {
-                    path: row.path.clone(),
-                    body: String::from_utf8_lossy(&bytes).into_owned(),
-                });
+            if content && !row.is_dir && text_detect::is_text(path, row.size) {
+                text_files.push((row.path.clone(), row.size, row.mtime));
             }
             rows.push(row);
-            // Live progress for the UI.
             since_emit += 1;
             if since_emit >= 200 {
                 since_emit = 0;
@@ -292,27 +279,84 @@ fn build_all_gen(app: &AppHandle, root: &str, content: bool, generation: Option<
         }
     }
     if superseded() {
-        return Err(Error::Operation("index build superseded by a newer one".into()));
+        return Err(cancelled());
     }
+
     {
         let mut conn = state.db()?;
         file_index::replace_subtree(&mut conn, root, &rows)?;
     }
+
     if content {
-        // Building edges can take noticeable time — a separate UI phase;
-        // build_edges emits incremental progress internally.
+        // 2) Content: re-read only new or changed text files (size/mtime differ
+        //    from the previous index), in batches; drop rows of files that are
+        //    gone or no longer text.
+        let (indexed, previous) = {
+            let conn = state.db()?;
+            content_index::ensure_table(&conn)?;
+            (content_index::keys_in_subtree(&conn, root)?, content_index::stamps_in_subtree(&conn, root)?)
+        };
+        let current: HashSet<String> = text_files.iter().map(|(p, _, _)| path_key::normalize(p)).collect();
+        let stale: Vec<String> = indexed.difference(&current).cloned().collect();
+        {
+            let mut conn = state.db()?;
+            content_index::delete_keys(&mut conn, &stale)?;
+        }
+        let mut batch: Vec<content_index::ContentRow> = Vec::with_capacity(CONTENT_BATCH);
+        let total = text_files.len();
+        for (i, (path, size, mtime)) in text_files.iter().enumerate() {
+            let key = path_key::normalize(path);
+            let stamp = (*size as i64, mtime.map(|m| m as i64));
+            if indexed.contains(&key) && previous.get(&key) == Some(&stamp) {
+                continue; // unchanged since the last build
+            }
+            if let Ok(bytes) = std::fs::read(path) {
+                batch.push(content_index::ContentRow {
+                    path: path.clone(),
+                    body: String::from_utf8_lossy(&bytes).into_owned(),
+                    stamp,
+                });
+            }
+            if batch.len() >= CONTENT_BATCH || (i + 1 == total && !batch.is_empty()) {
+                if superseded() {
+                    return Err(cancelled());
+                }
+                let mut conn = state.db()?;
+                content_index::upsert_many(&mut conn, &batch)?;
+                batch.clear();
+                let _ = app.emit(
+                    "index:progress",
+                    serde_json::json!({ "root": root, "count": i + 1, "total": total, "phase": "content" }),
+                );
+            }
+        }
+        if !batch.is_empty() {
+            let mut conn = state.db()?;
+            content_index::upsert_many(&mut conn, &batch)?;
+        }
+
+        // 3) Link edges, reading one body at a time.
         let _ = app.emit(
             "index:progress",
-            serde_json::json!({ "root": root, "count": 0, "total": content_rows.len(), "phase": "relations" }),
+            serde_json::json!({ "root": root, "count": 0, "total": total, "phase": "relations" }),
         );
-        // Content + link edges are built from the same read bodies.
-        let edges = build_edges(app, root, &content_rows, &rows);
+        let paths: Vec<String> = text_files.into_iter().map(|(p, _, _)| p).collect();
+        let edges = build_edges(
+            root,
+            &paths,
+            &rows,
+            |p| std::fs::read(p).ok().map(|b| String::from_utf8_lossy(&b).into_owned()),
+            |count, total| {
+                let _ = app.emit(
+                    "index:progress",
+                    serde_json::json!({ "root": root, "count": count, "total": total, "phase": "relations" }),
+                );
+            },
+        );
         if superseded() {
-            return Err(Error::Operation("index build superseded by a newer one".into()));
+            return Err(cancelled());
         }
         let mut conn = state.db()?;
-        content_index::ensure_table(&conn)?;
-        content_index::replace_subtree(&mut conn, root, &content_rows)?;
         edges::replace_derived_subtree(&mut conn, root, &edges)?;
     }
     {
@@ -559,6 +603,40 @@ mod tests {
         assert!(!sample_looks_textual(&binary));
     }
     
+    #[test]
+    fn build_edges_streams_bodies_and_finds_imports_and_mentions() {
+        use super::build_edges;
+        use crate::index::file_index::IndexRow;
+        let row = |p: &str| IndexRow {
+            path: p.into(),
+            name: p.rsplit('/').next().unwrap().into(),
+            is_dir: false,
+            size: 1,
+            mtime: None,
+            ext: None,
+        };
+        let rows = vec![row("/p/a.js"), row("/p/utils.js"), row("/p/notes.md")];
+        let texts: Vec<String> = rows.iter().map(|r| r.path.clone()).collect();
+        let loads = std::cell::Cell::new(0);
+        let edges = build_edges(
+            "/p",
+            &texts,
+            &rows,
+            |p| {
+                loads.set(loads.get() + 1);
+                Some(match p {
+                    "/p/a.js" => "import u from './utils.js'".to_string(),
+                    "/p/notes.md" => "see utils.js for details".to_string(),
+                    _ => String::new(),
+                })
+            },
+            |_, _| {},
+        );
+        assert_eq!(loads.get(), 3, "each body is loaded exactly once");
+        assert!(edges.contains(&("/p/a.js".into(), "/p/utils.js".into(), "import".into())));
+        assert!(edges.contains(&("/p/notes.md".into(), "/p/utils.js".into(), "mention".into())));
+    }
+
     #[test]
     fn same_live_root_needs_nothing() {
         assert_eq!(plan_index(false, false, false, true), IndexPlan::UpToDate);
