@@ -63,9 +63,13 @@ export class StatusBar extends Component {
 
     let sel = '';
     if (pane.selected.length) {
-      const bytes = pane.entries
-        .filter((e) => e.kind !== 'folder' && pane.selected.includes(e.path))
-        .reduce((s, e) => s + e.size, 0);
+      // A Set: `selected.includes` inside the filter was O(entries × selected)
+      // — Shift+End in a folder of 20 000 files cost ~0.4 s per store update.
+      const selectedSet = new Set(pane.selected);
+      let bytes = 0;
+      for (const e of pane.entries) {
+        if (e.kind !== 'folder' && selectedSet.has(e.path)) bytes += e.size || 0;
+      }
       sel = ` ${sep} <span class="status__sel">${t('status.selected', { n: pane.selected.length })} ${sep} ${formatSize(bytes)}</span>`;
     }
 
