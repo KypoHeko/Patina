@@ -10,6 +10,15 @@ pub fn hash_file(path: &str) -> io::Result<String> {
     Ok(hasher.finalize().to_hex().to_string())
 }
 
+/// BLAKE3 of the first `n` bytes of a file (the cheap pre-filter of the
+/// duplicate search: same-size files that differ usually differ early).
+pub fn hash_head(path: &str, n: u64) -> io::Result<String> {
+    let mut hasher = blake3::Hasher::new();
+    let file = File::open(path)?;
+    io::copy(&mut file.take(n), &mut hasher)?;
+    Ok(hasher.finalize().to_hex().to_string())
+}
+
 /// Hashes a file and collects its bytes into memory at the same time — one disk
 /// pass instead of two (hash_file + std::fs::read).
 ///

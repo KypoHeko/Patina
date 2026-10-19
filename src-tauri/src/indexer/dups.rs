@@ -12,6 +12,60 @@ use crate::indexer::{hasher, scanner};
 
 pub const SCAN_CAP: usize = 20_000;
 
+/// Size of the head hashed to pre-filter large same-size files.
+const HEAD_BYTES: u64 = 64 * 1024;
+
+/// Map `f` over `items` on a few worker threads, keeping the input order.
+/// `on_each` runs on the calling thread after every finished item, and
+/// `cancelled` is polled there as well; a cancel stops the workers at their
+/// next item and returns an error.
+fn par_map<T, R, F, E, C>(items: &[T], f: F, mut on_each: E, cancelled: &C) -> Result<Vec<R>>
+where
+    T: Sync,
+    R: Send,
+    F: Fn(&T) -> R + Sync,
+    E: FnMut(usize),
+    C: Fn() -> bool,
+{
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    let workers = std::thread::available_parallelism().map_or(2, |n| n.get()).clamp(1, 4).min(items.len().max(1));
+    let next = AtomicUsize::new(0);
+    let stop = AtomicBool::new(false);
+    let mut out: Vec<Option<R>> = (0..items.len()).map(|_| None).collect();
+    let mut was_cancelled = false;
+    std::thread::scope(|s| {
+        let (tx, rx) = std::sync::mpsc::channel::<(usize, R)>();
+        for _ in 0..workers {
+            let tx = tx.clone();
+            let (next, stop, f) = (&next, &stop, &f);
+            s.spawn(move || {
+                while !stop.load(Ordering::Relaxed) {
+                    let i = next.fetch_add(1, Ordering::Relaxed);
+                    let Some(item) = items.get(i) else { break };
+                    if tx.send((i, f(item))).is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+        drop(tx);
+        for (i, r) in rx {
+            out[i] = Some(r);
+            on_each(i);
+            if cancelled() {
+                was_cancelled = true;
+                stop.store(true, Ordering::Relaxed);
+                break;
+            }
+        }
+        stop.store(true, Ordering::Relaxed);
+    });
+    if was_cancelled || (!items.is_empty() && cancelled()) {
+        return Err(Error::Operation("duplicate search cancelled".into()));
+    }
+    Ok(out.into_iter().map(|r| r.expect("every item was processed")).collect())
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DupGroup {
@@ -38,11 +92,28 @@ where
         }
     }
 
-    let candidates: Vec<scanner::ScanFile> = by_size
-        .into_iter()
-        .filter(|(_, g)| g.len() >= 2)
-        .flat_map(|(_, g)| g)
-        .collect();
+    let groups: Vec<Vec<scanner::ScanFile>> = by_size.into_values().filter(|g| g.len() >= 2).collect();
+    if groups.is_empty() {
+        on_progress(0, 0);
+        return Ok(Vec::new());
+    }
+
+    // Pre-filter large files by the hash of their first HEAD_BYTES: same-size
+    // files that differ almost always differ early, so most of them never get
+    // read in full (before, every same-size candidate was hashed end to end).
+    let (small, large): (Vec<_>, Vec<_>) = groups.into_iter().partition(|g| g[0].size <= HEAD_BYTES);
+    let mut candidates: Vec<scanner::ScanFile> = small.into_iter().flatten().collect();
+    let large: Vec<scanner::ScanFile> = large.into_iter().flatten().collect();
+    if !large.is_empty() {
+        let heads = par_map(&large, |f| hasher::hash_head(&f.path, HEAD_BYTES).ok(), |_| {}, &cancelled)?;
+        let mut by_head: HashMap<(u64, String), Vec<scanner::ScanFile>> = HashMap::new();
+        for (f, h) in large.into_iter().zip(heads) {
+            if let Some(h) = h {
+                by_head.entry((f.size, h)).or_default().push(f);
+            }
+        }
+        candidates.extend(by_head.into_values().filter(|g| g.len() >= 2).flatten());
+    }
     if candidates.is_empty() {
         on_progress(0, 0);
         return Ok(Vec::new());
@@ -65,19 +136,25 @@ where
     let total = to_hash.len();
     on_progress(0, total);
 
-    let mut fresh: Vec<(String, u64, i64, String)> = Vec::new();
+    // Full hashes on several threads: hashing is disk/CPU bound and the files
+    // are independent. Progress and cancellation stay on this thread.
     let mut done = 0usize;
-    for f in to_hash {
-        if cancelled() {
-            return Err(Error::Operation("duplicate search cancelled".into()));
-        }
-        if let Ok(h) = hasher::hash_file(&f.path) {
+    let full = par_map(
+        &to_hash,
+        |f| hasher::hash_file(&f.path).ok(),
+        |_| {
+            done += 1;
+            if done.is_multiple_of(8) || done == total {
+                on_progress(done, total);
+            }
+        },
+        &cancelled,
+    )?;
+    let mut fresh: Vec<(String, u64, i64, String)> = Vec::new();
+    for (f, h) in to_hash.into_iter().zip(full) {
+        if let Some(h) = h {
             fresh.push((f.path.clone(), f.size, f.mtime, h.clone()));
             hashes.insert(f.path.clone(), h);
-        }
-        done += 1;
-        if done.is_multiple_of(8) || done == total {
-            on_progress(done, total);
         }
     }
 
@@ -138,5 +215,37 @@ mod tests {
 
         let db2 = Mutex::new(crate::index::db::open_in_memory());
         assert!(find(&db2, &root, |_, _| {}, || true).is_err());
+    }
+
+    #[test]
+    fn large_files_are_compared_by_head_then_in_full() {
+        let dir = tempfile::tempdir().unwrap();
+        let big = vec![7u8; (HEAD_BYTES as usize) * 2];
+        let mut tail_differs = big.clone();
+        *tail_differs.last_mut().unwrap() = 8;
+        let mut head_differs = big.clone();
+        head_differs[0] = 9;
+        std::fs::write(dir.path().join("a.bin"), &big).unwrap();
+        std::fs::write(dir.path().join("b.bin"), &big).unwrap();
+        std::fs::write(dir.path().join("c.bin"), &tail_differs).unwrap();
+        std::fs::write(dir.path().join("d.bin"), &head_differs).unwrap();
+
+        let db = Mutex::new(crate::index::db::open_in_memory());
+        let root = dir.path().to_string_lossy().into_owned();
+        let totals = Mutex::new(Vec::new());
+        let groups = find(&db, &root, |_, t| totals.lock().unwrap().push(t), || false).unwrap();
+        assert_eq!(groups.len(), 1);
+        let mut names: Vec<_> = groups[0].paths.iter().map(|p| p.rsplit(['/', '\\']).next().unwrap().to_string()).collect();
+        names.sort();
+        assert_eq!(names, ["a.bin", "b.bin"]);
+        // d.bin was dropped by the head pre-filter: only a, b, c were hashed in full.
+        assert_eq!(*totals.lock().unwrap().last().unwrap(), 3);
+    }
+
+    #[test]
+    fn par_map_keeps_order() {
+        let items: Vec<u32> = (0..100).collect();
+        let out = par_map(&items, |x| x * 2, |_| {}, &|| false).unwrap();
+        assert_eq!(out, items.iter().map(|x| x * 2).collect::<Vec<_>>());
     }
 }
