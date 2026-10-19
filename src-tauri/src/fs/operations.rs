@@ -37,9 +37,43 @@ pub fn rename_entry(path: &str, new_name: &str) -> Result<String> {
         .parent()
         .ok_or_else(|| Error::InvalidPath(path.to_string()))?;
     let dest = parent.join(new_name);
-    if dest.exists() {
+    // On a case-insensitive file system (Windows) `report.txt` → `Report.txt`
+    // finds the source itself under the new name: that is a case-only rename
+    // of the same entry, not a conflict.
+    let case_only = crate::index::path_key::normalize(&dest.to_string_lossy())
+        == crate::index::path_key::normalize(path);
+    if dest.exists() && !case_only {
         return Err(Error::Operation(format!("already exists: {new_name}")));
     }
     std::fs::rename(src, &dest)?;
     Ok(dest.to_string_lossy().into_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rename_refuses_an_existing_target() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "a").unwrap();
+        std::fs::write(dir.path().join("b.txt"), "b").unwrap();
+        let src = dir.path().join("a.txt").to_string_lossy().into_owned();
+        assert!(rename_entry(&src, "b.txt").is_err());
+        assert_eq!(std::fs::read_to_string(dir.path().join("b.txt")).unwrap(), "b");
+    }
+
+    #[test]
+    fn rename_changes_letter_case() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("report.txt"), "x").unwrap();
+        let src = dir.path().join("report.txt").to_string_lossy().into_owned();
+        let new = rename_entry(&src, "Report.txt").unwrap();
+        assert!(new.ends_with("Report.txt"));
+        let names: Vec<String> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, vec!["Report.txt".to_string()]);
+    }
 }
