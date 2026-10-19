@@ -8,6 +8,7 @@
 
 use crate::error::{Error, Result};
 
+use super::icon;
 use super::usn::{self, FileRef};
 use super::{DriveInfo, NativeIcon, UsnCursor, UsnRead};
 
@@ -436,91 +437,86 @@ pub fn get_native_icon(path: &str, size: u32) -> Option<NativeIcon> {
 
 /// Converts an HICON into PNG bytes of the given size.
 ///
-/// Strategy: get the BITMAP from the icon, read the pixels, encode to PNG
-/// via the `image` crate.
+/// The bitmaps are read with their REAL dimensions (GetObjectW) from a memory
+/// DC they are not selected into — GetDIBits requires the bitmap NOT to be
+/// selected into a DC (the previous code selected it). Icons without alpha get
+/// it from the AND mask, and the result is scaled to `size` if the system
+/// returned another size.
 #[allow(dead_code)]
 unsafe fn icon_to_png(
     icon: windows::Win32::UI::WindowsAndMessaging::HICON,
     size: u32,
 ) -> Option<Vec<u8>> {
     use windows::Win32::Graphics::Gdi::{
-        CreateCompatibleDC, DeleteDC, DeleteObject, GetDIBits, SelectObject, BITMAPINFO,
-        BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS,
+        CreateCompatibleDC, DeleteDC, DeleteObject, GetDIBits, GetObjectW, BITMAP, BITMAPINFO,
+        BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HBITMAP, HDC, HGDIOBJ,
     };
     use windows::Win32::UI::WindowsAndMessaging::{GetIconInfo, ICONINFO};
 
-    unsafe {
-    let mut icon_info = ICONINFO::default();
-    if GetIconInfo(icon, &mut icon_info).is_err() {
-        return None;
-    }
-
-    // GetIconInfo creates two bitmaps (hbmColor and hbmMask); per the WinAPI
-    // contract the caller must delete them, otherwise a GDI object leaks per call.
-    // hbmMask is unused — delete it right away; hbmColor is needed for GetDIBits,
-    // freed after the DC (or, on an early exit, right here).
-    if !icon_info.hbmMask.is_invalid() {
-        let _ = DeleteObject(icon_info.hbmMask);
-    }
-
-    let hdc = CreateCompatibleDC(None);
-    if hdc.is_invalid() {
-        if !icon_info.hbmColor.is_invalid() {
-            let _ = DeleteObject(icon_info.hbmColor);
-        }
-        return None;
-    }
-
-    let old_bmp = SelectObject(hdc, icon_info.hbmColor);
-
-    let mut bmi = BITMAPINFO {
-        bmiHeader: BITMAPINFOHEADER {
-            biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
-            biWidth: size as i32,
-            biHeight: -(size as i32), // Top-down DIB
-            biPlanes: 1,
-            biBitCount: 32, // BGRA
-            biCompression: BI_RGB.0,
+    /// Read a bitmap as top-down 32-bit BGRA with the given dimensions.
+    unsafe fn read_bgra(dc: HDC, bmp: HBITMAP, w: i32, h: i32) -> Option<Vec<u8>> {
+        let mut bmi = BITMAPINFO {
+            bmiHeader: BITMAPINFOHEADER {
+                biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                biWidth: w,
+                biHeight: -h, // top-down DIB
+                biPlanes: 1,
+                biBitCount: 32,
+                biCompression: BI_RGB.0,
+                ..Default::default()
+            },
             ..Default::default()
-        },
-        ..Default::default()
-    };
-
-    let mut pixels: Vec<u8> = vec![0u8; (size * size * 4) as usize];
-
-    let scan_lines = GetDIBits(
-        hdc,
-        icon_info.hbmColor,
-        0,
-        size,
-        Some(pixels.as_mut_ptr() as *mut _),
-        &mut bmi,
-        DIB_RGB_COLORS,
-    );
-
-    let _ = SelectObject(hdc, old_bmp);
-    let _ = DeleteDC(hdc);
-    if !icon_info.hbmColor.is_invalid() {
-        let _ = DeleteObject(icon_info.hbmColor);
+        };
+        let mut px = vec![0u8; (w * h * 4) as usize];
+        let lines = unsafe {
+            GetDIBits(dc, bmp, 0, h as u32, Some(px.as_mut_ptr() as *mut _), &mut bmi, DIB_RGB_COLORS)
+        };
+        (lines == h).then_some(px)
     }
 
-    if scan_lines == 0 {
-        return None;
-    }
+    unsafe {
+        let mut info = ICONINFO::default();
+        if GetIconInfo(icon, &mut info).is_err() {
+            return None;
+        }
+        // GetIconInfo creates both bitmaps; the caller must delete them, or a
+        // GDI object leaks per call.
+        let free = |b: HBITMAP| {
+            if !b.is_invalid() {
+                let _ = DeleteObject(b);
+            }
+        };
+        if info.hbmColor.is_invalid() {
+            free(info.hbmMask); // monochrome icon — the SVG fallback is used
+            return None;
+        }
 
-    // Convert BGRA → RGBA for the image crate
-    for chunk in pixels.chunks_exact_mut(4) {
-        chunk.swap(0, 2); // B <-> R
-    }
+        let mut bm = BITMAP::default();
+        let got = GetObjectW(
+            HGDIOBJ::from(info.hbmColor),
+            std::mem::size_of::<BITMAP>() as i32,
+            Some(&mut bm as *mut _ as *mut _),
+        );
+        let (w, h) = (bm.bmWidth, bm.bmHeight.abs());
+        let dc = CreateCompatibleDC(None);
+        let pixels = if got == 0 || w <= 0 || h <= 0 || w > 256 || h > 256 || dc.is_invalid() {
+            None
+        } else {
+            read_bgra(dc, info.hbmColor, w, h).map(|color| {
+                let mask = if info.hbmMask.is_invalid() { None } else { read_bgra(dc, info.hbmMask, w, h) };
+                icon::bgra_to_rgba(color, mask.as_deref())
+            })
+        };
+        if !dc.is_invalid() {
+            let _ = DeleteDC(dc);
+        }
+        free(info.hbmColor);
+        free(info.hbmMask);
 
-    // Encode to PNG
-    let img = image::RgbaImage::from_raw(size, size, pixels);
-    img.and_then(|img| {
+        let img = icon::fit(pixels?, w as u32, h as u32, size)?;
         let mut buf = Vec::new();
-        img.write_to(&mut std::io::Cursor::new(&mut buf), image::ImageFormat::Png)
-            .ok()?;
+        img.write_to(&mut std::io::Cursor::new(&mut buf), image::ImageFormat::Png).ok()?;
         Some(buf)
-    })
     }
 }
 

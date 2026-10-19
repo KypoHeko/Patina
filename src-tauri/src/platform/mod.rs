@@ -12,6 +12,7 @@
 //! (re-exported from the windows submodule on Windows, or fallback
 //! implementations on other platforms).
 
+pub mod icon;
 pub mod usn;
 #[cfg(windows)]
 pub mod windows;
