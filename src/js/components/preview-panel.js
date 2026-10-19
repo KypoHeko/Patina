@@ -46,9 +46,12 @@ export class PreviewPanel extends Component {
       const parent = parentPath(this._path);
       if (parent && dirs.includes(parent)) this.refreshPreview();
     });
-    this.subscribe(() => {
-      if (this._open) this.maybeLoad();
-    });
+    this.subscribe(
+      () => {
+        if (this._open) this.maybeLoad();
+      },
+      (s) => getPane(s, getActiveSide(s)).selected,
+    );
     this.on(this.mount, 'click', (e) => this.onClick(e));
   }
 

@@ -156,7 +156,10 @@ export class FilePanel extends Component {
     }
 
     this.renderColhead();
-    this.subscribe((state) => this.sync(state));
+    this.subscribe(
+      (state) => this.sync(state),
+      (s) => [getPane(s, this.side), getActiveSide(s), s.searchQuery, s.searchRegex],
+    );
     this.sync(this.store.getState());
   }
 

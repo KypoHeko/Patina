@@ -23,9 +23,12 @@ export class StatusBar extends Component {
   }
 
   init() {
-    this.subscribe(() => {
-      if (!this._hintTimer) this.render();
-    });
+    this.subscribe(
+      () => {
+        if (!this._hintTimer) this.render();
+      },
+      (s) => getPane(s, getActiveSide(s)),
+    );
     this.listen('shortcut:hint', (payload) => {
       // Back-compatible payload: a bare string is an info message; an object
       // { text, type } carries a severity ('info' | 'warn' | 'error').

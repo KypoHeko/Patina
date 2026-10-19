@@ -41,7 +41,7 @@ export class TabBar extends Component {
     this.on(this.mount, 'dragover', (e) => this.onDragOver(e));
     this.on(this.mount, 'drop', (e) => this.onDrop(e));
     this.on(this.mount, 'dragend', () => this.endDrag());
-    this.subscribe((state) => this.maybeRender(state));
+    this.subscribe((state) => this.maybeRender(state), (s) => [s.tabs, s.activeTabId, s.tabColors]);
     this.render(this.store.getState());
   }
 

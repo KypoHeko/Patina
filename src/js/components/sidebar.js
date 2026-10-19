@@ -51,7 +51,10 @@ export class Sidebar extends Component {
     this.on(this.mount, 'dragleave', (e) => this.onQuickDragLeave(e));
     this.on(this.mount, 'drop', (e) => this.onQuickDrop(e));
     this.on(this.mount, 'dragend', () => this.onQuickDragEnd());
-    this.subscribe(() => this.updateCurrent());
+    this.subscribe(
+      () => this.updateCurrent(),
+      (s) => getPane(s, getActiveSide(s)).path,
+    );
     this.listen('tags:changed', () => this.refreshCounts());
     this.load();
   }

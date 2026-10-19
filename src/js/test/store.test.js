@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { createStore } from '../core/store.js';
 
 describe('createStore', () => {
@@ -62,5 +62,24 @@ describe('createStore', () => {
     store.setState({ v: 1 });
     expect(prev.v).toBe(0);
     expect(store.getState().v).toBe(1);
+  });
+});
+
+describe('store.subscribe with a selector', () => {
+  it('calls the subscriber only when the selected part changes', async () => {
+    const { createStore } = await import('../core/store.js');
+    const store = createStore({ a: 1, b: 1 });
+    const onA = vi.fn();
+    const onPair = vi.fn();
+    store.subscribe(onA, (s) => s.a);
+    store.subscribe(onPair, (s) => [s.a, s.b]);
+    store.setState({ c: 1 }); // unrelated
+    expect(onA).not.toHaveBeenCalled();
+    expect(onPair).not.toHaveBeenCalled();
+    store.setState({ b: 2 });
+    expect(onA).not.toHaveBeenCalled();
+    expect(onPair).toHaveBeenCalledTimes(1);
+    store.setState({ a: 2 });
+    expect(onA).toHaveBeenCalledTimes(1);
   });
 });

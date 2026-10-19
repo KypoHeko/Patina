@@ -83,11 +83,14 @@ searchRegexBtn.addEventListener('click', () => {
   searchInput.focus();
 });
 // On navigation searchQuery is reset programmatically — keep the input in sync.
-store.subscribe((state) => {
-  if (document.activeElement !== searchInput && searchInput.value !== (state.searchQuery || '')) {
-    searchInput.value = state.searchQuery || '';
-  }
-});
+store.subscribe(
+  (state) => {
+    if (document.activeElement !== searchInput && searchInput.value !== (state.searchQuery || '')) {
+      searchInput.value = state.searchQuery || '';
+    }
+  },
+  (s) => s.searchQuery,
+);
 
 document.getElementById('dirsize-btn').addEventListener('click', () => bus.emit('dirsize:recalc'));
 document.getElementById('duplicates-btn').addEventListener('click', () => bus.emit('duplicates:open'));
@@ -166,7 +169,7 @@ function syncLayout(state) {
     workspace.style.gridTemplateColumns = '1fr';
   }
 }
-store.subscribe(syncLayout);
+store.subscribe(syncLayout, (s) => [getActiveTab(s).split, s.splitRatio]);
 syncLayout(store.getState());
 
 const shortcuts = createShortcuts(KEYMAP);

@@ -19,9 +19,10 @@ export class Component {
     this._children = [];
   }
 
-  /** Subscribe to the store with auto-cleanup. */
-  subscribe(fn) {
-    this._cleanups.push(this.store.subscribe(fn));
+  /** Subscribe to the store with auto-cleanup (optionally only to the part
+   *  of the state `selector` picks — see store.subscribe). */
+  subscribe(fn, selector) {
+    this._cleanups.push(this.store.subscribe(fn, selector));
   }
 
   /** Subscribe to the event bus with auto-cleanup. */
