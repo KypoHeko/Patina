@@ -26,12 +26,13 @@ const MENTION_SCAN_CAP: usize = 100_000; // upper bound of the body for the ment
 /// resolved to existing paths). The mention layer is NOT built here — it
 /// requires a shared name map and is rebuilt on a full reindex.
 ///
-/// `known_paths`: set of all normalized file paths in the subtree — used for
-/// O(1) existence checks in `resolve()` instead of `fs::metadata` per candidate.
+/// `known_paths`: all file paths of the scanned subtree — O(1) existence
+/// checks inside the root instead of `fs::metadata` per candidate (targets
+/// outside the root are still checked on disk).
 pub(crate) fn explicit_out_edges(
     src_path: &str,
     body: &str,
-    known_paths: Option<&HashSet<String>>,
+    known_paths: Option<&links::KnownPaths>,
 ) -> Vec<(String, String)> {
     let ext = ext_lower(src_path);
     let kind = links::kind_for(&ext);
@@ -59,7 +60,8 @@ pub(crate) fn build_edges(
     use aho_corasick::AhoCorasickBuilder;
 
     // Build an in-memory set of all normalized file paths in the subtree.
-    let known_paths: HashSet<String> = rows.iter().map(|r| r.path.clone()).collect();
+    let known_set: HashSet<String> = rows.iter().map(|r| r.path.clone()).collect();
+    let known_paths = links::KnownPaths { paths: &known_set, root_key: path_key::normalize(root) };
 
     // basename(lower) -> the unique path (None if the name is not unique).
     let mut by_name: HashMap<String, Option<String>> = HashMap::new();

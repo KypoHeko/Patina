@@ -5,6 +5,9 @@
 use std::collections::HashSet;
 use std::path::{Component, Path, PathBuf};
 
+use crate::index::path_bounds::is_within;
+use crate::index::path_key;
+
 /// The derived edge kind based on the source's extension.
 pub fn kind_for(ext: &str) -> &'static str {
     match ext {
@@ -329,15 +332,22 @@ fn normalize(p: &Path) -> PathBuf {
     out
 }
 
-/// Check whether a normalized path exists: first try the in-memory set of
-/// known paths (O(1)), then fall back to `fs::metadata` for paths outside
-/// the scanned subtree (e.g. newly created files, or incremental watcher
-/// updates where no set is available).
-fn path_exists(normalized: &Path, known: Option<&HashSet<String>>) -> bool {
-    if let Some(set) = known {
-        set.contains(normalized.to_string_lossy().as_ref())
-    } else {
-        std::fs::metadata(normalized).is_ok()
+/// The paths of a scanned subtree, for O(1) existence checks during a full
+/// build. Inside `root` the set is authoritative (no `stat` per candidate);
+/// a target OUTSIDE the scanned root is not in the set and is checked on disk.
+pub struct KnownPaths<'a> {
+    pub paths: &'a HashSet<String>,
+    /// Canonical key of the scanned root (`path_key::normalize`).
+    pub root_key: String,
+}
+
+/// Check whether a lexically normalized candidate path exists.
+fn path_exists(normalized: &Path, known: Option<&KnownPaths>) -> bool {
+    let s = normalized.to_string_lossy();
+    match known {
+        Some(k) if k.paths.contains(s.as_ref()) => true,
+        Some(k) if is_within(&path_key::normalize(&s), &k.root_key) => false,
+        _ => std::fs::metadata(normalized).is_ok(),
     }
 }
 
@@ -348,7 +358,7 @@ fn path_exists(normalized: &Path, known: Option<&HashSet<String>>) -> bool {
 /// `known_paths`: when provided (during a full build), path existence is
 /// checked against this in-memory set instead of hitting the filesystem for
 /// every candidate — this eliminates thousands of `stat` syscalls.
-pub fn resolve(src_path: &str, raw: &str, known_paths: Option<&HashSet<String>>) -> Option<String> {
+pub fn resolve(src_path: &str, raw: &str, known_paths: Option<&KnownPaths>) -> Option<String> {
     let t = raw.trim();
     let t = t.split(['#', '?']).next().unwrap_or("").trim();
     if t.is_empty() || t.starts_with("//") || t.contains("://") {
@@ -565,4 +575,25 @@ fn test_search() {
         assert_eq!(resolve("/x/a.md", "#section", None), None);
         assert_eq!(resolve("/x/a.md", "mailto:n@e.co", None), None);
     }
+
+    #[test]
+    fn full_build_resolves_targets_outside_the_scanned_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let proj = dir.path().join("proj");
+        std::fs::create_dir_all(&proj).unwrap();
+        std::fs::write(dir.path().join("shared.js"), "x").unwrap();
+        let src = proj.join("main.js").to_string_lossy().into_owned();
+        let set: HashSet<String> = [src.clone()].into_iter().collect();
+        let known = KnownPaths {
+            paths: &set,
+            root_key: path_key::normalize(&proj.to_string_lossy()),
+        };
+        let hit = resolve(&src, "../shared.js", Some(&known));
+        assert_eq!(hit, resolve(&src, "../shared.js", None));
+        assert!(hit.is_some());
+        // Inside the root the set stays authoritative: no disk probing.
+        std::fs::write(proj.join("unindexed.js"), "x").unwrap();
+        assert_eq!(resolve(&src, "./unindexed.js", Some(&known)), None);
+    }
 }
+
