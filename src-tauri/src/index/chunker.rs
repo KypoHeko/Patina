@@ -1,4 +1,4 @@
-//! Content-defined chunking based on Rabin fingerprinting.
+//! Content-defined chunking with a Buzhash-style rolling hash.
 //!
 //! Splits data into variable-length chunks at content-defined boundaries.
 //! Unchanged regions yield the same chunks — this is the basis of deduplication.
@@ -14,11 +14,17 @@ use crate::fs::atomic;
 pub const CHUNK_MIN: usize = 256 * 1024;       // 256 KB — minimum chunk
 pub const CHUNK_MAX: usize = 8 * 1024 * 1024;   // 8 MB — maximum chunk
 
-/// Mask used to detect a chunk boundary.
-/// Boundary = hash divisible by CHUNK_MASK with no remainder.
-/// Probability of a boundary at each byte ≈ 1/(CHUNK_MASK+1).
-/// With CHUNK_MASK = 0x1FFFF (131071) the average chunk ≈ 128 KB × 32 ≈ 4 MB.
+/// Mask used to detect a chunk boundary: a boundary is cut where the masked
+/// bits of the rolling hash are all zero, i.e. with probability
+/// 1/(CHUNK_MASK+1) = 1/131 072 per byte once CHUNK_MIN is reached. Expected
+/// chunk ≈ CHUNK_MIN + 128 KB ≈ 384 KB (measured: ~396 KB on random data —
+/// the old comment's "≈ 4 MB" was wrong).
 const CHUNK_MASK: u32 = 0x1FFFF;
+
+/// The boundary test uses the TOP 17 bits of the hash. In this rolling hash a
+/// byte k positions back contributes `T[b] << k`, so the low 17 bits depend on
+/// the last 17 bytes only; the top bits mix the whole 48-byte window.
+const MASK_SHIFT: u32 = 64 - CHUNK_MASK.count_ones();
 
 /// Rolling-hash window (bytes).
 const WINDOW_SIZE: usize = 48;
@@ -55,7 +61,7 @@ impl Boundary {
             .wrapping_sub(self.lookup[old as usize].wrapping_shl(WINDOW_SIZE as u32));
         self.window[self.wi] = b;
         self.wi = (self.wi + 1) % WINDOW_SIZE;
-        (len >= CHUNK_MIN && (self.fp & CHUNK_MASK as u64) == 0) || len >= CHUNK_MAX
+        (len >= CHUNK_MIN && ((self.fp >> MASK_SHIFT) & CHUNK_MASK as u64) == 0) || len >= CHUNK_MAX
     }
 }
 
@@ -382,4 +388,26 @@ mod tests {
         assert!(chunks.iter().all(|c| c.size > 0));
         assert!(chunks.iter().all(|c| c.size as usize <= CHUNK_MAX));
     }
+
+    #[test]
+    fn average_chunk_size_matches_the_documented_value() {
+        let (f, data) = random_file(24 * 1024 * 1024, 0x0BAD_F00D);
+        let chunks = chunk_file(f.path().to_str().unwrap()).unwrap();
+        let avg = data.len() / chunks.len();
+        assert!((256 * 1024..640 * 1024).contains(&avg), "average chunk {} KB", avg / 1024);
+    }
+
+    #[test]
+    fn an_edit_in_the_middle_keeps_most_chunks() {
+        let (f, mut data) = random_file(8 * 1024 * 1024, 0x5EED);
+        let before = chunk_file(f.path().to_str().unwrap()).unwrap();
+        data[4 * 1024 * 1024] ^= 0xFF; // one byte changed
+        let mut g = NamedTempFile::new().unwrap();
+        g.write_all(&data).unwrap();
+        g.flush().unwrap();
+        let after = chunk_file(g.path().to_str().unwrap()).unwrap();
+        let same = after.iter().filter(|c| before.iter().any(|b| b.hash == c.hash)).count();
+        assert!(same + 2 >= after.len(), "only the edited chunk(s) may change: {same}/{}", after.len());
+    }
 }
+
