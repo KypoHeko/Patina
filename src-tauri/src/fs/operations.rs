@@ -29,9 +29,7 @@ pub fn delete_entries(paths: &[String]) -> Result<()> {
 }
 
 pub fn rename_entry(path: &str, new_name: &str) -> Result<String> {
-    if new_name.is_empty() || new_name.contains('/') || new_name.contains('\\') {
-        return Err(Error::InvalidPath(format!("invalid name: {new_name}")));
-    }
+    crate::fs::names::validate_name(new_name)?;
     let src = std::path::Path::new(path);
     let parent = src
         .parent()
@@ -61,6 +59,17 @@ mod tests {
         let src = dir.path().join("a.txt").to_string_lossy().into_owned();
         assert!(rename_entry(&src, "b.txt").is_err());
         assert_eq!(std::fs::read_to_string(dir.path().join("b.txt")).unwrap(), "b");
+    }
+
+    #[test]
+    fn rename_refuses_names_that_escape_the_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        std::fs::write(dir.path().join("sub").join("a.txt"), "a").unwrap();
+        let src = dir.path().join("sub").join("a.txt").to_string_lossy().into_owned();
+        assert!(rename_entry(&src, "..").is_err());
+        assert!(rename_entry(&src, "../a.txt").is_err());
+        assert!(dir.path().join("sub").join("a.txt").exists());
     }
 
     #[test]

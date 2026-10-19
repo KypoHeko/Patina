@@ -363,13 +363,11 @@ fn read_gitignore_sync(dir: &Path) -> Option<String> {
 #[tauri::command]
 pub async fn create_folder(parent: String, name: String) -> Result<String> {
     tauri::async_runtime::spawn_blocking(move || -> Result<String> {
-        // Security: reject separators / traversal components in the name — same
-        // rule as `rename_entry`. Without this, `name = "..\..\evil"` would
-        // escape `parent` via `Path::join` and create a folder anywhere the
-        // user has permission.
-        if name.is_empty() || name.contains('/') || name.contains('\\') {
-            return Err(Error::InvalidPath(format!("invalid folder name: {name}")));
-        }
+        // Security: the name must be one plain component (no separators, no
+        // `..`, and on Windows no ADS `:`, device names or trailing dots) —
+        // the same rule as `rename_entry`. Otherwise `..\..\evil` would
+        // escape `parent` via `Path::join`, and `..` alone was accepted.
+        crate::fs::names::validate_name(&name)?;
         let base = Path::new(&parent);
         if !base.is_dir() {
             return Err(Error::NotADirectory(parent));
