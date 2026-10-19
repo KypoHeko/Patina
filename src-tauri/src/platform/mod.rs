@@ -92,7 +92,7 @@ pub fn drive_letters(mask: u32) -> Vec<char> {
 /// disconnected network drive or an empty card reader.
 #[cfg(windows)]
 pub fn logical_drives() -> Vec<char> {
-    drive_letters(unsafe { windows::Win32::Storage::FileSystem::GetLogicalDrives() })
+    drive_letters(unsafe { ::windows::Win32::Storage::FileSystem::GetLogicalDrives() })
 }
 
 /// Extensions Windows EXECUTES on open rather than showing in an app.
