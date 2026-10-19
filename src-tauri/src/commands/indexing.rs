@@ -38,7 +38,7 @@ pub(crate) fn explicit_out_edges(
     let kind = links::kind_for(&ext);
     let mut seen: HashSet<String> = HashSet::new();
     let mut out = Vec::new();
-    for raw in links::extract_targets(&ext, body) {
+    for raw in links::extract_targets(src_path, &ext, body) {
         if let Some(dst) = links::resolve(src_path, &raw, known_paths)
             && dst != src_path
             && seen.insert(dst.clone())

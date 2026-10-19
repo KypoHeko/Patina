@@ -17,14 +17,16 @@ pub fn kind_for(ext: &str) -> &'static str {
 }
 
 /// Raw (not yet resolved) link targets, by file extension.
-pub fn extract_targets(ext: &str, body: &str) -> Vec<String> {
+/// `src_path` matters for Rust: where `mod foo;` points depends on the file
+/// that declares it.
+pub fn extract_targets(src_path: &str, ext: &str, body: &str) -> Vec<String> {
     match ext {
         "md" | "markdown" => md_targets(body),
         "html" | "htm" => attr_targets(body),
         "css" => css_targets(body),
         "sql" => sql_targets(body),
         "js" | "mjs" | "jsx" | "ts" | "tsx" => js_targets(body),
-        "rs" => rs_targets(body),
+        "rs" => rs_targets_in(body, Path::new(src_path).file_stem().and_then(|s| s.to_str()).unwrap_or("mod")),
         _ => code_targets(body),
     }
 }
@@ -152,11 +154,19 @@ fn js_targets(body: &str) -> Vec<String> {
 /// as false path candidates.
 ///
 /// Resolution rules (simplified but covers the common patterns):
-/// - `mod foo;` in `src/path/bar.rs` → `src/path/bar/foo.rs` or
-///   `src/path/bar/foo/mod.rs`
-/// - `pub mod foo;`, `pub(crate) mod foo;` — same resolution
-/// - `#[cfg(windows)] mod foo;` — same resolution, conditional
+/// - `mod foo;` in `mod.rs` / `lib.rs` / `main.rs` → `foo.rs` or `foo/mod.rs`
+///   next to it;
+/// - `mod foo;` in any other `bar.rs` → `bar/foo.rs` or `bar/foo/mod.rs`
+///   (the 2018-edition layout; it used to be resolved as a sibling `foo.rs`);
+/// - `pub mod foo;`, `pub(crate) mod foo;`, `#[cfg(..)] mod foo;` — the same.
+#[cfg(test)]
 fn rs_targets(body: &str) -> Vec<String> {
+    rs_targets_in(body, "mod")
+}
+
+/// `stem` = file name of the declaring file without `.rs`.
+fn rs_targets_in(body: &str, stem: &str) -> Vec<String> {
+    let dir = if matches!(stem, "mod" | "lib" | "main") { String::new() } else { format!("{stem}/") };
     let mut out = Vec::new();
     for line in body.lines() {
         let trimmed = line.trim();
@@ -195,8 +205,8 @@ fn rs_targets(body: &str) -> Vec<String> {
                 // is declared in a file, the child module is either `foo.rs` (a
                 // flat file) or `foo/mod.rs` (a directory module). We emit both
                 // so resolve() can find whichever exists.
-                out.push(format!("{name}.rs"));
-                out.push(format!("{name}/mod.rs"));
+                out.push(format!("{dir}{name}.rs"));
+                out.push(format!("{dir}{name}/mod.rs"));
             }
         }
     }
@@ -524,6 +534,16 @@ pub(super) mod dir_agg;
         assert!(got.contains(&"path_key.rs".to_string()), "got: {got:?}");
         assert!(got.contains(&"dir_agg.rs".to_string()), "got: {got:?}");
         assert!(got.contains(&"dir_agg/mod.rs".to_string()), "got: {got:?}");
+    }
+
+    #[test]
+    fn rs_targets_in_a_non_root_file_point_into_its_folder() {
+        let got = rs_targets_in("mod db;\nlet s = include_str!(\"q.sql\");", "index");
+        assert!(got.contains(&"index/db.rs".to_string()), "got: {got:?}");
+        assert!(got.contains(&"index/db/mod.rs".to_string()), "got: {got:?}");
+        assert!(!got.contains(&"db.rs".to_string()), "got: {got:?}");
+        // include_str! stays relative to the file itself
+        assert!(got.contains(&"q.sql".to_string()), "got: {got:?}");
     }
 
     #[test]
