@@ -209,6 +209,34 @@ pub fn has_hash_for_path(conn: &Connection, path: &str, hash: &str) -> Result<bo
     Ok(count > 0)
 }
 
+/// Dictionary of the zstd blob already stored for `hash`, if any zstd version
+/// references it: `Some(dict_id)` (the inner value is `None` for a blob
+/// compressed without a dictionary), `None` when no row uses this hash.
+///
+/// Blobs are shared by hash across paths, so a new row for the same content
+/// must record the dictionary the EXISTING blob was compressed with, not the
+/// current one — otherwise restore fails with "Dictionary mismatch".
+pub fn zstd_dict_for_hash(conn: &Connection, hash: &str) -> Result<Option<Option<i64>>> {
+    let v = conn
+        .query_row(
+            "SELECT dict_id FROM versions WHERE hash = ?1 AND strategy = 'zstd' LIMIT 1",
+            [hash],
+            |r| r.get::<_, Option<i64>>(0),
+        )
+        .optional()?;
+    Ok(v)
+}
+
+/// Point every zstd version with `hash` at `dict_id` — called right after the
+/// shared blob was (re)written with that dictionary, so all rows stay consistent.
+pub fn set_zstd_dict_for_hash(conn: &Connection, hash: &str, dict_id: Option<i64>) -> Result<()> {
+    conn.execute(
+        "UPDATE versions SET dict_id = ?1 WHERE hash = ?2 AND strategy = 'zstd'",
+        (dict_id, hash),
+    )?;
+    Ok(())
+}
+
 /// Check whether anyone still references this chunk.
 pub fn chunk_refcount(conn: &Connection, chunk_hash: &str) -> Result<i64> {
     let count = conn.query_row(

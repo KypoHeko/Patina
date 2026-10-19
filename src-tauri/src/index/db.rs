@@ -70,3 +70,25 @@ fn run_migrations(conn: &Connection) -> Result<()> {
     }
     Ok(())
 }
+/// An in-memory database with the full production schema (all migrations
+/// applied) — for tests of code that spans several repositories.
+#[cfg(test)]
+pub fn open_in_memory() -> Connection {
+    let conn = Connection::open_in_memory().expect("in-memory db");
+    conn.execute_batch("PRAGMA foreign_keys = ON;").expect("pragma");
+    run_migrations(&conn).expect("migrations");
+    conn
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn migrations_apply_and_are_idempotent() {
+        let conn = open_in_memory();
+        let v: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
+        assert_eq!(v as usize, MIGRATIONS.len());
+        run_migrations(&conn).unwrap(); // second run is a no-op
+    }
+}

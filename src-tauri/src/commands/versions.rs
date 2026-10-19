@@ -27,6 +27,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Manager};
 
 use crate::error::{Error, Result};
+use crate::fs::atomic;
 use crate::index::versions::{self, Version};
 use crate::index::chunker;
 use crate::index::version_compress;
@@ -99,24 +100,44 @@ fn do_snapshot(db: &std::sync::Mutex<rusqlite::Connection>, versions_dir: &Path,
         // has_hash_for_path check under the lock rules out a race with a
         // concurrent snapshot of the same version that may have inserted while we
         // were compressing.
-        let new_id = {
+        //
+        // The blob is shared by hash across paths. When it already exists, the
+        // new row must carry the dictionary that blob was compressed with
+        // (which may be older than the current one); only when we write the
+        // blob ourselves does the row get our dictionary.
+        let (new_id, must_write) = {
             let conn = db.lock().map_err(|_| Error::Operation("DB lock poisoned".into()))?;
             if versions::has_hash_for_path(&conn, path, &hash)? {
                 return Ok(());
             }
+            let shared = versions::zstd_dict_for_hash(&conn, &hash)?;
+            let (row_dict, must_write) = match shared {
+                Some(existing) if blob.exists() => (existing, false),
+                _ => (used_dict, true),
+            };
             let label = versions::next_label(&conn, path)?;
-            versions::insert(&conn, path, now_millis(), file_size as i64, &hash, &label, "zstd", used_dict)?
+            let id = versions::insert(&conn, path, now_millis(), file_size as i64, &hash, &label, "zstd", row_dict)?;
+            (id, must_write)
         };
 
-        // Materialize the blob outside the lock. If the file does not exist yet,
-        // write it; if the write fails, roll back the just-inserted row so no
-        // version is left referencing a non-existent blob.
-        if !blob.exists()
-            && let Err(e) = std::fs::write(&blob, &compressed).map_err(Error::Io) {
+        // Materialize the blob: the slow write goes to a temp file outside the
+        // lock; the rename into place and the re-pointing of every row with this
+        // hash at our dictionary happen together under the lock, so concurrent
+        // writers of the same content always leave rows and blob consistent.
+        if must_write {
+            let res = atomic::write_temp(&blob, &compressed)
+                .map_err(Error::Io)
+                .and_then(|tmp| {
+                    let conn = db.lock().map_err(|_| Error::Operation("DB lock poisoned".into()))?;
+                    atomic::commit_temp(&tmp, &blob).map_err(Error::Io)?;
+                    versions::set_zstd_dict_for_hash(&conn, &hash, used_dict)
+                });
+            if let Err(e) = res {
                 let conn = db.lock().map_err(|_| Error::Operation("DB lock poisoned".into()))?;
                 let _ = versions::delete(&conn, new_id);
                 return Err(e);
             }
+        }
 
         // NOTE: dictionary training/retraining happens in one place —
         // in `snapshot_version` after `do_snapshot`.
@@ -453,4 +474,84 @@ pub async fn delete_version(app: AppHandle, id: i64) -> Result<Vec<Version>> {
     })
     .await
     .map_err(|e| Error::Operation(format!("delete_version interrupted: {e}")))?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    struct Env {
+        _dir: tempfile::TempDir,
+        root: std::path::PathBuf,
+        versions_dir: std::path::PathBuf,
+        db: Mutex<rusqlite::Connection>,
+    }
+
+    fn env() -> Env {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("files");
+        let versions_dir = dir.path().join("versions");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&versions_dir).unwrap();
+        Env { root, versions_dir, db: Mutex::new(crate::index::db::open_in_memory()), _dir: dir }
+    }
+
+    fn train(env: &Env, id: i64, seed: &str) {
+        let samples: Vec<Vec<u8>> = (0..30)
+            .map(|i| format!("{seed}-{i} {}", "lorem ipsum dolor ".repeat(30)).into_bytes())
+            .collect();
+        let dicts = version_compress::dicts_dir(&env.versions_dir);
+        version_compress::train_dict(&dicts, &samples, id).unwrap();
+        let conn = env.db.lock().unwrap();
+        versions::insert_dict(&conn, 0, 1, 0).unwrap();
+    }
+
+    fn file(env: &Env, name: &str, body: &str) -> String {
+        let p = env.root.join(name);
+        std::fs::write(&p, body).unwrap();
+        p.to_string_lossy().into_owned()
+    }
+
+    fn versions_of(env: &Env, path: &str) -> Vec<Version> {
+        versions::list_for(&env.db.lock().unwrap(), path).unwrap()
+    }
+
+    #[test]
+    fn shared_blob_keeps_its_dictionary_after_retrain() {
+        let env = env();
+        let body = "shared content ".repeat(200);
+        train(&env, 1, "alpha");
+        let a = file(&env, "a.txt", &body);
+        do_snapshot(&env.db, &env.versions_dir, &a).unwrap();
+        train(&env, 2, "beta"); // the current dictionary changes
+        let b = file(&env, "b.txt", &body); // same content, another path
+        do_snapshot(&env.db, &env.versions_dir, &b).unwrap();
+
+        let vb = &versions_of(&env, &b)[0];
+        assert_eq!(vb.dict_id, Some(1), "row must record the blob's dictionary");
+        std::fs::write(&b, "changed").unwrap();
+        do_restore(&env.db, &env.versions_dir, vb.id).unwrap();
+        assert_eq!(std::fs::read_to_string(&b).unwrap(), body);
+    }
+
+    #[test]
+    fn snapshot_restore_roundtrip_leaves_no_temp_files() {
+        let env = env();
+        let p = file(&env, "doc.md", "v1");
+        do_snapshot(&env.db, &env.versions_dir, &p).unwrap();
+        std::fs::write(&p, "v2").unwrap();
+        do_snapshot(&env.db, &env.versions_dir, &p).unwrap();
+        let vs = versions_of(&env, &p);
+        assert_eq!(vs.len(), 2);
+        let v1 = vs.iter().find(|v| v.label == "v1").unwrap();
+        do_restore(&env.db, &env.versions_dir, v1.id).unwrap();
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "v1");
+        let leftovers: Vec<_> = std::fs::read_dir(&env.root)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().contains("patina-tmp"))
+            .collect();
+        assert!(leftovers.is_empty());
+    }
 }
