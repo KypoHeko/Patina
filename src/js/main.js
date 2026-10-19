@@ -73,6 +73,15 @@ document.getElementById('preview-btn').addEventListener('click', () => bus.emit(
 
 const searchInput = document.getElementById('topbar-search');
 searchInput.addEventListener('input', () => store.setState({ searchQuery: searchInput.value }));
+// Substring by default: a name like "report (1).txt" must be found as typed.
+// Regular expressions are opt-in via the .* toggle (as in the palette).
+const searchRegexBtn = document.getElementById('search-regex-btn');
+searchRegexBtn.addEventListener('click', () => {
+  const on = !store.getState().searchRegex;
+  store.setState({ searchRegex: on });
+  searchRegexBtn.classList.toggle('is-on', on);
+  searchInput.focus();
+});
 // On navigation searchQuery is reset programmatically — keep the input in sync.
 store.subscribe((state) => {
   if (document.activeElement !== searchInput && searchInput.value !== (state.searchQuery || '')) {
@@ -98,6 +107,7 @@ function syncTopbar() {
     'theme-btn': 'topbar.theme',
     'tabcolors-btn': 'topbar.tabcolors',
     'lang-btn': 'topbar.lang',
+    'search-regex-btn': 'topbar.search.regex',
   };
   for (const [id, key] of Object.entries(titles)) {
     const el = document.getElementById(id);

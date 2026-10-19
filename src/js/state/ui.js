@@ -5,6 +5,7 @@ export function initialUiState() {
     splitRatio: 0.5, // left panel's width fraction when split (0..1) — for 4b-2
     homePath: '', // home folder; filled in at boot, needed by new tabs
     searchQuery: '', // filter string from the top search
+    searchRegex: false, // treat searchQuery as a regular expression (the .* toggle)
   };
 }
 

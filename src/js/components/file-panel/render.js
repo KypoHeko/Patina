@@ -113,7 +113,7 @@ export const RenderMixin = {
   filterList(list) {
     const q = (this._filter || '').trim();
     if (!q) return list;
-    const match = makeMatcher(q, { regex: true });
+    const match = makeMatcher(q, { regex: !!this._filterRegex });
     return list.filter((e) => match(e.name));
   },
 

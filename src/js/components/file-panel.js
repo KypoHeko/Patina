@@ -170,18 +170,27 @@ export class FilePanel extends Component {
 
     const active = getActiveSide(state) === this.side;
     const filter = active ? state.searchQuery || '' : '';
-    if (pane === this._lastPane && active === this._lastActive && filter === this._appliedFilter) return;
+    const regex = !!state.searchRegex;
+    if (
+      pane === this._lastPane &&
+      active === this._lastActive &&
+      filter === this._appliedFilter &&
+      regex === this._filterRegex
+    ) {
+      return;
+    }
 
     const structureChanged =
       !this._lastPane ||
       pane.entries !== this._lastPane.entries ||
       pane.error !== this._lastPane.error;
-    const filterChanged = filter !== this._appliedFilter;
+    const filterChanged = filter !== this._appliedFilter || regex !== this._filterRegex;
 
     this._lastPane = pane;
     this._lastActive = active;
     this._filter = filter;
     this._appliedFilter = filter;
+    this._filterRegex = regex;
 
     this.panelEl.classList.toggle('is-active', active);
     if (structureChanged || filterChanged) {

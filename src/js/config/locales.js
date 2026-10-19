@@ -15,8 +15,9 @@ export const STRINGS = {
     'common.close': 'Закрыть',
 
     // Topbar
-    'topbar.search.placeholder': 'Поиск… (текст или regex)',
-    'topbar.search.title': 'Фильтр активной панели: текст или регулярное выражение',
+    'topbar.search.placeholder': 'Поиск…',
+    'topbar.search.title': 'Фильтр активной панели (по подстроке; .* — регулярное выражение)',
+    'topbar.search.regex': 'Регулярное выражение',
     'topbar.dirsize': 'Посчитать размеры папок',
     'topbar.preview': 'Превью выбранного файла',
     'topbar.collapse': 'Свернуть боковую панель',
@@ -203,8 +204,9 @@ export const STRINGS = {
     'common.close': 'Close',
 
     // Topbar
-    'topbar.search.placeholder': 'Search… (text or regex)',
-    'topbar.search.title': 'Filter the active panel: text or regular expression',
+    'topbar.search.placeholder': 'Search…',
+    'topbar.search.title': 'Filter the active panel (substring; .* for a regular expression)',
+    'topbar.search.regex': 'Regular expression',
     'topbar.dirsize': 'Compute folder sizes',
     'topbar.preview': 'Preview selected file',
     'topbar.collapse': 'Collapse sidebar',
