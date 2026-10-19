@@ -21,6 +21,7 @@ import { Component } from '../core/component.js';
 import { getPane } from '../state/panes.js';
 import { getActiveSide } from '../state/tabs.js';
 import { DEFAULT_W, DEFAULT_H } from './relationship-graph/constants.js';
+import { onEvent } from '../api/events.js';
 
 import { DataMixin } from './relationship-graph/data.js';
 import { SimMixin } from './relationship-graph/sim.js';
@@ -63,6 +64,14 @@ export class RelationshipGraph extends Component {
     });
     this.on(document, 'mousemove', (e) => this.onDocMove(e));
     this.on(document, 'mouseup', () => this.onDocUp());
+    // The live index finished building or changed: refresh the overlay.
+    const refresh = () => {
+      if (!this._open || !this._nodes.length) return;
+      clearTimeout(this._depsTimer);
+      this._depsTimer = setTimeout(() => this.fetchDeps(this._scanSeq), 300);
+    };
+    onEvent('index:ready', refresh).then((un) => this._cleanups.push(un));
+    onEvent('index:changed', refresh).then((un) => this._cleanups.push(un));
   }
 
   /* ── lifecycle ─────────────────────────── */
@@ -114,7 +123,7 @@ export class RelationshipGraph extends Component {
     const state = this.store.getState();
     this._side = getActiveSide(state);
     this._root = getPane(state, this._side).path || '';
-    this.scan();
+    this.scan({ force: true }); // the explicit button rebuilds the edges
   }
 
   /** Header toggles. Labels/deps just redraw; .gitignore re-scans the tree. */

@@ -6,6 +6,7 @@ import { initialTabsState, getActiveSide } from '../state/tabs.js';
 import { updatePane } from '../state/panes.js';
 import { searchContent } from '../api/content.js';
 import { t } from '../lib/i18n.js';
+import { resetLiveIndex } from '../state/index-live.js';
 
 vi.mock('../api/content.js', () => ({ searchContent: vi.fn() }));
 vi.mock('../api/fs.js', () => ({ searchFiles: vi.fn().mockResolvedValue([]) }));
@@ -65,6 +66,7 @@ describe('CommandPalette — content search clears loading on empty results', ()
 describe('CommandPalette — live index root', () => {
   it('re-indexes a root again after another root replaced it', async () => {
     const { startIndex } = await import('../api/indexing.js');
+    resetLiveIndex();
     const palette = openPalette();
     startIndex.mockClear();
     palette.ensureIndexed('C:\\A');
@@ -76,6 +78,7 @@ describe('CommandPalette — live index root', () => {
 
   it('asks for the content index once', async () => {
     const { startIndex } = await import('../api/indexing.js');
+    resetLiveIndex();
     const palette = openPalette();
     startIndex.mockClear();
     palette.ensureIndexed('C:\\A');
@@ -92,5 +95,19 @@ describe('CommandPalette — index readiness', () => {
     expect(palette._contentReady.has('C:\\Dir')).toBe(false);
     palette.onIndexReady({ root: 'C:\\Dir', content: true });
     expect(palette._contentReady.has('C:\\Dir')).toBe(true);
+  });
+});
+
+describe('live index root is shared between components', () => {
+  it('the graph moving the live root makes the palette ask again', async () => {
+    const { startIndex } = await import('../api/indexing.js');
+    const { ensureLiveIndex } = await import('../state/index-live.js');
+    resetLiveIndex();
+    const palette = openPalette();
+    startIndex.mockClear();
+    palette.ensureIndexed('C:\\A');
+    ensureLiveIndex('C:\\G', true); // the graph opened on another root
+    palette.ensureIndexed('C:\\A');
+    expect(startIndex.mock.calls.map((c) => c[0])).toEqual(['C:\\A', 'C:\\G', 'C:\\A']);
   });
 });

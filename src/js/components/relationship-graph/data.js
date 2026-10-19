@@ -3,6 +3,7 @@
 
 import { fileGraph } from '../../api/relationships.js';
 import { rebuildEdges } from '../../api/indexing.js';
+import { ensureLiveIndex } from '../../state/index-live.js';
 import { listDir } from '../../api/fs.js';
 import { radialLayout } from '../../lib/radial-layout.js';
 import { buildDirTree } from '../../lib/dir-tree.js';
@@ -11,7 +12,7 @@ import { assetUrl } from '../../api/invoke.js';
 import { MAX_DEPTH, MAX_NODES, ALWAYS_IGNORE_DIRS, DEP_SEED_CAP } from './constants.js';
 
 export const DataMixin = {
-  async scan() {
+  async scan({ force = false } = {}) {
     const seq = ++this._scanSeq;
     this.setLoading(true);
     try {
@@ -44,7 +45,7 @@ export const DataMixin = {
       this.updateLimits();
       this.startSim();
 
-      this.fetchDeps(seq); // dependency overlay, best-effort
+      this.fetchDeps(seq, { force }); // dependency overlay, best-effort
     } finally {
       // Always clear the spinner for the current scan — even on early return,
       // a thrown error, or a failed .gitignore read. Stale scans leave it alone.
@@ -86,16 +87,19 @@ export const DataMixin = {
     };
   },
 
-  async fetchDeps(seq) {
+  /** Dependency overlay. Opening the graph (and every toggle / re-root) used to
+   *  run `rebuild_edges` — a full re-read of every text file of the tree. Now
+   *  the root's live index (kept fresh by its watcher) is requested once and
+   *  the stored edges are read right away; when the index reports ready or
+   *  changed, the overlay is re-read (see init). An explicit "Rebuild" still
+   *  forces a full rebuild (`force`). */
+  async fetchDeps(seq, { force = false } = {}) {
     const files = this._nodes.filter((n) => !n.dir && n._depth > 0).map((n) => n.path);
     if (!files.length) return;
     let data;
     try {
-      // Rebuild derived edges from the content index before querying them.
-      // Without this, the graph only reads whatever was stored in file_edges
-      // at the last index build — which may be stale or empty if the user
-      // hasn't triggered a full rebuild since editing files.
-      await rebuildEdges(this._root);
+      if (force) await rebuildEdges(this._root);
+      else ensureLiveIndex(this._root, true);
       data = await fileGraph(files.slice(0, DEP_SEED_CAP), 1);
     } catch (err) {
       console.error('[patina:graph] fetchDeps error:', err);

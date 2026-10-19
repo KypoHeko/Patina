@@ -15,6 +15,7 @@
 
 import { searchContent } from '../../api/content.js';
 import { t } from '../../lib/i18n.js';
+import { liveIndexRoot } from '../../state/index-live.js';
 
 export const ContentSearchMixin = {
   onContentInput() {
@@ -29,7 +30,7 @@ export const ContentSearchMixin = {
   // completes.
   ensureContentIndexed(root) {
     // If we already know the content index is ready, skip.
-    if (this._contentReady.has(root) && this._liveRoot === root) return Promise.resolve();
+    if (this._contentReady.has(root) && liveIndexRoot() === root) return Promise.resolve();
     this.ensureLive(root, true);
     return Promise.resolve();
   },

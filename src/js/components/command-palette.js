@@ -1,7 +1,7 @@
 import { Component } from '../core/component.js';
 import { getPane } from '../state/panes.js';
 import { getActiveSide } from '../state/tabs.js';
-import { startIndex } from '../api/indexing.js';
+import { ensureLiveIndex, forceLiveIndex } from '../state/index-live.js';
 import { onEvent } from '../api/events.js';
 import { t } from '../lib/i18n.js';
 
@@ -39,11 +39,6 @@ export class CommandPalette extends Component {
     this._tagSeq = 0;
     this._scanSeq = 0;
     this._indexing = false;
-    // The backend keeps ONE live (watched) index root. Mirror it here: a root
-    // remembered forever in a Set went stale once another root replaced it —
-    // its watcher was gone, but the palette never asked to re-index it.
-    this._liveRoot = null;
-    this._contentEver = false; // the backend content index, once on, stays on
     this._treeBase = null;
     this._treeTimer = null;
     this._contentReady = new Set();
@@ -135,17 +130,14 @@ export class CommandPalette extends Component {
   forceReindex() {
     const root = this._root;
     if (this._scope === 'content') {
-      startIndex(root, true, true).catch(() => {});
-      this._liveRoot = root;
-      this._contentEver = true;
+      forceLiveIndex(root, true);
       this._contentReady.delete(root);
       this.runContentQuery();
       return;
     }
     if (this._scope !== 'tree') return;
     this._treeBase = null;
-    startIndex(root, false, true).catch(() => {});
-    this._liveRoot = root;
+    forceLiveIndex(root, false);
     this.runTreeQuery();
   }
 
@@ -183,14 +175,11 @@ export class CommandPalette extends Component {
     }, 200);
   }
 
-  /** Make `root` the backend's live index root (and enable content if asked).
-   *  Cheap to call repeatedly: only a root switch or the first content request
-   *  reaches the backend, which then replays the journal or rebuilds. */
+  /** Make `root` the backend's live index root (shared with the graph:
+   *  state/index-live.js). A root remembered forever in a Set went stale once
+   *  another root replaced it — its watcher was gone. */
   ensureLive(root, content = false) {
-    if (root === this._liveRoot && (!content || this._contentEver)) return Promise.resolve();
-    this._liveRoot = root;
-    if (content) this._contentEver = true;
-    return startIndex(root, content).catch(() => {});
+    return ensureLiveIndex(root, content);
   }
 
   activate(entry) {
