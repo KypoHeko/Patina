@@ -57,22 +57,23 @@ pub fn is_text(path: &Path, len: u64) -> bool {
     sample_looks_textual(&read_head(path, 8192))
 }
 
-/// Folders we do NOT index or scan: VCS, build artifacts, caches.
+/// Folders we do NOT index or scan: VCS, build artifacts, dependencies,
+/// caches. The SAME list is `ALWAYS_IGNORE_DIRS` in
+/// `src/js/components/relationship-graph/constants.js` (a frontend test keeps
+/// the two in sync — they had drifted apart).
+pub const IGNORED_DIRS: &[&str] = &[
+    ".git", ".svn", ".hg", "node_modules", "target", "dist", "build", ".next", ".nuxt",
+    ".svelte-kit", ".cache", ".turbo", ".parcel-cache", "__pycache__", ".venv", "venv",
+    "vendor", ".idea", ".vscode", ".vs", ".gradle", ".tox", "coverage",
+];
+
 /// Case-insensitive on Windows, where `Node_Modules` is the same folder.
 fn is_ignored_name(name: &str) -> bool {
-    let lowered;
-    let name = if cfg!(windows) {
-        lowered = name.to_ascii_lowercase();
-        lowered.as_str()
+    if cfg!(windows) {
+        IGNORED_DIRS.iter().any(|d| d.eq_ignore_ascii_case(name))
     } else {
-        name
-    };
-    matches!(
-        name,
-        ".git" | ".svn" | ".hg" | "node_modules" | "target" | "dist" | "build"
-            | ".next" | ".nuxt" | ".cache" | "__pycache__" | ".venv" | "venv"
-            | ".idea" | ".vscode" | ".gradle" | ".tox"
-    )
+        IGNORED_DIRS.contains(&name)
+    }
 }
 
 /// Returns `true` when the entry is a directory that should be skipped.

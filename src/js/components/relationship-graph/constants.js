@@ -8,10 +8,12 @@ export const MAX_NODES = 10000;
 // toggle is on, regardless of whether a .gitignore could be read. Keeps a huge
 // tree (e.g. Rust `target/`) from stalling the scan with thousands of listDir
 // round-trips. Toggle the button off to include everything.
+// The same list as IGNORED_DIRS in src-tauri/src/index/text_detect.rs
+// (kept in sync by test/ignore-lists.test.js).
 export const ALWAYS_IGNORE_DIRS = new Set([
-  '.git', 'node_modules', 'target', 'dist', '.next', '.nuxt', '.svelte-kit',
-  '.cache', '.turbo', '.parcel-cache', '__pycache__', '.venv', 'venv',
-  'vendor', '.gradle', '.idea', '.vs', 'coverage',
+  '.git', '.svn', '.hg', 'node_modules', 'target', 'dist', 'build', '.next', '.nuxt',
+  '.svelte-kit', '.cache', '.turbo', '.parcel-cache', '__pycache__', '.venv', 'venv',
+  'vendor', '.idea', '.vscode', '.vs', '.gradle', '.tox', 'coverage',
 ]);
 
 export const C_CENTER = '#10b981'; // focus (emerald)

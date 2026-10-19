@@ -12,7 +12,7 @@ use tauri::{AppHandle, Manager};
 use crate::error::{Error, Result};
 
 use crate::fs::{lister, operations};
-use crate::index::{edges, tags, versions};
+use crate::index::{edges, tags, text_detect, versions};
 use crate::models::file::FileEntry;
 use crate::state::AppState;
 
@@ -190,11 +190,6 @@ pub fn b64(data: &[u8]) -> String {
 }
 
 const RASTER: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "tiff", "tif"];
-const TXT: &[&str] = &[
-    "txt", "md", "markdown", "json", "js", "mjs", "ts", "jsx", "tsx", "rs", "toml", "yaml", "yml",
-    "ini", "cfg", "conf", "log", "csv", "tsv", "html", "htm", "css", "xml", "sh", "bat", "py", "go",
-    "java", "c", "h", "cpp", "sql",
-];
 
 fn file_times(meta: &std::fs::Metadata) -> (i64, i64) {
     let modified = meta
@@ -290,7 +285,8 @@ fn build_preview(thumbs_dir: &Path, path: &str) -> Result<Preview> {
         return Ok(none_preview(name, &meta));
     }
 
-    if TXT.contains(&ext.as_str()) {
+    // One list of text extensions for preview and content indexing.
+    if text_detect::TEXT_EXTS.contains(&ext.as_str()) {
         let mut f = File::open(path)?;
         let mut buf = vec![0u8; 16 * 1024];
         let n = f.read(&mut buf)?;
